@@ -187,7 +187,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const zoomPluginInstance = zoomPlugin()
 
   const { Bookmarks } = bookmarkPluginInstance
-  const { CurrentPageLabel } = pageNavigationPluginInstance
+  const { CurrentPageLabel: _CurrentPageLabel } = pageNavigationPluginInstance
   const { ZoomIn, ZoomOut, CurrentScale } = zoomPluginInstance
 
   useEffect(() => {

@@ -2,7 +2,7 @@
  * API 服务封装
  */
 
-const API_BASE = '/api'
+const API_BASE = (import.meta.env.BASE_URL.replace(/\/$/, '')) + '/api'
 
 // ============ 论文 API ============
 

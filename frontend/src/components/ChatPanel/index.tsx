@@ -5,7 +5,6 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { useChatStore } from '../../stores/chatStore'
-import { cn } from '../../lib/utils'
 
 interface ChatPanelProps {
   paperId: string
