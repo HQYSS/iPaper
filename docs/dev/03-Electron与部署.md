@@ -1,0 +1,161 @@
+# Electron 与部署
+
+## Electron 主进程 (`electron/main.js`)
+
+### 启动流程
+
+```
+app.whenReady()
+    │
+    ├── startBackend()          # 启动 Python 后端进程
+    │   └── spawn python main.py (dev)
+    │       或 spawn ipaper-backend (prod)
+    │
+    ├── waitForBackend()        # 轮询 http://127.0.0.1:3000/，最多 30 秒
+    │
+    └── createWindow()          # 创建 BrowserWindow
+        └── loadURL('http://localhost:5173')  (dev)
+            或 loadFile('frontend/dist/index.html')  (prod)
+```
+
+### 开发模式 vs 生产模式
+
+通过 `--dev` 参数或 `NODE_ENV=development` 切换。
+
+| 行为 | 开发模式 | 生产模式 |
+|------|---------|---------|
+| 后端启动 | `python main.py` | `ipaper-backend` 可执行文件 |
+| 前端加载 | `http://localhost:5173` (Vite) | `frontend/dist/index.html` |
+| DevTools | 自动打开 | 不打开 |
+
+### 窗口配置
+
+```javascript
+{
+  width: 1400,
+  height: 900,
+  minWidth: 1000,
+  minHeight: 600,
+  titleBarStyle: 'hiddenInset',      // macOS 沉浸式标题栏
+  trafficLightPosition: { x: 15, y: 15 }  // macOS 红绿灯位置
+}
+```
+
+### 安全配置
+
+```javascript
+webPreferences: {
+  nodeIntegration: false,    // 禁用 Node.js 集成
+  contextIsolation: true,    // 上下文隔离
+  preload: 'preload.js'     // 预加载脚本
+}
+```
+
+### 进程管理
+
+- Electron 启动时自动启动后端进程
+- 外部链接使用系统浏览器打开
+- `before-quit` 事件中杀死后端进程
+- macOS 上关闭所有窗口时不退出（遵循 macOS 惯例）
+
+---
+
+## 预加载脚本 (`electron/preload.js`)
+
+通过 `contextBridge` 暴露 `electronAPI` 给渲染进程：
+
+```javascript
+window.electronAPI = {
+  platform: process.platform,       // 'darwin', 'win32', 'linux'
+  versions: process.versions,
+  isElectron: true
+}
+```
+
+前端可通过 `window.electronAPI` 检测是否在 Electron 环境中运行。
+
+---
+
+## 一键启动器 (`iPaper.app`)
+
+macOS 应用包，双击即可启动全部服务。
+
+### 目录结构
+
+```
+iPaper.app/
+└── Contents/
+    ├── Info.plist           # macOS 应用描述文件
+    ├── MacOS/
+    │   └── iPaper           # Bash 启动脚本
+    └── Resources/
+```
+
+### 启动脚本流程 (`MacOS/iPaper`)
+
+```
+cleanup()           # 杀死可能残留的旧进程
+    │
+start_backend()     # nohup 启动 Python 后端 → logs/backend.log
+    │
+start_frontend()    # nohup 启动 npm run dev → logs/frontend.log
+    │
+wait_for_services() # 轮询后端和前端端口
+    │
+start_electron()    # 启动 Electron（前台运行）
+```
+
+**关键细节：**
+- 使用**绝对路径**调用 python/npm/node（双击 .app 时 PATH 不含 homebrew/conda）
+- 路径硬编码在脚本中：
+  - Python: `/Users/admin/miniconda3/bin/python`
+  - npm: `/opt/homebrew/bin/npm`
+  - node: `/opt/homebrew/bin/node`
+- 日志输出到 `项目根目录/logs/`
+
+**注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。
+
+---
+
+## Electron 打包配置 (`electron/package.json`)
+
+使用 `electron-builder` 打包：
+
+```json
+{
+  "build": {
+    "appId": "com.ipaper.app",
+    "productName": "iPaper",
+    "mac": {
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "linux": {
+      "target": ["AppImage", "deb"]
+    }
+  }
+}
+```
+
+### 生产环境打包（尚未实现）
+
+完整打包需要：
+1. 使用 PyInstaller 将 Python 后端打包为独立可执行文件
+2. 将后端可执行文件放入 Electron 的 `resources/backend/` 目录
+3. 使用 `npm run build` 构建前端
+4. 使用 `electron-builder` 打包整个应用
+
+---
+
+## 端口与网络
+
+| 连接 | 说明 |
+|------|------|
+| Electron → Vite Dev Server | `http://localhost:5173` (开发模式) |
+| Vite Proxy → FastAPI | `/api` → `http://127.0.0.1:3000` |
+| FastAPI → arXiv | `https://arxiv.org/` (下载论文时) |
+| FastAPI → Gemini API | `https://api3.xhub.chat/v1` (LLM 对话时) |
+
+所有本地服务绑定在 `127.0.0.1`，不暴露到外网。

@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+electron/node_modules/
+
+# Build output
+frontend/dist/
+*.pyc
+__pycache__/
+
+# Environment & secrets
+.env
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+*.pid
+
+# iPaper local data (user-specific, not for repo)
+# ~/.ipaper/ is outside the project, no need to exclude
+
+# Plan files
+.cursor/
