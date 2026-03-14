@@ -190,38 +190,6 @@ function cleanSelectedText(raw: string): string {
     .trim()
 }
 
-function getLineWords(line: string): string[] {
-  return line
-    .replace(/\$\$[\s\S]*?\$\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
-    .replace(/\$[^$]*?\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
-    .replace(/\*\*/g, '')
-    .replace(/[`#>*]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length >= 2)
-}
-
-function findRawQuote(renderedText: string, rawMarkdown: string): string {
-  const clean = cleanSelectedText(renderedText)
-  if (clean.length < 4) return clean
-
-  const lines = rawMarkdown.split('\n')
-  let firstMatch = -1
-  let lastMatch = -1
-
-  for (let i = 0; i < lines.length; i++) {
-    const words = getLineWords(lines[i])
-    if (words.length === 0) continue
-    const hits = words.filter(w => clean.includes(w)).length
-    if (hits / words.length >= 0.6) {
-      if (firstMatch === -1) firstMatch = i
-      lastMatch = i
-    }
-  }
-
-  if (firstMatch === -1) return clean
-  return lines.slice(firstMatch, lastMatch + 1).join('\n').trim()
-}
-
 export function ChatPanel({ paperId }: ChatPanelProps) {
   const {
     messages,
@@ -286,21 +254,12 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
 
       setTimeout(() => {
         const selection = window.getSelection()
-        const rawText = selection?.toString() || ''
-        const text = cleanSelectedText(rawText)
+        const text = cleanSelectedText(selection?.toString() || '')
         if (text && text.length > 0) {
           const range = selection?.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
           if (rect && container.contains(selection?.anchorNode as Node)) {
-            const msgEl = (selection?.anchorNode as HTMLElement)?.closest?.('[data-message-index]')
-              || (selection?.anchorNode?.parentElement)?.closest?.('[data-message-index]')
-            const msgIndex = msgEl ? parseInt(msgEl.getAttribute('data-message-index') || '', 10) : -1
-            const { messages: msgs } = useChatStore.getState()
-            let quoteText = text
-            if (msgIndex >= 0 && msgs[msgIndex]?.role === 'assistant') {
-              quoteText = findRawQuote(rawText, msgs[msgIndex].content)
-            }
-            setChatSelectedText(quoteText)
+            setChatSelectedText(text)
             setChatSelectionPosition({
               x: rect.left + rect.width / 2,
               y: rect.top - 10
