@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Trash2, Loader2, X, ChevronDown, ChevronRight, UserCog, Check, RefreshCw } from 'lucide-react'
+import { Send, Trash2, Loader2, X, ChevronDown, ChevronRight, UserCog, Check, RefreshCw, FileText, MessageSquare } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -107,6 +107,45 @@ function ProfileUpdateNotification({
   )
 }
 
+import type { QuoteItem } from '../../stores/chatStore'
+
+function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const isPdf = quote.source === 'pdf'
+  const truncated = quote.text.length > 80 ? quote.text.slice(0, 80) + '...' : quote.text
+  const needsExpand = quote.text.length > 80
+
+  return (
+    <div className="rounded-xl border border-indigo-200 dark:border-indigo-800/50 bg-gradient-to-r from-indigo-50/80 to-purple-50/80 dark:from-indigo-950/30 dark:to-purple-950/30 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-indigo-100 dark:border-indigo-800/30">
+        {isPdf ? (
+          <FileText className="w-3 h-3 text-indigo-500" />
+        ) : (
+          <MessageSquare className="w-3 h-3 text-purple-500" />
+        )}
+        <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+          {isPdf ? '论文' : '对话'}
+        </span>
+        <div className="flex-1" />
+        <button
+          onClick={(e) => { e.stopPropagation(); onRemove() }}
+          className="p-0.5 rounded-md text-indigo-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+      <div
+        className={needsExpand ? 'cursor-pointer' : undefined}
+        onClick={() => needsExpand && setExpanded(!expanded)}
+      >
+        <p className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+          {expanded ? quote.text : truncated}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 const CollapsibleQuote = ({ quote, source }: { quote: string; source: 'pdf' | 'chat' }) => {
   const [expanded, setExpanded] = useState(false)
   const prefix = source === 'pdf' ? '关于文中的这段内容' : '刚才说到'
@@ -153,12 +192,15 @@ function cleanSelectedText(raw: string): string {
 
 function stripLine(line: string): string {
   return line
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/^\s*[-*+]\s+/, '')
+    .replace(/^\s*\d+\.\s+/, '')
     .replace(/\$\$[\s\S]*?\$\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
     .replace(/\$[^$]*?\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
     .replace(/`(.+?)`/g, '$1')
-    .replace(/[#>]/g, ' ')
+    .replace(/[>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -476,22 +518,9 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
       <div className="p-4 border-t border-border">
         {/* 引用块显示 */}
         {quotes.length > 0 && (
-          <div className="mb-2 space-y-1.5">
+          <div className="mb-3 space-y-2">
             {quotes.map((q, i) => (
-              <div key={i} className="p-2 bg-muted rounded-md text-sm flex items-start gap-2">
-                <div className="flex-1 overflow-hidden">
-                  <span className="text-xs text-muted-foreground">
-                    {q.source === 'pdf' ? '引用论文内容：' : '引用对话内容：'}
-                  </span>
-                  <p className="text-xs mt-1 line-clamp-2">{q.text}</p>
-                </div>
-                <button
-                  onClick={() => removeQuote(i)}
-                  className="p-1 hover:bg-accent rounded flex-shrink-0"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
+              <QuoteCard key={i} quote={q} onRemove={() => removeQuote(i)} />
             ))}
           </div>
         )}
