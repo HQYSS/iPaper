@@ -12,16 +12,25 @@ NPM="/opt/homebrew/bin/npm"
 export PATH="/opt/homebrew/bin:/Users/admin/miniconda3/bin:$PATH"
 
 BACKEND_PORT=3000
+PID_FILE="$LOG_DIR/backend.pid"
 
 cleanup() {
+    # 1. PID 文件精准清理
+    if [ -f "$PID_FILE" ]; then
+        kill "$(cat "$PID_FILE")" 2>/dev/null
+        rm -f "$PID_FILE"
+    fi
     pkill -f "uvicorn main:app" 2>/dev/null
     pkill -f "vite.*iPaper" 2>/dev/null
     sleep 1
+    # 2. 端口兜底：不管什么进程，确保端口腾出来
+    lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null
 }
 
 start_backend() {
     cd "$PROJECT_DIR/backend"
     nohup "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT > "$LOG_DIR/backend.log" 2>&1 &
+    echo $! > "$PID_FILE"
 }
 
 start_frontend() {

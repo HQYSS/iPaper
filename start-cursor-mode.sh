@@ -5,32 +5,49 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+BACKEND_PORT=3000
+PID_FILE="$SCRIPT_DIR/logs/backend.pid"
+mkdir -p "$SCRIPT_DIR/logs"
+
 cleanup() {
     echo "正在关闭服务..."
+    if [ -f "$PID_FILE" ]; then
+        kill "$(cat "$PID_FILE")" 2>/dev/null
+        rm -f "$PID_FILE"
+    fi
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
     exit 0
 }
 trap cleanup SIGINT SIGTERM
 
-# 检查后端是否已在运行
-if curl -s http://127.0.0.1:3000/ > /dev/null 2>&1; then
-    echo "后端已在运行 (port 3000)"
-else
-    echo "启动后端..."
-    cd backend
-    python -m uvicorn main:app --host 127.0.0.1 --port 3000 &
-    BACKEND_PID=$!
-    cd "$SCRIPT_DIR"
-
-    echo "等待后端就绪..."
-    for i in $(seq 1 30); do
-        if curl -s http://127.0.0.1:3000/ > /dev/null 2>&1; then
-            echo "后端已就绪"
-            break
-        fi
+# 清理可能残留的旧后端进程
+if [ -f "$PID_FILE" ]; then
+    OLD_PID="$(cat "$PID_FILE")"
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "清理残留后端进程 (PID: $OLD_PID)..."
+        kill "$OLD_PID" 2>/dev/null
         sleep 1
-    done
+    fi
+    rm -f "$PID_FILE"
 fi
+# 端口兜底
+lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null && sleep 1
+
+echo "启动后端..."
+cd backend
+python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
+BACKEND_PID=$!
+echo $BACKEND_PID > "$PID_FILE"
+cd "$SCRIPT_DIR"
+
+echo "等待后端就绪..."
+for i in $(seq 1 30); do
+    if curl -s http://127.0.0.1:$BACKEND_PORT/ > /dev/null 2>&1; then
+        echo "后端已就绪"
+        break
+    fi
+    sleep 1
+done
 
 # 先清理残留的 Vite 进程，避免端口冲突
 EXISTING_VITE_PID=$(lsof -ti :5173 2>/dev/null)
