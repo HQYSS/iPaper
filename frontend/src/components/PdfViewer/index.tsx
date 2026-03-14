@@ -11,7 +11,7 @@ import '@react-pdf-viewer/bookmark/lib/styles/index.css'
 import '@react-pdf-viewer/page-navigation/lib/styles/index.css'
 import '@react-pdf-viewer/zoom/lib/styles/index.css'
 
-import { getPdfUrl } from '../../services/api'
+import { getPdfUrl, getTranslations, type PdfLang, type TranslationStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 
 interface PdfViewerProps {
@@ -177,6 +177,12 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
+  const [pdfLang, setPdfLang] = useState<PdfLang>('en')
+  const [translations, setTranslations] = useState<TranslationStatus>({ zh: false, bilingual: false })
+  const [scrollBackStack, setScrollBackStack] = useState<number[]>([])
+  const scaleRef = useRef(1)
+  const restoreScaleRef = useRef<number | null>(null)
+  const restoreScrollRatioRef = useRef<number | null>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
 
   const setQuotedText = useChatStore((state) => state.setQuotedText)
@@ -190,9 +196,34 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const { CurrentPageLabel: _CurrentPageLabel } = pageNavigationPluginInstance
   const { ZoomIn, ZoomOut, CurrentScale } = zoomPluginInstance
 
+  const blobCache = useRef<Record<string, string>>({})
+
   useEffect(() => {
-    setPdfUrl(getPdfUrl(paperId))
+    const cached = blobCache.current[pdfLang]
+    setPdfUrl(cached || getPdfUrl(paperId, pdfLang))
+  }, [paperId, pdfLang])
+
+  useEffect(() => {
+    setPdfLang('en')
+    Object.values(blobCache.current).forEach(URL.revokeObjectURL)
+    blobCache.current = {}
+    getTranslations(paperId).then(setTranslations)
+    return () => {
+      Object.values(blobCache.current).forEach(URL.revokeObjectURL)
+      blobCache.current = {}
+    }
   }, [paperId])
+
+  useEffect(() => {
+    (['zh', 'bilingual'] as const).forEach(lang => {
+      if (translations[lang] && !blobCache.current[lang]) {
+        fetch(getPdfUrl(paperId, lang))
+          .then(r => r.blob())
+          .then(blob => { blobCache.current[lang] = URL.createObjectURL(blob) })
+          .catch(() => {})
+      }
+    })
+  }, [paperId, translations])
 
   // 初始加载时居中
   useEffect(() => {
@@ -224,6 +255,34 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       clearInterval(checkInterval)
     }
   }, [pdfUrl])
+
+  useEffect(() => {
+    const container = pdfContainerRef.current
+    if (!container) return
+
+    const handleLinkClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (target.closest('[data-annotation-id]') || target.closest('a[href^="#"]')) {
+        const sc = container.querySelector('.rpv-core__inner-pages') as HTMLElement
+        if (sc) {
+          setScrollBackStack(prev => [...prev, sc.scrollTop])
+        }
+      }
+    }
+
+    container.addEventListener('click', handleLinkClick, true)
+    return () => container.removeEventListener('click', handleLinkClick, true)
+  }, [])
+
+  const handleScrollBack = useCallback(() => {
+    setScrollBackStack(prev => {
+      if (prev.length === 0) return prev
+      const pos = prev[prev.length - 1]
+      const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
+      if (sc) sc.scrollTop = pos
+      return prev.slice(0, -1)
+    })
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -398,7 +457,29 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                 zoomPluginInstance
               ]}
               defaultScale={1}
-              onDocumentLoad={(e) => setTotalPages(e.doc.numPages)}
+              onDocumentLoad={(e) => {
+                setTotalPages(e.doc.numPages)
+                const savedScale = restoreScaleRef.current
+                const savedRatio = restoreScrollRatioRef.current
+                restoreScaleRef.current = null
+                restoreScrollRatioRef.current = null
+
+                if (savedScale !== null || savedRatio !== null) {
+                  setTimeout(() => {
+                    if (savedScale !== null) {
+                      zoomPluginInstance.zoomTo(savedScale)
+                    }
+                    setTimeout(() => {
+                      if (savedRatio !== null) {
+                        const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
+                        if (sc) {
+                          sc.scrollTop = savedRatio * (sc.scrollHeight - sc.clientHeight)
+                        }
+                      }
+                    }, 200)
+                  }, 100)
+                }
+              }}
               onPageChange={(e) => setCurrentPage(e.currentPage + 1)}
             />
           </Worker>
@@ -429,6 +510,19 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
               </svg>
             </button>
 
+            {/* 引用返回按钮 */}
+            {scrollBackStack.length > 0 && (
+              <button
+                onClick={handleScrollBack}
+                className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors"
+                title="返回引用位置"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+                </svg>
+              </button>
+            )}
+
             <div className="w-px h-6 bg-gray-200" />
 
             {/* 缩放控制 */}
@@ -447,11 +541,14 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             </ZoomOut>
 
             <CurrentScale>
-              {(props) => (
-                <span className="text-sm text-gray-600 min-w-[50px] text-center">
-                  {Math.round(props.scale * 100)}%
-                </span>
-              )}
+              {(props) => {
+                scaleRef.current = props.scale
+                return (
+                  <span className="text-sm text-gray-600 min-w-[50px] text-center">
+                    {Math.round(props.scale * 100)}%
+                  </span>
+                )
+              }}
             </CurrentScale>
 
             <ZoomIn>
@@ -474,6 +571,38 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             <span className="text-sm text-gray-600 min-w-[60px] text-center">
               {currentPage} / {totalPages}
             </span>
+
+            {/* 语言切换 */}
+            {(translations.zh || translations.bilingual) && (
+              <>
+                <div className="w-px h-6 bg-gray-200" />
+                <div className="flex items-center gap-0.5">
+                  {(['en', 'zh', 'bilingual'] as const)
+                    .filter(lang => lang === 'en' || translations[lang])
+                    .map(lang => (
+                      <button
+                        key={lang}
+                        onClick={() => {
+                          restoreScaleRef.current = scaleRef.current
+                          const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
+                          if (sc && sc.scrollHeight > sc.clientHeight) {
+                            restoreScrollRatioRef.current = sc.scrollTop / (sc.scrollHeight - sc.clientHeight)
+                          }
+                          setPdfLang(lang)
+                        }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                          pdfLang === lang
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'hover:bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {{ en: 'EN', zh: '中文', bilingual: '双语' }[lang]}
+                      </button>
+                    ))
+                  }
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>

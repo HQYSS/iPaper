@@ -23,9 +23,12 @@ class ProfileAnalysisConfig(BaseSettings):
     max_tokens: int = 4096
 
 
+PROJECT_ROOT = Path(__file__).parent.parent
+
+
 class Settings(BaseSettings):
     """应用配置"""
-    # 数据目录
+    # 数据目录（config.json、user_profile 等敏感/个人数据）
     data_dir: Path = Path.home() / ".ipaper"
     
     # 服务配置
@@ -49,7 +52,7 @@ class Settings(BaseSettings):
     def _ensure_dirs(self):
         """确保必要的目录存在"""
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "papers").mkdir(exist_ok=True)
+        self.papers_dir.mkdir(exist_ok=True)
         (self.data_dir / "user_profile").mkdir(exist_ok=True)
     
     def _load_config_file(self):
@@ -80,8 +83,8 @@ class Settings(BaseSettings):
     
     @property
     def papers_dir(self) -> Path:
-        """论文存储目录"""
-        return self.data_dir / "papers"
+        """论文存储目录（项目内部，Cursor 可直接访问）"""
+        return PROJECT_ROOT / "papers"
     
     @property
     def user_profile_dir(self) -> Path:

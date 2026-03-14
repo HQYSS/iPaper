@@ -61,10 +61,26 @@ async def delete_paper(paper_id: str):
 
 
 @router.get("/{paper_id}/pdf")
-async def get_paper_pdf(paper_id: str):
-    """获取论文 PDF"""
+async def get_paper_pdf(paper_id: str, lang: str = "en"):
+    """获取论文 PDF。lang: en / zh / bilingual"""
+    paper_dir = arxiv_service.get_paper_dir(paper_id)
+
+    filename_map = {
+        "zh": "paper_zh.pdf",
+        "bilingual": "paper_bilingual.pdf",
+    }
+
+    if lang in filename_map:
+        path = paper_dir / filename_map[lang]
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"{lang} PDF 不存在")
+        return FileResponse(
+            path=path,
+            media_type="application/pdf",
+            filename=f"{paper_id}_{lang}.pdf"
+        )
+
     pdf_path = arxiv_service.get_pdf_path(paper_id)
-    
     if not pdf_path:
         raise HTTPException(status_code=404, detail="PDF 不存在")
     
@@ -73,6 +89,16 @@ async def get_paper_pdf(paper_id: str):
         media_type="application/pdf",
         filename=f"{paper_id}.pdf"
     )
+
+
+@router.get("/{paper_id}/translations")
+async def check_translations(paper_id: str):
+    """检查论文有哪些翻译版本"""
+    paper_dir = arxiv_service.get_paper_dir(paper_id)
+    return {
+        "zh": (paper_dir / "paper_zh.pdf").exists(),
+        "bilingual": (paper_dir / "paper_bilingual.pdf").exists(),
+    }
 
 
 @router.get("/{paper_id}/export")

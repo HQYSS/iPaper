@@ -30,5 +30,8 @@ logs/
 # iPaper local data (user-specific, not for repo)
 # ~/.ipaper/ is outside the project, no need to exclude
 
-# Plan files
+# 论文数据（PDF、元信息、对话历史，不入 git）
+papers/
+
+# Cursor
 .cursor/

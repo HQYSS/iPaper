@@ -9,6 +9,8 @@ const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
 
+const cursorMode = new URLSearchParams(window.location.search).get('cursor') === '1'
+
 function App() {
   const { fetchPapers, selectedPaper } = usePaperStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -94,8 +96,8 @@ function App() {
         )}
       </main>
 
-      {/* 右侧：讲解面板（可拖拽调整宽度） */}
-      {selectedPaper && (
+      {/* 右侧：讲解面板（可拖拽调整宽度），Cursor 模式下隐藏 */}
+      {selectedPaper && !cursorMode && (
         <>
           {/* 拖拽分隔条 */}
           <div

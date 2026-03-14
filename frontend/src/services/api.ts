@@ -68,8 +68,22 @@ export async function deletePaper(paperId: string): Promise<void> {
   }
 }
 
-export function getPdfUrl(paperId: string): string {
-  return `${API_BASE}/papers/${paperId}/pdf`
+export type PdfLang = 'en' | 'zh' | 'bilingual'
+
+export function getPdfUrl(paperId: string, lang: PdfLang = 'en'): string {
+  const params = lang !== 'en' ? `?lang=${lang}` : ''
+  return `${API_BASE}/papers/${paperId}/pdf${params}`
+}
+
+export interface TranslationStatus {
+  zh: boolean
+  bilingual: boolean
+}
+
+export async function getTranslations(paperId: string): Promise<TranslationStatus> {
+  const response = await fetch(`${API_BASE}/papers/${paperId}/translations`)
+  if (!response.ok) return { zh: false, bilingual: false }
+  return response.json()
 }
 
 // ============ 对话 API ============
