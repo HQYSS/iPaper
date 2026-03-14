@@ -168,6 +168,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
   const [chatSelectionPosition, setChatSelectionPosition] = useState<{ x: number; y: number } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const isNearBottomRef = useRef(true)
 
   useEffect(() => {
     loadHistory(paperId)
@@ -178,7 +179,21 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
   }, [checkPendingProfileUpdates])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = messagesContainerRef.current
+    if (!container) return
+    const handleScroll = () => {
+      const threshold = 80
+      isNearBottomRef.current =
+        container.scrollHeight - container.scrollTop - container.clientHeight < threshold
+    }
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  useEffect(() => {
+    if (isNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages])
 
   useEffect(() => {
@@ -245,6 +260,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
 
     setInput('')
     setQuotedText(null)
+    isNearBottomRef.current = true
     await sendMessage(paperId, messageContent)
   }
 
