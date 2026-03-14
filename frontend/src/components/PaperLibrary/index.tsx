@@ -1,10 +1,14 @@
 import { useState } from 'react'
-import { Plus, Trash2, FileText, Loader2, Clock, User } from 'lucide-react'
+import { Plus, Trash2, FileText, Loader2, Clock, User, Settings } from 'lucide-react'
 import { usePaperStore } from '../../stores/paperStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
 
-export function PaperLibrary() {
+interface PaperLibraryProps {
+  onOpenSettings?: () => void
+}
+
+export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
   const { papers, selectedPaper, isLoading, addPaper, deletePaper, selectPaper } = usePaperStore()
   const { addToast } = useToastStore()
   const [arxivInput, setArxivInput] = useState('')
@@ -178,6 +182,17 @@ export function PaperLibrary() {
             ))}
           </ul>
         )}
+      </div>
+
+      {/* 底部设置按钮 */}
+      <div className="border-t border-slate-200 dark:border-slate-700 p-3">
+        <button
+          onClick={onOpenSettings}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-300 transition-all"
+        >
+          <Settings className="w-4 h-4" />
+          设置
+        </button>
       </div>
     </div>
   )

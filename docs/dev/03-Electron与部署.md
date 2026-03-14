@@ -87,11 +87,14 @@ iPaper.app/
 └── Contents/
     ├── Info.plist           # macOS 应用描述文件
     ├── MacOS/
-    │   └── iPaper           # Bash 启动脚本
+    │   ├── applet           # AppleScript 生成的 Mach-O 二进制（macOS 启动入口）
+    │   └── iPaper.sh        # Bash 启动脚本（被 applet 调用）
     └── Resources/
 ```
 
-### 启动脚本流程 (`MacOS/iPaper`)
+> **为什么用 AppleScript applet？** macOS Sonoma 不允许通过 Finder/`open` 命令启动以 shell 脚本为可执行文件的 .app bundle（报 `procNotFound -600` 错误）。AppleScript `applet` 是正规的 Mach-O 二进制，macOS 能正常启动。
+
+### 启动脚本流程 (`MacOS/iPaper.sh`)
 
 ```
 cleanup()           # 杀死可能残留的旧进程
@@ -156,6 +159,6 @@ start_electron()    # 启动 Electron（前台运行）
 | Electron → Vite Dev Server | `http://localhost:5173` (开发模式) |
 | Vite Proxy → FastAPI | `/api` → `http://127.0.0.1:3000` |
 | FastAPI → arXiv | `https://arxiv.org/` (下载论文时) |
-| FastAPI → Gemini API | `https://api3.xhub.chat/v1` (LLM 对话时) |
+| FastAPI → OpenRouter API | `https://openrouter.ai/api/v1` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。

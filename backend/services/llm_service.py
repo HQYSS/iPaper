@@ -49,14 +49,14 @@ class LLMService:
         if not self.is_configured():
             raise ValueError("LLM API Key 未配置")
         
-        # 构建消息列表
         api_messages = self._build_messages(messages, pdf_path, selected_text)
         
         response = await self.client.chat.completions.create(
             model=settings.llm.model,
             messages=api_messages,
             temperature=settings.llm.temperature,
-            max_tokens=settings.llm.max_tokens
+            max_tokens=settings.llm.max_tokens,
+            extra_body={"reasoning": {"effort": "medium"}}
         )
         
         return response.choices[0].message.content
@@ -65,15 +65,17 @@ class LLMService:
         self,
         messages: List[ChatMessage],
         pdf_path: Optional[Path] = None,
-        selected_text: Optional[str] = None
+        selected_text: Optional[str] = None,
+        reasoning_collector: Optional[List[str]] = None
     ) -> AsyncGenerator[str, None]:
         """
-        流式对话
+        流式对话。
+        reasoning_collector: 可选的可变列表，用于在流式过程中累积 reasoning 片段。
+        调用方在流结束后通过 ''.join(reasoning_collector) 获取完整 reasoning。
         """
         if not self.is_configured():
             raise ValueError("LLM API Key 未配置")
         
-        # 构建消息列表
         api_messages = self._build_messages(messages, pdf_path, selected_text)
         
         stream = await self.client.chat.completions.create(
@@ -81,12 +83,34 @@ class LLMService:
             messages=api_messages,
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
-            stream=True
+            stream=True,
+            extra_body={"reasoning": {"effort": "medium"}}
         )
         
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            
+            if reasoning_collector is not None:
+                self._collect_reasoning(delta, reasoning_collector)
+            
+            if delta.content:
+                yield delta.content
+    
+    @staticmethod
+    def _collect_reasoning(delta, collector: List[str]):
+        """从流式 delta 中提取 reasoning 文本"""
+        reasoning_str = getattr(delta, 'reasoning', None)
+        if reasoning_str:
+            collector.append(reasoning_str)
+            return
+        reasoning_details = getattr(delta, 'reasoning_details', None)
+        if reasoning_details:
+            for detail in reasoning_details:
+                text = detail.get('text', '') if isinstance(detail, dict) else getattr(detail, 'text', '')
+                if text:
+                    collector.append(text)
     
     def get_system_prompt(self) -> str:
         """获取 system prompt（优先使用用户画像编译版本）"""
@@ -105,23 +129,23 @@ class LLMService:
             {"role": "system", "content": self.get_system_prompt()}
         ]
         
-        # 如果有 PDF，在第一条用户消息中附加
         pdf_attached = False
         
         for msg in messages:
             if msg.role == "user" and pdf_path and not pdf_attached:
-                # 附加 PDF 到第一条用户消息
                 content = self._build_user_content_with_pdf(
                     msg.content, pdf_path, selected_text
                 )
                 api_messages.append({"role": "user", "content": content})
                 pdf_attached = True
             else:
-                # 普通消息
                 content = msg.content
                 if selected_text and msg == messages[-1]:
                     content = f"用户选中了以下文本：\n\n\"{selected_text}\"\n\n{content}"
-                api_messages.append({"role": msg.role, "content": content})
+                msg_dict = {"role": msg.role, "content": content}
+                if msg.role == "assistant" and msg.reasoning:
+                    msg_dict["reasoning"] = msg.reasoning
+                api_messages.append(msg_dict)
         
         return api_messages
     
@@ -132,20 +156,19 @@ class LLMService:
         selected_text: Optional[str] = None
     ) -> list:
         """构建包含 PDF 的用户消息内容"""
-        # 读取 PDF 并转为 base64
         with open(pdf_path, "rb") as f:
             pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
         
         content = [
             {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:application/pdf;base64,{pdf_base64}"
+                "type": "file",
+                "file": {
+                    "filename": pdf_path.name,
+                    "fileData": f"data:application/pdf;base64,{pdf_base64}"
                 }
             }
         ]
         
-        # 添加选中文本（如果有）
         if selected_text:
             text = f"用户选中了以下文本：\n\n\"{selected_text}\"\n\n{text}"
         

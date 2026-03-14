@@ -9,16 +9,16 @@ from pydantic import Field
 
 class LLMConfig(BaseSettings):
     """LLM 配置"""
-    api_base: str = "https://api3.xhub.chat/v1"
+    api_base: str = "https://openrouter.ai/api/v1"
     api_key: str = ""
-    model: str = "gemini-3-pro-preview-thinking"
+    model: str = "google/gemini-3.1-pro-preview"
     temperature: float = 0.7
     max_tokens: int = 8192
 
 
 class ProfileAnalysisConfig(BaseSettings):
     """画像分析专用模型配置（使用 Claude，指令跟随更好）"""
-    model: str = "cu-claude-opus-4-6"
+    model: str = "anthropic/claude-opus-4.6"
     temperature: float = 0.2
     max_tokens: int = 4096
 

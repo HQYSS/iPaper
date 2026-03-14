@@ -3,7 +3,9 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
+import { SettingsModal } from './components/SettingsModal'
 import { usePaperStore } from './stores/paperStore'
+import { getConfig } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
@@ -16,10 +18,16 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     fetchPapers()
+    getConfig().then((config) => {
+      if (!config.llm.api_key_configured) {
+        setSettingsOpen(true)
+      }
+    }).catch(() => {})
   }, [fetchPapers])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -56,7 +64,7 @@ function App() {
         style={{ width: sidebarCollapsed ? 0 : 256 }}
       >
         <div className="w-64 h-full">
-          <PaperLibrary />
+          <PaperLibrary onOpenSettings={() => setSettingsOpen(true)} />
         </div>
       </aside>
 
@@ -123,6 +131,11 @@ function App() {
       {isDragging && (
         <div className="fixed inset-0 z-50 cursor-col-resize" />
       )}
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   )
 }

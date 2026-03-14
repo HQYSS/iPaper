@@ -48,6 +48,7 @@ class ChatMessage(BaseModel):
     """对话消息"""
     role: str = Field(..., description="消息角色: user | assistant")
     content: str = Field(..., description="消息内容")
+    reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
 
 
 class ChatRequest(BaseModel):

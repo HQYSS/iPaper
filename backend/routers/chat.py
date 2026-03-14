@@ -39,18 +39,24 @@ async def chat(paper_id: str, request: ChatRequest):
     
     async def generate():
         full_response = ""
+        reasoning_parts = []
         
         try:
             async for chunk in llm_service.chat_stream(
                 messages=history,
                 pdf_path=pdf_path,
-                selected_text=request.selected_text
+                selected_text=request.selected_text,
+                reasoning_collector=reasoning_parts
             ):
                 full_response += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
             
-            # 保存对话历史
-            assistant_message = ChatMessage(role="assistant", content=full_response)
+            reasoning = ''.join(reasoning_parts) if reasoning_parts else None
+            assistant_message = ChatMessage(
+                role="assistant",
+                content=full_response,
+                reasoning=reasoning
+            )
             history.append(assistant_message)
             storage_service.save_chat_history(paper_id, history)
             
