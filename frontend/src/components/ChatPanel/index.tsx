@@ -151,6 +151,37 @@ function cleanSelectedText(raw: string): string {
     .trim()
 }
 
+function stripMarkdownForMatch(line: string): string {
+  return line
+    .replace(/\$\$[\s\S]*?\$\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
+    .replace(/\$[^$]*?\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/[\[\]()#>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function findRawQuote(renderedText: string, rawMarkdown: string): string {
+  const clean = cleanSelectedText(renderedText)
+  if (clean.length < 4) return clean
+
+  const paragraphs = rawMarkdown.split(/\n{2,}/)
+  const matched: string[] = []
+
+  for (const para of paragraphs) {
+    const stripped = stripMarkdownForMatch(para)
+    const words = clean.split(/\s+/).filter(w => w.length >= 2)
+    const hitCount = words.filter(w => stripped.includes(w)).length
+    if (words.length > 0 && hitCount / words.length >= 0.5) {
+      matched.push(para.trim())
+    }
+  }
+
+  return matched.length > 0 ? matched.join('\n\n') : clean
+}
+
 export function ChatPanel({ paperId }: ChatPanelProps) {
   const {
     messages,
@@ -215,12 +246,21 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
 
       setTimeout(() => {
         const selection = window.getSelection()
-        const text = cleanSelectedText(selection?.toString() || '')
+        const rawText = selection?.toString() || ''
+        const text = cleanSelectedText(rawText)
         if (text && text.length > 0) {
           const range = selection?.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
           if (rect && container.contains(selection?.anchorNode as Node)) {
-            setChatSelectedText(text)
+            const msgEl = (selection?.anchorNode as HTMLElement)?.closest?.('[data-message-index]')
+              || (selection?.anchorNode?.parentElement)?.closest?.('[data-message-index]')
+            const msgIndex = msgEl ? parseInt(msgEl.getAttribute('data-message-index') || '', 10) : -1
+            const { messages: msgs } = useChatStore.getState()
+            let quoteText = text
+            if (msgIndex >= 0 && msgs[msgIndex]?.role === 'assistant') {
+              quoteText = findRawQuote(rawText, msgs[msgIndex].content)
+            }
+            setChatSelectedText(quoteText)
             setChatSelectionPosition({
               x: rect.left + rect.width / 2,
               y: rect.top - 10
@@ -354,6 +394,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
               message.role === 'user' ? (
                 <div
                   key={index}
+                  data-message-index={index}
                   className="border-l-[3px] border-blue-400 dark:border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 mx-6 my-4 px-4 py-2.5 rounded-r-md"
                 >
                   {(() => {
@@ -367,7 +408,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
                   })()}
                 </div>
               ) : (
-                <div key={index} className="px-8 py-6">
+                <div key={index} data-message-index={index} className="px-8 py-6">
                   <div className="prose dark:prose-invert max-w-none
                     prose-p:text-[15px] prose-p:leading-[1.8] prose-p:my-3
                     prose-headings:font-semibold
