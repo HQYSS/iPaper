@@ -116,32 +116,30 @@ function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove: () => void
   const needsExpand = quote.text.length > 80
 
   return (
-    <div className="rounded-xl border border-indigo-200 dark:border-indigo-800/50 bg-gradient-to-r from-indigo-50/80 to-purple-50/80 dark:from-indigo-950/30 dark:to-purple-950/30 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-indigo-100 dark:border-indigo-800/30">
-        {isPdf ? (
-          <FileText className="w-3 h-3 text-indigo-500" />
-        ) : (
-          <MessageSquare className="w-3 h-3 text-purple-500" />
-        )}
-        <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
-          {isPdf ? '论文' : '对话'}
-        </span>
-        <div className="flex-1" />
-        <button
-          onClick={(e) => { e.stopPropagation(); onRemove() }}
-          className="p-0.5 rounded-md text-indigo-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
-        >
-          <X className="w-3 h-3" />
-        </button>
-      </div>
+    <div className={`flex rounded-lg overflow-hidden ${
+      isPdf
+        ? 'border-l-[3px] border-l-sky-400 bg-sky-50/60 dark:bg-sky-950/20'
+        : 'border-l-[3px] border-l-purple-400 bg-purple-50/60 dark:bg-purple-950/20'
+    }`}>
       <div
-        className={needsExpand ? 'cursor-pointer' : undefined}
+        className={`flex-1 flex items-start gap-2 px-3 py-2 ${needsExpand ? 'cursor-pointer' : ''}`}
         onClick={() => needsExpand && setExpanded(!expanded)}
       >
-        <p className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+        {isPdf ? (
+          <FileText className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-sky-400" />
+        ) : (
+          <MessageSquare className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-purple-400" />
+        )}
+        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
           {expanded ? quote.text : truncated}
         </p>
       </div>
+      <button
+        onClick={(e) => { e.stopPropagation(); onRemove() }}
+        className="px-2 flex-shrink-0 text-slate-300 hover:text-red-400 transition-colors"
+      >
+        <X className="w-3 h-3" />
+      </button>
     </div>
   )
 }
@@ -185,7 +183,7 @@ const parseMessageWithQuote = (content: string) => {
 
 function cleanSelectedText(raw: string): string {
   return raw
-    .replace(/[\uFFFD\uE000-\uF8FF\uFE00-\uFE0F]/g, '')
+    .replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }

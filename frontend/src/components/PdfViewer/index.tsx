@@ -307,7 +307,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       setTimeout(() => {
         const selection = window.getSelection()
         const raw = selection?.toString() || ''
-        const text = raw.replace(/[\uFFFD\uE000-\uF8FF\uFE00-\uFE0F]/g, '').replace(/\s+/g, ' ').trim()
+        const text = raw.replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '').replace(/\s+/g, ' ').trim()
         if (text && text.length > 0) {
           const range = selection?.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
@@ -333,11 +333,11 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       setSelectionPosition(null)
     }
 
-    container.addEventListener('mouseup', handleMouseUp)
-    container.addEventListener('mousedown', handleMouseDown)
+    container.addEventListener('mouseup', handleMouseUp, true)
+    container.addEventListener('mousedown', handleMouseDown, true)
     return () => {
-      container.removeEventListener('mouseup', handleMouseUp)
-      container.removeEventListener('mousedown', handleMouseDown)
+      container.removeEventListener('mouseup', handleMouseUp, true)
+      container.removeEventListener('mousedown', handleMouseDown, true)
     }
   }, [])
 
