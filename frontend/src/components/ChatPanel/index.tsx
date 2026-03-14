@@ -123,9 +123,9 @@ const CollapsibleQuote = ({ quote, source }: { quote: string; source: 'pdf' | 'c
       </div>
       <div className="mt-1 pl-4">
         {expanded ? (
-          <span className="whitespace-pre-wrap">【{quote}】</span>
+          <span className="whitespace-pre-wrap">{quote}</span>
         ) : (
-          <span className="text-opacity-70">【{truncatedQuote}】</span>
+          <span className="text-opacity-70">{truncatedQuote}</span>
         )}
       </div>
     </div>
@@ -142,6 +142,13 @@ const parseMessageWithQuote = (content: string) => {
     }
   }
   return { source: null, quote: null, question: content }
+}
+
+function cleanSelectedText(raw: string): string {
+  return raw
+    .replace(/[\uFFFD\uE000-\uF8FF\uFE00-\uFE0F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function ChatPanel({ paperId }: ChatPanelProps) {
@@ -208,7 +215,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
 
       setTimeout(() => {
         const selection = window.getSelection()
-        const text = selection?.toString().trim()
+        const text = cleanSelectedText(selection?.toString() || '')
         if (text && text.length > 0) {
           const range = selection?.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
@@ -401,7 +408,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
                   <span className="text-xs text-muted-foreground">
                     {q.source === 'pdf' ? '引用论文内容：' : '引用对话内容：'}
                   </span>
-                  <p className="text-xs mt-1 line-clamp-2">【{q.text}】</p>
+                  <p className="text-xs mt-1 line-clamp-2">{q.text}</p>
                 </div>
                 <button
                   onClick={() => removeQuote(i)}

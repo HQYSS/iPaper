@@ -306,7 +306,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       
       setTimeout(() => {
         const selection = window.getSelection()
-        const text = selection?.toString().trim()
+        const raw = selection?.toString() || ''
+        const text = raw.replace(/[\uFFFD\uE000-\uF8FF\uFE00-\uFE0F]/g, '').replace(/\s+/g, ' ').trim()
         if (text && text.length > 0) {
           const range = selection?.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
