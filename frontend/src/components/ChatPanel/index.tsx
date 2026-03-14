@@ -190,19 +190,14 @@ function cleanSelectedText(raw: string): string {
     .trim()
 }
 
-function stripLine(line: string): string {
+function getLineWords(line: string): string[] {
   return line
-    .replace(/^\s*#{1,6}\s+/, '')
-    .replace(/^\s*[-*+]\s+/, '')
-    .replace(/^\s*\d+\.\s+/, '')
     .replace(/\$\$[\s\S]*?\$\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
     .replace(/\$[^$]*?\$/g, (m) => m.replace(/[\\\${}^_]/g, ' '))
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/\*(.+?)\*/g, '$1')
-    .replace(/`(.+?)`/g, '$1')
-    .replace(/[>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+    .replace(/\*\*/g, '')
+    .replace(/[`#>*]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 2)
 }
 
 function findRawQuote(renderedText: string, rawMarkdown: string): string {
@@ -210,52 +205,21 @@ function findRawQuote(renderedText: string, rawMarkdown: string): string {
   if (clean.length < 4) return clean
 
   const lines = rawMarkdown.split('\n')
-  const strippedLines = lines.map(stripLine)
+  let firstMatch = -1
+  let lastMatch = -1
 
-  const concatMap: { lineIdx: number; charStart: number }[] = []
-  let concat = ''
-  for (let i = 0; i < strippedLines.length; i++) {
-    if (strippedLines[i].length === 0) continue
-    if (concat.length > 0) {
-      concatMap.push({ lineIdx: -1, charStart: concat.length })
-      concat += ' '
+  for (let i = 0; i < lines.length; i++) {
+    const words = getLineWords(lines[i])
+    if (words.length === 0) continue
+    const hits = words.filter(w => clean.includes(w)).length
+    if (hits / words.length >= 0.6) {
+      if (firstMatch === -1) firstMatch = i
+      lastMatch = i
     }
-    const start = concat.length
-    concat += strippedLines[i]
-    concatMap.push({ lineIdx: i, charStart: start })
   }
 
-  const pos = concat.indexOf(clean)
-  if (pos === -1) {
-    const words = clean.split(/\s+/).filter(w => w.length >= 2)
-    if (words.length === 0) return clean
-    let bestStart = 0, bestEnd = 0, bestScore = 0
-    for (let i = 0; i < lines.length; i++) {
-      for (let j = i; j < Math.min(i + 6, lines.length); j++) {
-        const block = strippedLines.slice(i, j + 1).join(' ')
-        const hits = words.filter(w => block.includes(w)).length
-        const score = hits / words.length
-        if (score > bestScore) {
-          bestScore = score
-          bestStart = i
-          bestEnd = j
-        }
-      }
-    }
-    if (bestScore >= 0.5) {
-      return lines.slice(bestStart, bestEnd + 1).join('\n').trim()
-    }
-    return clean
-  }
-
-  const endPos = pos + clean.length
-  let firstLine = 0, lastLine = lines.length - 1
-  for (const entry of concatMap) {
-    if (entry.lineIdx >= 0 && entry.charStart <= pos) firstLine = entry.lineIdx
-    if (entry.lineIdx >= 0 && entry.charStart < endPos) lastLine = entry.lineIdx
-  }
-
-  return lines.slice(firstLine, lastLine + 1).join('\n').trim()
+  if (firstMatch === -1) return clean
+  return lines.slice(firstMatch, lastMatch + 1).join('\n').trim()
 }
 
 export function ChatPanel({ paperId }: ChatPanelProps) {
