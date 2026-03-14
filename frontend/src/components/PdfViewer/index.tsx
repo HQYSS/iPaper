@@ -185,7 +185,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const restoreScrollRatioRef = useRef<number | null>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
 
-  const setQuotedText = useChatStore((state) => state.setQuotedText)
+  const addQuote = useChatStore((state) => state.addQuote)
 
   const searchPluginInstance = searchPlugin()
   const bookmarkPluginInstance = bookmarkPlugin()
@@ -342,7 +342,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
   const handleQuoteSelection = () => {
     if (selectedText) {
-      setQuotedText(selectedText, 'pdf')
+      addQuote(selectedText, 'pdf')
       setSelectedText('')
       setSelectionPosition(null)
       window.getSelection()?.removeAllRanges()

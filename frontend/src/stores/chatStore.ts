@@ -1,7 +1,12 @@
 import { create } from 'zustand'
 import * as api from '../services/api'
 
-type QuoteSource = 'pdf' | 'chat'
+export type QuoteSource = 'pdf' | 'chat'
+
+export interface QuoteItem {
+  text: string
+  source: QuoteSource
+}
 
 interface ChatStore {
   messages: api.ChatMessage[]
@@ -9,16 +14,17 @@ interface ChatStore {
   isStreaming: boolean
   error: string | null
   currentPaperId: string | null
-  quotedText: string | null
-  quoteSource: QuoteSource | null
+  quotes: QuoteItem[]
 
   pendingProfileUpdate: api.PendingProfileUpdate | null
 
   loadHistory: (paperId: string) => Promise<void>
-  sendMessage: (paperId: string, message: string, selectedText?: string) => Promise<void>
+  sendMessage: (paperId: string, message: string, quotes?: QuoteItem[]) => Promise<void>
   clearHistory: (paperId: string) => Promise<void>
   clearError: () => void
-  setQuotedText: (text: string | null, source?: QuoteSource) => void
+  addQuote: (text: string, source: QuoteSource) => void
+  removeQuote: (index: number) => void
+  clearQuotes: () => void
 
   triggerProfileAnalysis: (paperId: string) => Promise<void>
   isAnalyzingProfile: boolean
@@ -35,8 +41,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   error: null,
   currentPaperId: null,
-  quotedText: null,
-  quoteSource: null,
+  quotes: [],
   pendingProfileUpdate: null,
   isAnalyzingProfile: false,
 
@@ -63,7 +68,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  sendMessage: async (paperId: string, message: string, selectedText?: string) => {
+  sendMessage: async (paperId: string, message: string, quotes?: QuoteItem[]) => {
     const { messages } = get()
 
     const userMessage: api.ChatMessage = { role: 'user', content: message }
@@ -73,7 +78,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ messages: [...messages, userMessage, assistantMessage] })
 
     try {
-      for await (const data of api.sendMessage(paperId, message, selectedText)) {
+      for await (const data of api.sendMessage(paperId, message, quotes)) {
         if (data.type === 'chunk' && data.content) {
           set((state) => {
             const newMessages = [...state.messages]
@@ -111,8 +116,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ error: null })
   },
 
-  setQuotedText: (text: string | null, source?: QuoteSource) => {
-    set({ quotedText: text, quoteSource: source || null })
+  addQuote: (text: string, source: QuoteSource) => {
+    set((state) => ({ quotes: [...state.quotes, { text, source }] }))
+  },
+
+  removeQuote: (index: number) => {
+    set((state) => ({ quotes: state.quotes.filter((_, i) => i !== index) }))
+  },
+
+  clearQuotes: () => {
+    set({ quotes: [] })
   },
 
   triggerProfileAnalysis: async (paperId: string) => {

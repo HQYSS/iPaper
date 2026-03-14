@@ -9,7 +9,7 @@ from typing import AsyncGenerator, Optional, List
 from openai import AsyncOpenAI
 
 from config import settings
-from models import ChatMessage
+from models import ChatMessage, Quote
 from services.user_profile_service import user_profile_service
 
 
@@ -41,7 +41,7 @@ class LLMService:
         self,
         messages: List[ChatMessage],
         pdf_path: Optional[Path] = None,
-        selected_text: Optional[str] = None
+        quotes: Optional[List[Quote]] = None
     ) -> str:
         """
         非流式对话
@@ -49,7 +49,7 @@ class LLMService:
         if not self.is_configured():
             raise ValueError("LLM API Key 未配置")
         
-        api_messages = self._build_messages(messages, pdf_path, selected_text)
+        api_messages = self._build_messages(messages, pdf_path, quotes)
         
         response = await self.client.chat.completions.create(
             model=settings.llm.model,
@@ -65,7 +65,7 @@ class LLMService:
         self,
         messages: List[ChatMessage],
         pdf_path: Optional[Path] = None,
-        selected_text: Optional[str] = None,
+        quotes: Optional[List[Quote]] = None,
         reasoning_collector: Optional[List[str]] = None
     ) -> AsyncGenerator[str, None]:
         """
@@ -76,7 +76,7 @@ class LLMService:
         if not self.is_configured():
             raise ValueError("LLM API Key 未配置")
         
-        api_messages = self._build_messages(messages, pdf_path, selected_text)
+        api_messages = self._build_messages(messages, pdf_path, quotes)
         
         stream = await self.client.chat.completions.create(
             model=settings.llm.model,
@@ -118,11 +118,21 @@ class LLMService:
             return user_profile_service.compile_system_prompt()
         return FALLBACK_SYSTEM_PROMPT
 
+    @staticmethod
+    def _format_quotes(quotes: List[Quote]) -> str:
+        """将引用列表格式化为干净的文本，带来源标注"""
+        source_labels = {"pdf": "来自论文", "chat": "来自对话"}
+        parts = []
+        for q in quotes:
+            label = source_labels.get(q.source, q.source)
+            parts.append(f"[{label}]\n\"{q.text}\"")
+        return "用户引用了以下内容：\n\n" + "\n\n".join(parts)
+
     def _build_messages(
         self,
         messages: List[ChatMessage],
         pdf_path: Optional[Path] = None,
-        selected_text: Optional[str] = None
+        quotes: Optional[List[Quote]] = None
     ) -> list:
         """构建 API 消息列表"""
         api_messages = [
@@ -134,15 +144,15 @@ class LLMService:
         for msg in messages:
             if msg.role == "user" and pdf_path and not pdf_attached:
                 content = self._build_user_content_with_pdf(
-                    msg.content, pdf_path, selected_text
+                    msg.content, pdf_path, quotes if msg == messages[-1] else None
                 )
                 api_messages.append({"role": "user", "content": content})
                 pdf_attached = True
             else:
-                content = msg.content
-                if selected_text and msg == messages[-1]:
-                    content = f"用户选中了以下文本：\n\n\"{selected_text}\"\n\n{content}"
-                msg_dict = {"role": msg.role, "content": content}
+                text = msg.content
+                if quotes and msg == messages[-1] and msg.role == "user":
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                msg_dict = {"role": msg.role, "content": text}
                 if msg.role == "assistant" and msg.reasoning:
                     msg_dict["reasoning"] = msg.reasoning
                 api_messages.append(msg_dict)
@@ -153,7 +163,7 @@ class LLMService:
         self,
         text: str,
         pdf_path: Path,
-        selected_text: Optional[str] = None
+        quotes: Optional[List[Quote]] = None
     ) -> list:
         """构建包含 PDF 的用户消息内容"""
         with open(pdf_path, "rb") as f:
@@ -169,8 +179,8 @@ class LLMService:
             }
         ]
         
-        if selected_text:
-            text = f"用户选中了以下文本：\n\n\"{selected_text}\"\n\n{text}"
+        if quotes:
+            text = f"{self._format_quotes(quotes)}\n\n{text}"
         
         content.append({
             "type": "text",

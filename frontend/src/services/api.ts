@@ -115,10 +115,15 @@ export async function clearChatHistory(paperId: string): Promise<void> {
   }
 }
 
+export interface QuoteInput {
+  text: string
+  source: string
+}
+
 export async function* sendMessage(
   paperId: string,
   message: string,
-  selectedText?: string
+  quotes?: QuoteInput[]
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
   const response = await fetch(`${API_BASE}/chat/${paperId}`, {
     method: 'POST',
@@ -127,7 +132,7 @@ export async function* sendMessage(
     },
     body: JSON.stringify({
       message,
-      selected_text: selectedText,
+      quotes: quotes && quotes.length > 0 ? quotes : undefined,
     }),
   })
 

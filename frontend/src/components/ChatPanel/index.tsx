@@ -152,9 +152,10 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
     loadHistory,
     sendMessage,
     clearHistory,
-    quotedText,
-    quoteSource,
-    setQuotedText,
+    quotes,
+    addQuote,
+    removeQuote,
+    clearQuotes,
     pendingProfileUpdate,
     isAnalyzingProfile,
     triggerProfileAnalysis,
@@ -243,7 +244,7 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
 
   const handleQuoteChatSelection = () => {
     if (chatSelectedText) {
-      setQuotedText(chatSelectedText, 'chat')
+      addQuote(chatSelectedText, 'chat')
       setChatSelectedText('')
       setChatSelectionPosition(null)
       window.getSelection()?.removeAllRanges()
@@ -253,15 +254,13 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return
 
-    let messageContent = input.trim()
-    if (quotedText && quoteSource) {
-      messageContent = `<<<QUOTE:${quoteSource}>>>${quotedText}<<<END_QUOTE>>>\n\n${messageContent}`
-    }
+    const messageContent = input.trim()
+    const currentQuotes = quotes.length > 0 ? [...quotes] : undefined
 
     setInput('')
-    setQuotedText(null)
+    clearQuotes()
     isNearBottomRef.current = true
-    await sendMessage(paperId, messageContent)
+    await sendMessage(paperId, messageContent, currentQuotes)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -394,20 +393,24 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
       {/* 输入框 */}
       <div className="p-4 border-t border-border">
         {/* 引用块显示 */}
-        {quotedText && (
-          <div className="mb-2 p-2 bg-muted rounded-md text-sm flex items-start gap-2">
-            <div className="flex-1 overflow-hidden">
-              <span className="text-xs text-muted-foreground">
-                {quoteSource === 'pdf' ? '引用论文内容：' : '引用对话内容：'}
-              </span>
-              <p className="text-xs mt-1 line-clamp-2">【{quotedText}】</p>
-            </div>
-            <button
-              onClick={() => setQuotedText(null)}
-              className="p-1 hover:bg-accent rounded"
-            >
-              <X className="w-3 h-3" />
-            </button>
+        {quotes.length > 0 && (
+          <div className="mb-2 space-y-1.5">
+            {quotes.map((q, i) => (
+              <div key={i} className="p-2 bg-muted rounded-md text-sm flex items-start gap-2">
+                <div className="flex-1 overflow-hidden">
+                  <span className="text-xs text-muted-foreground">
+                    {q.source === 'pdf' ? '引用论文内容：' : '引用对话内容：'}
+                  </span>
+                  <p className="text-xs mt-1 line-clamp-2">【{q.text}】</p>
+                </div>
+                <button
+                  onClick={() => removeQuote(i)}
+                  className="p-1 hover:bg-accent rounded flex-shrink-0"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 

@@ -45,7 +45,7 @@ async def chat(paper_id: str, request: ChatRequest):
             async for chunk in llm_service.chat_stream(
                 messages=history,
                 pdf_path=pdf_path,
-                selected_text=request.selected_text,
+                quotes=request.quotes,
                 reasoning_collector=reasoning_parts
             ):
                 full_response += chunk

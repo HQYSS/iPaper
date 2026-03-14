@@ -51,10 +51,16 @@ class ChatMessage(BaseModel):
     reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
 
 
+class Quote(BaseModel):
+    """引用片段"""
+    text: str = Field(..., description="引用的文本内容")
+    source: str = Field(..., description="引用来源: pdf | chat")
+
+
 class ChatRequest(BaseModel):
     """对话请求"""
     message: str = Field(..., description="用户消息")
-    selected_text: Optional[str] = Field(None, description="用户选中的文本")
+    quotes: Optional[List[Quote]] = Field(None, description="用户引用的文本片段")
     context: Optional[dict] = Field(None, description="上下文信息（页码、章节等）")
 
 
