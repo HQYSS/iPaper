@@ -164,7 +164,7 @@ class LLMService:
                 "type": "file",
                 "file": {
                     "filename": pdf_path.name,
-                    "fileData": f"data:application/pdf;base64,{pdf_base64}"
+                    "file_data": f"data:application/pdf;base64,{pdf_base64}"
                 }
             }
         ]
