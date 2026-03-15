@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
@@ -16,6 +16,7 @@ const cursorMode = new URLSearchParams(window.location.search).get('cursor') ===
 function App() {
   const { fetchPapers, selectedPaper } = usePaperStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -29,6 +30,21 @@ function App() {
       }
     }).catch(() => {})
   }, [fetchPapers])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (e.key === 'b') {
+        e.preventDefault()
+        setSidebarCollapsed(prev => !prev)
+      } else if (e.key === 'l') {
+        e.preventDefault()
+        setChatCollapsed(prev => !prev)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -104,26 +120,38 @@ function App() {
         )}
       </main>
 
-      {/* 右侧：讲解面板（可拖拽调整宽度），Cursor 模式下隐藏 */}
+      {/* 右侧：讲解面板（可折叠、可拖拽调整宽度），Cursor 模式下隐藏 */}
       {selectedPaper && !cursorMode && (
         <>
-          {/* 拖拽分隔条 */}
-          <div
-            onMouseDown={handleMouseDown}
-            className="flex-shrink-0 w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors relative group"
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-          </div>
+          {chatCollapsed ? (
+            <button
+              onClick={() => setChatCollapsed(false)}
+              className="flex-shrink-0 w-8 flex items-center justify-center border-l border-border hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+              title="展开讲解面板"
+            >
+              <PanelRightOpen className="w-4 h-4" />
+            </button>
+          ) : (
+            <>
+              {/* 拖拽分隔条 */}
+              <div
+                onMouseDown={handleMouseDown}
+                className="flex-shrink-0 w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors relative group"
+              >
+                <div className="absolute inset-y-0 -left-1 -right-1" />
+              </div>
 
-          <aside
-            className="flex-shrink-0 overflow-hidden"
-            style={{
-              width: chatWidth,
-              pointerEvents: isDragging ? 'none' : undefined,
-            }}
-          >
-            <ChatPanel paperId={selectedPaper.arxiv_id} />
-          </aside>
+              <aside
+                className="flex-shrink-0 overflow-hidden"
+                style={{
+                  width: chatWidth,
+                  pointerEvents: isDragging ? 'none' : undefined,
+                }}
+              >
+                <ChatPanel paperId={selectedPaper.arxiv_id} onCollapse={() => setChatCollapsed(true)} />
+              </aside>
+            </>
+          )}
         </>
       )}
 

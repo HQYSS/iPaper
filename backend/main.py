@@ -36,15 +36,6 @@ async def root():
     return {"status": "ok", "message": "iPaper API is running"}
 
 
-@app.get("/api/config")
-async def get_config():
-    """获取配置状态"""
-    return {
-        "data_dir": str(settings.data_dir),
-        "llm_configured": bool(settings.llm.api_key),
-        "model": settings.llm.model
-    }
-
 
 if __name__ == "__main__":
     import uvicorn

@@ -30,6 +30,7 @@ function SearchBox({
   const [matchCount, setMatchCount] = useState(0)
   const [currentMatch, setCurrentMatch] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const cleanupRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -39,31 +40,79 @@ function SearchBox({
   }, [])
 
   const scrollCurrentMatchToCenter = useCallback(() => {
-    setTimeout(() => {
-      const el = document.querySelector('.rpv-search__highlight--current') as HTMLElement
-      if (!el) return
+    cleanupRef.current?.()
 
-      // 从高亮元素向上查找实际可滚动的容器
-      let scrollContainer: HTMLElement | null = el.parentElement
-      while (scrollContainer) {
-        const { overflow, overflowY } = getComputedStyle(scrollContainer)
-        if (
-          (overflow === 'auto' || overflow === 'scroll' ||
-           overflowY === 'auto' || overflowY === 'scroll') &&
-          scrollContainer.scrollHeight > scrollContainer.clientHeight
-        ) {
-          break
-        }
-        scrollContainer = scrollContainer.parentElement
+    const scrollContainer = document.querySelector('.rpv-core__inner-pages') as HTMLElement
+    if (!scrollContainer) return
+
+    scrollContainer.style.transition = 'opacity 0.05s'
+    scrollContainer.style.opacity = '0'
+
+    const fadeIn = () => {
+      requestAnimationFrame(() => {
+        scrollContainer.style.transition = 'opacity 0.08s'
+        scrollContainer.style.opacity = '1'
+        setTimeout(() => { scrollContainer.style.transition = '' }, 100)
+      })
+    }
+
+    let pollTimer: ReturnType<typeof setInterval>
+    let safetyTimer: ReturnType<typeof setTimeout>
+    let lastScrollTop = scrollContainer.scrollTop
+    let stableCount = 0
+
+    const cleanup = () => {
+      clearInterval(pollTimer)
+      clearTimeout(safetyTimer)
+      cleanupRef.current = null
+    }
+
+    const tryCenter = () => {
+      const currentScrollTop = scrollContainer.scrollTop
+      if (currentScrollTop !== lastScrollTop) {
+        lastScrollTop = currentScrollTop
+        stableCount = 0
+        return
       }
 
-      if (!scrollContainer) return
+      stableCount++
+      if (stableCount < 2) return
+
+      const all = document.querySelectorAll('.rpv-search__highlight--current')
+      if (all.length === 0) return
+
+      const containerRect = scrollContainer.getBoundingClientRect()
+
+      let el: Element | null = null
+      let bestDist = Infinity
+      all.forEach(e => {
+        const rect = e.getBoundingClientRect()
+        if (rect.top < containerRect.bottom && rect.bottom > containerRect.top) {
+          const dist = Math.abs(rect.top + rect.height / 2 - (containerRect.top + containerRect.height / 2))
+          if (dist < bestDist) { bestDist = dist; el = e }
+        }
+      })
+
+      if (!el) {
+        stableCount = 0
+        return
+      }
 
       const elRect = el.getBoundingClientRect()
-      const containerRect = scrollContainer.getBoundingClientRect()
       const offset = elRect.top - containerRect.top - (scrollContainer.clientHeight / 2) + (elRect.height / 2)
       scrollContainer.scrollTop += offset
-    }, 200)
+
+      cleanup()
+      fadeIn()
+    }
+
+    cleanupRef.current = cleanup
+    pollTimer = setInterval(tryCenter, 80)
+
+    safetyTimer = setTimeout(() => {
+      cleanup()
+      fadeIn()
+    }, 8000)
   }, [])
 
   const goToNext = useCallback(() => {

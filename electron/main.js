@@ -83,7 +83,6 @@ function createWindow() {
   // 开发模式加载 Vite 开发服务器
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
-    mainWindow.webContents.openDevTools()
   } else {
     // 生产模式加载打包后的文件
     mainWindow.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'))
