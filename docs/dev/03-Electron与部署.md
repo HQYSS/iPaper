@@ -115,8 +115,9 @@ start_electron()    # 启动 Electron（前台运行）
   - npm: `/opt/homebrew/bin/npm`
   - node: `/opt/homebrew/bin/node`
 - 日志输出到 `项目根目录/logs/`
+- **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
 
-**注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。
+**注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。`start-cursor-mode.sh` 也使用相同的 PID 文件 + 端口清理机制。
 
 ---
 
