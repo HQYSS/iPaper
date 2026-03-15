@@ -159,8 +159,12 @@ export async function* sendMessage(
 
     for (const line of lines) {
       if (line.startsWith('data: ')) {
-        const data = JSON.parse(line.slice(6))
-        yield data
+        try {
+          const data = JSON.parse(line.slice(6))
+          yield data
+        } catch {
+          // 跳过格式异常的 SSE 行
+        }
       }
     }
   }

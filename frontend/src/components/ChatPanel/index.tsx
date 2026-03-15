@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Trash2, Loader2, X, ChevronDown, ChevronRight, UserCog, Check, RefreshCw, FileText, MessageSquare } from 'lucide-react'
+import { Send, Trash2, Loader2, X, ChevronDown, ChevronRight, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -8,6 +8,7 @@ import { useChatStore } from '../../stores/chatStore'
 
 interface ChatPanelProps {
   paperId: string
+  onCollapse?: () => void
 }
 
 import type { PendingProfileUpdate } from '../../services/api'
@@ -188,7 +189,7 @@ function cleanSelectedText(raw: string): string {
     .trim()
 }
 
-export function ChatPanel({ paperId }: ChatPanelProps) {
+export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
   const {
     messages,
     isLoading,
@@ -200,6 +201,8 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
     addQuote,
     removeQuote,
     clearQuotes,
+    error,
+    clearError,
     pendingProfileUpdate,
     isAnalyzingProfile,
     triggerProfileAnalysis,
@@ -318,7 +321,18 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
     <div className="h-full flex flex-col relative">
       {/* 标题栏 */}
       <div className="p-4 border-b border-border flex items-center justify-between">
-        <h2 className="font-semibold">AI 助手</h2>
+        <div className="flex items-center gap-1">
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+              title="收起讲解面板"
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          )}
+          <h2 className="font-semibold">AI 助手</h2>
+        </div>
         <div className="flex items-center gap-1">
           <button
             onClick={() => triggerProfileAnalysis(paperId)}
@@ -430,6 +444,18 @@ export function ChatPanel({ paperId }: ChatPanelProps) {
                 </div>
               )
             )}
+          </div>
+        )}
+        {error && (
+          <div className="mx-6 my-4 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+            <p className="flex-1 text-sm text-red-700 dark:text-red-300">{error}</p>
+            <button
+              onClick={clearError}
+              className="flex-shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
         <div ref={messagesEndRef} />

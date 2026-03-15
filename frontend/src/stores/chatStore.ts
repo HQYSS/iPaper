@@ -91,7 +91,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         } else if (data.type === 'done') {
           set({ isStreaming: false })
         } else if (data.type === 'error') {
-          set({ error: data.message || 'Unknown error', isStreaming: false })
+          set((state) => ({
+            error: data.message || 'Unknown error',
+            isStreaming: false,
+            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
+          }))
         }
       }
     } catch (error) {

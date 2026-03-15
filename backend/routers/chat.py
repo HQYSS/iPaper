@@ -4,6 +4,7 @@
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from openai import AuthenticationError, RateLimitError, APIConnectionError, APIStatusError
 
 from models import ChatRequest, ChatMessage, ChatHistory
 from services.llm_service import llm_service
@@ -62,8 +63,16 @@ async def chat(paper_id: str, request: ChatRequest):
             
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
             
+        except AuthenticationError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'API Key 无效或已过期，请在设置中检查'})}\n\n"
+        except RateLimitError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'API 额度不足或请求过于频繁，请稍后再试'})}\n\n"
+        except APIConnectionError:
+            yield f"data: {json.dumps({'type': 'error', 'message': '无法连接到 LLM 服务，请检查网络'})}\n\n"
+        except APIStatusError as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'LLM 服务返回错误 ({e.status_code})，请稍后再试'})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': f'AI 服务出现错误：{e}'})}\n\n"
     
     return StreamingResponse(
         generate(),
