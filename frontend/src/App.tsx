@@ -12,6 +12,8 @@ const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
 const CHAT_WIDTH_STORAGE_KEY = 'ipaper.chatPanelWidthRatio'
 const THEME_MODE_STORAGE_KEY = 'ipaper.themeMode'
+const SIDEBAR_WIDTH = 256
+const SIDEBAR_HOVER_TRIGGER_WIDTH = 12
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -51,12 +53,14 @@ function getStoredChatWidthRatio() {
 function App() {
   const { fetchPapers, selectedPaper } = usePaperStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode())
   const containerRef = useRef<HTMLDivElement>(null)
+  const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
 
   useEffect(() => {
     fetchPapers()
@@ -73,6 +77,7 @@ function App() {
       if (e.key === 'b') {
         e.preventDefault()
         setSidebarCollapsed(prev => !prev)
+        setSidebarHoverOpen(false)
       } else if (e.key === 'l') {
         e.preventDefault()
         setChatCollapsed(prev => !prev)
@@ -149,37 +154,62 @@ function App() {
     applyThemeMode(nextThemeMode, window.matchMedia('(prefers-color-scheme: dark)').matches)
   }, [])
 
+  useEffect(() => {
+    if (!selectedPaper) return
+
+    setSidebarCollapsed(true)
+    setSidebarHoverOpen(false)
+  }, [selectedPaper])
+
+  const handleSidebarToggle = useCallback(() => {
+    if (sidebarCollapsed) {
+      setSidebarCollapsed(false)
+      setSidebarHoverOpen(false)
+      return
+    }
+
+    setSidebarCollapsed(true)
+    setSidebarHoverOpen(false)
+  }, [sidebarCollapsed])
+
   return (
-    <div ref={containerRef} className="h-screen flex bg-background">
+    <div ref={containerRef} className="relative h-screen flex bg-background">
+      {sidebarCollapsed && !sidebarHoverOpen && (
+        <div
+          className="absolute left-0 top-0 bottom-0 z-20"
+          style={{ width: SIDEBAR_HOVER_TRIGGER_WIDTH }}
+          onMouseEnter={() => setSidebarHoverOpen(true)}
+        />
+      )}
+
       {/* 左侧：论文库（可折叠） */}
       <aside
-        className="border-r border-border flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out"
-        style={{ width: sidebarCollapsed ? 0 : 256 }}
+        className={`${isSidebarVisible ? 'border-r border-border' : ''} relative flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out`}
+        style={{ width: isSidebarVisible ? SIDEBAR_WIDTH : 0 }}
+        onMouseLeave={() => {
+          if (sidebarCollapsed) {
+            setSidebarHoverOpen(false)
+          }
+        }}
       >
-        <div className="w-64 h-full">
+        <div className="h-full" style={{ width: SIDEBAR_WIDTH }}>
           <PaperLibrary onOpenSettings={() => setSettingsOpen(true)} />
         </div>
       </aside>
 
-      {/* 折叠时的展开按钮 */}
-      {sidebarCollapsed && (
+      {/* 左栏切换按钮；悬停展开时可点击固定展开 */}
+      {isSidebarVisible && (
         <button
-          onClick={() => setSidebarCollapsed(false)}
-          className="flex-shrink-0 w-8 flex items-center justify-center border-r border-border hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-          title="展开论文库"
+          onClick={handleSidebarToggle}
+          className="absolute top-3 z-30 p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+          style={{ left: SIDEBAR_WIDTH - 28 }}
+          title={sidebarCollapsed ? '固定展开论文库' : '收起论文库'}
         >
-          <PanelLeftOpen className="w-4 h-4" />
-        </button>
-      )}
-
-      {/* 展开时的折叠按钮（覆盖在侧边栏右上角） */}
-      {!sidebarCollapsed && (
-        <button
-          onClick={() => setSidebarCollapsed(true)}
-          className="absolute left-[228px] top-3 z-10 p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-          title="收起论文库"
-        >
-          <PanelLeftClose className="w-4 h-4" />
+          {sidebarCollapsed ? (
+            <PanelLeftOpen className="w-4 h-4" />
+          ) : (
+            <PanelLeftClose className="w-4 h-4" />
+          )}
         </button>
       )}
 
