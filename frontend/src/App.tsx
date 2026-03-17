@@ -10,8 +10,43 @@ import { getConfig } from './services/api'
 const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
+const CHAT_WIDTH_STORAGE_KEY = 'ipaper.chatPanelWidthRatio'
+const THEME_MODE_STORAGE_KEY = 'ipaper.themeMode'
+
+type ThemeMode = 'light' | 'dark' | 'system'
 
 const cursorMode = new URLSearchParams(window.location.search).get('cursor') === '1'
+
+function isValidThemeMode(value: string | null): value is ThemeMode {
+  return value === 'light' || value === 'dark' || value === 'system'
+}
+
+function getStoredThemeMode(): ThemeMode {
+  const rawValue = window.localStorage.getItem(THEME_MODE_STORAGE_KEY)
+  return isValidThemeMode(rawValue) ? rawValue : 'system'
+}
+
+function applyThemeMode(themeMode: ThemeMode, prefersDark: boolean) {
+  const shouldUseDark = themeMode === 'dark' || (themeMode === 'system' && prefersDark)
+  document.documentElement.classList.toggle('dark', shouldUseDark)
+}
+
+function clampChatWidth(width: number, containerWidth: number) {
+  const maxWidth = containerWidth * CHAT_MAX_RATIO
+  return Math.max(CHAT_MIN_WIDTH, Math.min(maxWidth, width))
+}
+
+function getStoredChatWidthRatio() {
+  const rawValue = window.localStorage.getItem(CHAT_WIDTH_STORAGE_KEY)
+  if (!rawValue) return null
+
+  const ratio = Number(rawValue)
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio > CHAT_MAX_RATIO) {
+    return null
+  }
+
+  return ratio
+}
 
 function App() {
   const { fetchPapers, selectedPaper } = usePaperStore()
@@ -20,6 +55,7 @@ function App() {
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode())
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -57,9 +93,10 @@ function App() {
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return
       const containerRect = containerRef.current.getBoundingClientRect()
-      const maxWidth = containerRect.width * CHAT_MAX_RATIO
       const newWidth = containerRect.right - e.clientX
-      setChatWidth(Math.max(CHAT_MIN_WIDTH, Math.min(maxWidth, newWidth)))
+      const clampedWidth = clampChatWidth(newWidth, containerRect.width)
+      setChatWidth(clampedWidth)
+      window.localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(clampedWidth / containerRect.width))
     }
 
     const handleMouseUp = () => setIsDragging(false)
@@ -71,6 +108,46 @@ function App() {
       document.removeEventListener('mouseup', handleMouseUp)
     }
   }, [isDragging])
+
+  useEffect(() => {
+    const updateChatWidth = () => {
+      if (!containerRef.current) return
+      const containerWidth = containerRef.current.getBoundingClientRect().width
+      const storedRatio = getStoredChatWidthRatio()
+      const targetWidth = storedRatio ? containerWidth * storedRatio : CHAT_DEFAULT_WIDTH
+      const clampedWidth = clampChatWidth(targetWidth, containerWidth)
+
+      setChatWidth(clampedWidth)
+
+      if (containerWidth > 0) {
+        window.localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(clampedWidth / containerWidth))
+      }
+    }
+
+    updateChatWidth()
+    window.addEventListener('resize', updateChatWidth)
+    return () => window.removeEventListener('resize', updateChatWidth)
+  }, [])
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const updateTheme = () => applyThemeMode(themeMode, mediaQuery.matches)
+
+    updateTheme()
+
+    if (themeMode !== 'system') {
+      return
+    }
+
+    mediaQuery.addEventListener('change', updateTheme)
+    return () => mediaQuery.removeEventListener('change', updateTheme)
+  }, [themeMode])
+
+  const handleThemeModeChange = useCallback((nextThemeMode: ThemeMode) => {
+    setThemeMode(nextThemeMode)
+    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, nextThemeMode)
+    applyThemeMode(nextThemeMode, window.matchMedia('(prefers-color-scheme: dark)').matches)
+  }, [])
 
   return (
     <div ref={containerRef} className="h-screen flex bg-background">
@@ -163,6 +240,8 @@ function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        themeMode={themeMode}
+        onThemeModeChange={handleThemeModeChange}
       />
     </div>
   )

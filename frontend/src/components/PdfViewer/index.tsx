@@ -18,6 +18,45 @@ interface PdfViewerProps {
   paperId: string
 }
 
+const PDF_SCALE_STORAGE_KEY = 'ipaper.pdfScale'
+const PDF_DIMMING_MODE_STORAGE_KEY = 'ipaper.pdfDimmingMode'
+const PDF_OVERLAY_OPACITY_STORAGE_KEY = 'ipaper.pdfOverlayOpacity'
+const PDF_BRIGHTNESS_STORAGE_KEY = 'ipaper.pdfBrightness'
+
+type PdfDimmingMode = 'off' | 'overlay' | 'brightness'
+
+const OVERLAY_LEVELS = [0.05, 0.08, 0.12, 0.16, 0.2]
+const BRIGHTNESS_LEVELS = [0.95, 0.9, 0.85, 0.8, 0.75]
+
+function isValidDimmingMode(value: string | null): value is PdfDimmingMode {
+  return value === 'off' || value === 'overlay' || value === 'brightness'
+}
+
+function getStoredPdfDimmingMode(): PdfDimmingMode {
+  const rawValue = window.localStorage.getItem(PDF_DIMMING_MODE_STORAGE_KEY)
+  return isValidDimmingMode(rawValue) ? rawValue : 'off'
+}
+
+function getStoredPdfValue(storageKey: string, validValues: number[], fallbackValue: number) {
+  const rawValue = window.localStorage.getItem(storageKey)
+  if (!rawValue) return fallbackValue
+
+  const value = Number(rawValue)
+  return validValues.includes(value) ? value : fallbackValue
+}
+
+function getStoredPdfScale() {
+  const rawValue = window.localStorage.getItem(PDF_SCALE_STORAGE_KEY)
+  if (!rawValue) return null
+
+  const scale = Number(rawValue)
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return null
+  }
+
+  return scale
+}
+
 function SearchBox({
   onClose,
   searchPluginInstance
@@ -85,13 +124,16 @@ function SearchBox({
 
       let el: Element | null = null
       let bestDist = Infinity
-      all.forEach(e => {
+      for (const e of all) {
         const rect = e.getBoundingClientRect()
         if (rect.top < containerRect.bottom && rect.bottom > containerRect.top) {
           const dist = Math.abs(rect.top + rect.height / 2 - (containerRect.top + containerRect.height / 2))
-          if (dist < bestDist) { bestDist = dist; el = e }
+          if (dist < bestDist) {
+            bestDist = dist
+            el = e
+          }
         }
-      })
+      }
 
       if (!el) {
         stableCount = 0
@@ -172,7 +214,7 @@ function SearchBox({
   }
 
   return (
-    <div className="absolute top-4 right-4 z-50 bg-white rounded-lg shadow-lg border p-3 flex items-center gap-2">
+    <div className="absolute top-4 right-4 z-50 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
       <input
         ref={inputRef}
         type="text"
@@ -180,16 +222,16 @@ function SearchBox({
         onChange={(e) => setKeyword(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="搜索..."
-        className="px-3 py-1.5 border rounded-md text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className="w-48 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
       />
       {matchCount > 0 && (
-        <span className="text-xs text-gray-500 min-w-[60px]">
+        <span className="min-w-[60px] text-xs text-slate-500 dark:text-slate-400">
           {currentMatch} / {matchCount}
         </span>
       )}
       <button
         onClick={goToPrev}
-        className="p-1.5 hover:bg-gray-100 rounded"
+        className="rounded p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
         title="上一个 (Shift+Enter)"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -198,7 +240,7 @@ function SearchBox({
       </button>
       <button
         onClick={goToNext}
-        className="p-1.5 hover:bg-gray-100 rounded"
+        className="rounded p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
         title="下一个 (Enter)"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -207,7 +249,7 @@ function SearchBox({
       </button>
       <button
         onClick={handleClose}
-        className="p-1.5 hover:bg-gray-100 rounded"
+        className="rounded p-1.5 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
         title="关闭 (Esc)"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -222,6 +264,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [pdfUrl, setPdfUrl] = useState<string>('')
   const [showSearch, setShowSearch] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
+  const [showDimmingControls, setShowDimmingControls] = useState(false)
   const [selectedText, setSelectedText] = useState('')
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
@@ -229,6 +272,9 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [pdfLang, setPdfLang] = useState<PdfLang>('en')
   const [translations, setTranslations] = useState<TranslationStatus>({ zh: false, bilingual: false })
   const [scrollBackStack, setScrollBackStack] = useState<number[]>([])
+  const [pdfDimmingMode, setPdfDimmingMode] = useState<PdfDimmingMode>(() => getStoredPdfDimmingMode())
+  const [overlayOpacity, setOverlayOpacity] = useState(() => getStoredPdfValue(PDF_OVERLAY_OPACITY_STORAGE_KEY, OVERLAY_LEVELS, 0.12))
+  const [brightnessLevel, setBrightnessLevel] = useState(() => getStoredPdfValue(PDF_BRIGHTNESS_STORAGE_KEY, BRIGHTNESS_LEVELS, 0.85))
   const scaleRef = useRef(1)
   const restoreScaleRef = useRef<number | null>(null)
   const restoreScrollRatioRef = useRef<number | null>(null)
@@ -246,6 +292,25 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const { ZoomIn, ZoomOut, CurrentScale } = zoomPluginInstance
 
   const blobCache = useRef<Record<string, string>>({})
+
+  const persistScale = useCallback((scale: number) => {
+    window.localStorage.setItem(PDF_SCALE_STORAGE_KEY, String(scale))
+  }, [])
+
+  const handleDimmingModeChange = useCallback((mode: PdfDimmingMode) => {
+    setPdfDimmingMode(mode)
+    window.localStorage.setItem(PDF_DIMMING_MODE_STORAGE_KEY, mode)
+  }, [])
+
+  const handleOverlayOpacityChange = useCallback((value: number) => {
+    setOverlayOpacity(value)
+    window.localStorage.setItem(PDF_OVERLAY_OPACITY_STORAGE_KEY, String(value))
+  }, [])
+
+  const handleBrightnessLevelChange = useCallback((value: number) => {
+    setBrightnessLevel(value)
+    window.localStorage.setItem(PDF_BRIGHTNESS_STORAGE_KEY, String(value))
+  }, [])
 
   useEffect(() => {
     const cached = blobCache.current[pdfLang]
@@ -400,16 +465,22 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   }
 
   // 包装缩放操作：先淡出，再缩放，最后居中并淡入
-  const handleZoomWithFade = (zoomAction: () => void) => {
+  const handleZoomWithFade = (zoomAction: () => void, shouldPersist = false) => {
     const container = pdfContainerRef.current
     if (!container) {
       zoomAction()
+      if (shouldPersist) {
+        setTimeout(() => persistScale(scaleRef.current), 0)
+      }
       return
     }
 
     const scrollContainer = container.querySelector('.rpv-core__inner-pages') as HTMLElement
     if (!scrollContainer) {
       zoomAction()
+      if (shouldPersist) {
+        setTimeout(() => persistScale(scaleRef.current), 0)
+      }
       return
     }
 
@@ -425,6 +496,9 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       setTimeout(() => {
         const scrollWidth = scrollContainer.scrollWidth
         const clientWidth = scrollContainer.clientWidth
+        if (shouldPersist) {
+          persistScale(scaleRef.current)
+        }
         if (scrollWidth > clientWidth) {
           scrollContainer.scrollLeft = (scrollWidth - clientWidth) / 2
         }
@@ -447,16 +521,19 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     )
   }
 
+  const effectiveBrightness = pdfDimmingMode === 'brightness' ? brightnessLevel : 1
+  const effectiveOverlayOpacity = pdfDimmingMode === 'overlay' ? overlayOpacity : 0
+
   return (
     <div ref={pdfContainerRef} className="flex-1 flex h-full overflow-hidden relative">
       {/* 书签侧边栏 */}
       {showBookmarks && (
-        <div className="w-64 border-r bg-gray-50 overflow-auto">
-          <div className="p-3 border-b bg-white flex items-center justify-between">
-            <span className="font-medium text-sm">目录</span>
+        <div className="w-64 overflow-auto border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950/60">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+            <span className="text-sm font-medium text-slate-800 dark:text-slate-100">目录</span>
             <button
               onClick={() => setShowBookmarks(false)}
-              className="p-1 hover:bg-gray-100 rounded"
+              className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -470,7 +547,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       )}
 
       {/* PDF 主区域 */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden bg-background">
         {/* 搜索框 */}
         {showSearch && (
           <SearchBox
@@ -496,52 +573,145 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
         )}
 
         {/* PDF Viewer */}
-        <div className="flex-1 overflow-hidden">
-          <Worker workerUrl="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
-            <Viewer
-              fileUrl={pdfUrl}
-              plugins={[
-                searchPluginInstance,
-                bookmarkPluginInstance,
-                pageNavigationPluginInstance,
-                zoomPluginInstance
-              ]}
-              defaultScale={1}
-              onDocumentLoad={(e) => {
-                setTotalPages(e.doc.numPages)
-                const savedScale = restoreScaleRef.current
-                const savedRatio = restoreScrollRatioRef.current
-                restoreScaleRef.current = null
-                restoreScrollRatioRef.current = null
+        <div className="relative flex-1 overflow-hidden bg-slate-100 dark:bg-slate-950">
+          <div
+            className="h-full transition-[filter] duration-200"
+            style={{ filter: `brightness(${effectiveBrightness})` }}
+          >
+            <Worker workerUrl="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
+              <Viewer
+                fileUrl={pdfUrl}
+                plugins={[
+                  searchPluginInstance,
+                  bookmarkPluginInstance,
+                  pageNavigationPluginInstance,
+                  zoomPluginInstance
+                ]}
+                defaultScale={1}
+                onDocumentLoad={(e) => {
+                  setTotalPages(e.doc.numPages)
+                  const savedScale = restoreScaleRef.current ?? getStoredPdfScale()
+                  const savedRatio = restoreScrollRatioRef.current
+                  restoreScaleRef.current = null
+                  restoreScrollRatioRef.current = null
 
-                if (savedScale !== null || savedRatio !== null) {
-                  setTimeout(() => {
-                    if (savedScale !== null) {
-                      zoomPluginInstance.zoomTo(savedScale)
-                    }
+                  if (savedScale !== null || savedRatio !== null) {
                     setTimeout(() => {
-                      if (savedRatio !== null) {
-                        const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
-                        if (sc) {
-                          sc.scrollTop = savedRatio * (sc.scrollHeight - sc.clientHeight)
-                        }
+                      if (savedScale !== null) {
+                        zoomPluginInstance.zoomTo(savedScale)
                       }
-                    }, 200)
-                  }, 100)
-                }
-              }}
-              onPageChange={(e) => setCurrentPage(e.currentPage + 1)}
+                      setTimeout(() => {
+                        if (savedRatio !== null) {
+                          const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
+                          if (sc) {
+                            sc.scrollTop = savedRatio * (sc.scrollHeight - sc.clientHeight)
+                          }
+                        }
+                      }, 200)
+                    }, 100)
+                  }
+                }}
+                onPageChange={(e) => setCurrentPage(e.currentPage + 1)}
+              />
+            </Worker>
+          </div>
+          {effectiveOverlayOpacity > 0 && (
+            <div
+              className="absolute inset-0 pointer-events-none z-10 transition-colors duration-200"
+              style={{ backgroundColor: `rgba(15, 23, 42, ${effectiveOverlayOpacity})` }}
             />
-          </Worker>
+          )}
         </div>
 
         {/* 底部浮动工具栏 */}
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-40">
-          <div className="flex items-center gap-2 bg-white/95 backdrop-blur rounded-full shadow-lg border px-4 py-2">
+          {showDimmingControls && (
+            <div className="absolute bottom-full left-1/2 mb-3 w-[360px] -translate-x-1/2 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-xl backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-slate-800 dark:text-slate-100">实验性调光</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">对比 Overlay 和 Brightness 两种方案</p>
+                </div>
+                <button
+                  onClick={() => setShowDimmingControls(false)}
+                  className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                  title="关闭调光面板"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="mb-3 flex items-center gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+                {([
+                  { key: 'off', label: '关闭' },
+                  { key: 'overlay', label: 'Overlay' },
+                  { key: 'brightness', label: 'Brightness' },
+                ] as const).map((option) => (
+                  <button
+                    key={option.key}
+                    onClick={() => handleDimmingModeChange(option.key)}
+                    className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                      pdfDimmingMode === option.key
+                        ? 'bg-white text-slate-800 shadow-sm dark:bg-slate-700 dark:text-slate-100'
+                        : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              {pdfDimmingMode === 'overlay' && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">遮罩强度</p>
+                  <div className="flex flex-wrap gap-2">
+                    {OVERLAY_LEVELS.map((value) => (
+                      <button
+                        key={value}
+                        onClick={() => handleOverlayOpacityChange(value)}
+                        className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                          overlayOpacity === value
+                            ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {Math.round(value * 100)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {pdfDimmingMode === 'brightness' && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">亮度档位</p>
+                  <div className="flex flex-wrap gap-2">
+                    {BRIGHTNESS_LEVELS.map((value) => (
+                      <button
+                        key={value}
+                        onClick={() => handleBrightnessLevelChange(value)}
+                        className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                          brightnessLevel === value
+                            ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {Math.round(value * 100)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-4 py-2 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
             {/* 目录按钮 */}
             <button
               onClick={() => setShowBookmarks(!showBookmarks)}
-              className={`p-2 rounded-full transition-colors ${showBookmarks ? 'bg-blue-100 text-blue-600' : 'hover:bg-gray-100'}`}
+              className={`rounded-full p-2 transition-colors ${showBookmarks ? 'bg-blue-100 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'}`}
               title="目录"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -552,7 +722,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             {/* 搜索按钮 */}
             <button
               onClick={() => setShowSearch(true)}
-              className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+              className="rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
               title="搜索 (⌘F)"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -564,7 +734,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             {scrollBackStack.length > 0 && (
               <button
                 onClick={handleScrollBack}
-                className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors"
+                className="rounded-full bg-blue-100 p-2 text-blue-600 transition-colors hover:bg-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50"
                 title="返回引用位置"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -573,14 +743,14 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
               </button>
             )}
 
-            <div className="w-px h-6 bg-gray-200" />
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
 
             {/* 缩放控制 */}
             <ZoomOut>
               {(props) => (
                 <button
-                  onClick={() => handleZoomWithFade(props.onClick)}
-                  className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+                  onClick={() => handleZoomWithFade(props.onClick, true)}
+                  className="rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
                   title="缩小"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -594,7 +764,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
               {(props) => {
                 scaleRef.current = props.scale
                 return (
-                  <span className="text-sm text-gray-600 min-w-[50px] text-center">
+                  <span className="min-w-[50px] text-center text-sm text-slate-600 dark:text-slate-300">
                     {Math.round(props.scale * 100)}%
                   </span>
                 )
@@ -604,8 +774,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             <ZoomIn>
               {(props) => (
                 <button
-                  onClick={() => handleZoomWithFade(props.onClick)}
-                  className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+                  onClick={() => handleZoomWithFade(props.onClick, true)}
+                  className="rounded-full p-2 text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
                   title="放大"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -615,17 +785,33 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
               )}
             </ZoomIn>
 
-            <div className="w-px h-6 bg-gray-200" />
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
 
             {/* 页码显示 */}
-            <span className="text-sm text-gray-600 min-w-[60px] text-center">
+            <span className="min-w-[60px] text-center text-sm text-slate-600 dark:text-slate-300">
               {currentPage} / {totalPages}
             </span>
+
+            <button
+              onClick={() => setShowDimmingControls(prev => !prev)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                pdfDimmingMode === 'off'
+                  ? 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                  : 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/50'
+              }`}
+              title="实验性调光"
+            >
+              {pdfDimmingMode === 'off'
+                ? '调光'
+                : `${pdfDimmingMode === 'overlay' ? 'Overlay' : 'Brightness'} ${
+                    Math.round((pdfDimmingMode === 'overlay' ? overlayOpacity : brightnessLevel) * 100)
+                  }%`}
+            </button>
 
             {/* 语言切换 */}
             {(translations.zh || translations.bilingual) && (
               <>
-                <div className="w-px h-6 bg-gray-200" />
+                <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
                 <div className="flex items-center gap-0.5">
                   {(['en', 'zh', 'bilingual'] as const)
                     .filter(lang => lang === 'en' || translations[lang])
@@ -642,8 +828,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                         }}
                         className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                           pdfLang === lang
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'hover:bg-gray-100 text-gray-500'
+                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                            : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
                         }`}
                       >
                         {{ en: 'EN', zh: '中文', bilingual: '双语' }[lang]}

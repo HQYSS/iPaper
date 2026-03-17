@@ -1,16 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink } from 'lucide-react'
+import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor } from 'lucide-react'
 import { getConfig, updateLLMConfig } from '../../services/api'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
+
+type ThemeMode = 'light' | 'dark' | 'system'
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
   onConfigured?: () => void
+  themeMode: ThemeMode
+  onThemeModeChange: (themeMode: ThemeMode) => void
 }
 
-export function SettingsModal({ open, onClose, onConfigured }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeModeChange }: SettingsModalProps) {
   const { addToast } = useToastStore()
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
@@ -166,6 +170,38 @@ export function SettingsModal({ open, onClose, onConfigured }: SettingsModalProp
                   </label>
                   <div className="flex items-center px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
                     <span className="font-mono text-xs">{model}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    外观主题
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { key: 'light', label: '浅色', icon: Sun },
+                      { key: 'dark', label: '深色', icon: Moon },
+                      { key: 'system', label: '跟随系统', icon: Monitor },
+                    ] as const).map((option) => {
+                      const Icon = option.icon
+                      const isActive = themeMode === option.key
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => onThemeModeChange(option.key)}
+                          className={cn(
+                            'flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm transition-all',
+                            isActive
+                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:border-indigo-400 dark:bg-indigo-950/40 dark:text-indigo-300'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-800'
+                          )}
+                        >
+                          <Icon className="w-4 h-4" />
+                          <span>{option.label}</span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               </div>
