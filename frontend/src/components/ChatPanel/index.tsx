@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, Trash2, Loader2, X, ChevronDown, ChevronRight, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose } from 'lucide-react'
+import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -11,7 +11,7 @@ interface ChatPanelProps {
   onCollapse?: () => void
 }
 
-import type { PendingProfileUpdate } from '../../services/api'
+import type { PendingProfileUpdate, SessionMeta } from '../../services/api'
 
 const SIGNAL_TYPE_LABELS: Record<string, string> = {
   knowledge_update: '知识更新',
@@ -49,7 +49,6 @@ function ProfileUpdateNotification({
         </div>
       </div>
 
-      {/* 展开/收起详情 */}
       <button
         onClick={() => setExpanded(!expanded)}
         className="mt-2 ml-6 text-xs text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-1"
@@ -189,13 +188,109 @@ function cleanSelectedText(raw: string): string {
     .trim()
 }
 
+function SessionTabBar({
+  sessions,
+  currentSessionId,
+  onSwitch,
+  onCreate,
+  onDelete,
+  paperId,
+}: {
+  sessions: SessionMeta[]
+  currentSessionId: string | null
+  onSwitch: (paperId: string, sessionId: string) => void
+  onCreate: (paperId: string) => void
+  onDelete: (paperId: string, sessionId: string) => void
+  paperId: string
+}) {
+  const tabsRef = useRef<HTMLDivElement>(null)
+
+  if (sessions.length === 0) return null
+
+  return (
+    <div className="border-b border-border flex items-center">
+      <div ref={tabsRef} className="flex-1 flex overflow-x-auto no-scrollbar">
+        {sessions.map((session) => {
+          const isActive = session.id === currentSessionId
+          const truncatedTitle = session.title.length > 12 ? session.title.slice(0, 12) + '…' : session.title
+          return (
+            <button
+              key={session.id}
+              onClick={() => onSwitch(paperId, session.id)}
+              className={`group relative flex items-center gap-1 px-3 py-1.5 text-xs whitespace-nowrap border-b-2 transition-colors flex-shrink-0 ${
+                isActive
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-accent/50'
+              }`}
+              title={session.title}
+            >
+              <span>{truncatedTitle}</span>
+              {sessions.length > 1 && (
+                <span
+                  role="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDelete(paperId, session.id)
+                  }}
+                  className="ml-0.5 opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
+                >
+                  <X className="w-3 h-3" />
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      <button
+        onClick={() => onCreate(paperId)}
+        className="flex-shrink-0 p-1.5 mx-1 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+        title="新建对话"
+      >
+        <Plus className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  )
+}
+
+function ForkNavigator({
+  forkData,
+  onSwitch,
+}: {
+  forkData: { alternatives: unknown[][]; active: number }
+  onSwitch: (index: number) => void
+}) {
+  const total = forkData.alternatives.length
+  const current = forkData.active
+
+  return (
+    <div className="flex items-center gap-0.5 text-xs text-muted-foreground">
+      <button
+        onClick={() => onSwitch(current - 1)}
+        disabled={current === 0}
+        className="p-0.5 rounded hover:bg-accent disabled:opacity-30 transition-colors"
+      >
+        <ChevronLeft className="w-3 h-3" />
+      </button>
+      <span className="min-w-[2rem] text-center">{current + 1}/{total}</span>
+      <button
+        onClick={() => onSwitch(current + 1)}
+        disabled={current === total - 1}
+        className="p-0.5 rounded hover:bg-accent disabled:opacity-30 transition-colors"
+      >
+        <ChevronRight className="w-3 h-3" />
+      </button>
+    </div>
+  )
+}
+
 export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
   const {
     messages,
     isLoading,
     isStreaming,
-    loadHistory,
+    loadSessions,
     sendMessage,
+    stopStreaming,
     clearHistory,
     quotes,
     addQuote,
@@ -209,9 +304,19 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
     checkPendingProfileUpdates,
     applyProfileUpdate,
     rejectProfileUpdate,
+    sessions,
+    currentSessionId,
+    createSession,
+    deleteSession,
+    switchSession,
+    forks,
+    editMessage,
+    switchFork,
   } = useChatStore()
 
   const [input, setInput] = useState('')
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editingContent, setEditingContent] = useState('')
   const [chatSelectedText, setChatSelectedText] = useState('')
   const [chatSelectionPosition, setChatSelectionPosition] = useState<{ x: number; y: number } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -219,8 +324,8 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
   const isNearBottomRef = useRef(true)
 
   useEffect(() => {
-    loadHistory(paperId)
-  }, [paperId, loadHistory])
+    loadSessions(paperId)
+  }, [paperId, loadSessions])
 
   useEffect(() => {
     checkPendingProfileUpdates()
@@ -299,7 +404,7 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
   }
 
   const handleSend = async () => {
-    if (!input.trim() || isStreaming) return
+    if (!input.trim() || isStreaming || !currentSessionId) return
 
     const messageContent = input.trim()
     const currentQuotes = quotes.length > 0 ? [...quotes] : undefined
@@ -307,7 +412,7 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
     setInput('')
     clearQuotes()
     isNearBottomRef.current = true
-    await sendMessage(paperId, messageContent, currentQuotes)
+    await sendMessage(paperId, currentSessionId, messageContent, currentQuotes)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -348,8 +453,8 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
           </button>
           <button
             onClick={() => {
-              if (confirm('确定清空对话历史吗？')) {
-                clearHistory(paperId)
+              if (currentSessionId && confirm('确定清空当前对话历史吗？')) {
+                clearHistory(paperId, currentSessionId)
               }
             }}
             className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
@@ -359,6 +464,16 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
           </button>
         </div>
       </div>
+
+      {/* 会话标签栏 */}
+      <SessionTabBar
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onSwitch={switchSession}
+        onCreate={createSession}
+        onDelete={deleteSession}
+        paperId={paperId}
+      />
 
       {/* 画像更新通知 */}
       {pendingProfileUpdate && (
@@ -406,17 +521,76 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
                 <div
                   key={index}
                   data-message-index={index}
-                  className="border-l-[3px] border-blue-400 dark:border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 mx-6 my-4 px-4 py-2.5 rounded-r-md"
+                  className="group/msg border-l-[3px] border-blue-400 dark:border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 mx-6 my-4 px-4 py-2.5 rounded-r-md"
                 >
-                  {(() => {
-                    const { quote, source, question } = parseMessageWithQuote(message.content)
-                    return (
-                      <>
-                        {quote && source && <CollapsibleQuote quote={quote} source={source} />}
-                        <p className="text-[15px] leading-relaxed text-foreground/70 whitespace-pre-wrap">{question}</p>
-                      </>
-                    )
-                  })()}
+                  {editingIndex === index ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={editingContent}
+                        onChange={(e) => setEditingContent(e.target.value)}
+                        className="w-full px-2 py-1.5 text-sm rounded border border-input bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                        rows={3}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setEditingIndex(null)
+                        }}
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => setEditingIndex(null)}
+                          className="px-2.5 py-1 text-xs rounded border border-input hover:bg-accent transition-colors"
+                        >
+                          取消
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (editingContent.trim() && currentSessionId) {
+                              editMessage(paperId, currentSessionId, index, editingContent.trim())
+                              setEditingIndex(null)
+                            }
+                          }}
+                          disabled={!editingContent.trim() || isStreaming}
+                          className="px-2.5 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                        >
+                          发送
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {(() => {
+                        const { quote, source, question } = parseMessageWithQuote(message.content)
+                        return (
+                          <>
+                            {quote && source && <CollapsibleQuote quote={quote} source={source} />}
+                            <p className="text-[15px] leading-relaxed text-foreground/70 whitespace-pre-wrap">{question}</p>
+                          </>
+                        )
+                      })()}
+                      <div className="flex items-center justify-between mt-1">
+                        <div>
+                          {forks[String(index)] && (
+                            <ForkNavigator
+                              forkData={forks[String(index)]}
+                              onSwitch={(fi) => currentSessionId && switchFork(paperId, currentSessionId, index, fi)}
+                            />
+                          )}
+                        </div>
+                        {!isStreaming && (
+                          <button
+                            onClick={() => {
+                              setEditingIndex(index)
+                              setEditingContent(parseMessageWithQuote(message.content).question)
+                            }}
+                            className="p-1 rounded opacity-0 group-hover/msg:opacity-100 hover:bg-accent text-muted-foreground hover:text-foreground transition-all"
+                            title="编辑消息"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div key={index} data-message-index={index} className="px-8 py-6">
@@ -482,17 +656,23 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
             rows={2}
             disabled={isStreaming}
           />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isStreaming}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-          >
-            {isStreaming ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
+          {isStreaming ? (
+            <button
+              onClick={stopStreaming}
+              className="px-4 py-2 bg-destructive text-destructive-foreground rounded-md hover:bg-destructive/90 flex items-center justify-center"
+              title="停止生成"
+            >
+              <Square className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
               <Send className="w-4 h-4" />
-            )}
-          </button>
+            </button>
+          )}
         </div>
         <p className="text-xs text-muted-foreground mt-2">
           按 Enter 发送，Shift+Enter 换行

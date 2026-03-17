@@ -1,16 +1,25 @@
 """
 LLM 对话服务
 """
+import io
 import json
 import base64
+import logging
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 
+import fitz
 from openai import AsyncOpenAI
 
 from config import settings
 from models import ChatMessage, Quote
 from services.user_profile_service import user_profile_service
+
+logger = logging.getLogger(__name__)
+
+PDF_SIZE_THRESHOLD = 15 * 1024 * 1024  # 15MB
+IMAGE_DPI = 150
+IMAGE_QUALITY = 85
 
 
 FALLBACK_SYSTEM_PROMPT = """你是一个专业的学术论文阅读助手。你的任务是帮助用户理解论文内容。
@@ -165,29 +174,64 @@ class LLMService:
         pdf_path: Path,
         quotes: Optional[List[Quote]] = None
     ) -> list:
-        """构建包含 PDF 的用户消息内容"""
-        with open(pdf_path, "rb") as f:
-            pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
-        
-        content = [
-            {
-                "type": "file",
-                "file": {
-                    "filename": pdf_path.name,
-                    "file_data": f"data:application/pdf;base64,{pdf_base64}"
+        """构建包含 PDF 的用户消息内容。大 PDF 自动转为逐页图片。"""
+        pdf_size = pdf_path.stat().st_size
+
+        if pdf_size <= PDF_SIZE_THRESHOLD:
+            with open(pdf_path, "rb") as f:
+                pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
+            content = [
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": pdf_path.name,
+                        "file_data": f"data:application/pdf;base64,{pdf_base64}"
+                    }
                 }
-            }
-        ]
-        
+            ]
+        else:
+            logger.info(
+                "PDF too large (%.1fMB > %dMB), converting to page images",
+                pdf_size / 1024 / 1024, PDF_SIZE_THRESHOLD // 1024 // 1024
+            )
+            content = self._pdf_to_image_blocks(pdf_path)
+
         if quotes:
             text = f"{self._format_quotes(quotes)}\n\n{text}"
-        
+
         content.append({
             "type": "text",
             "text": text
         })
-        
+
         return content
+
+    @staticmethod
+    def _pdf_to_image_blocks(pdf_path: Path) -> list:
+        """将 PDF 逐页渲染为 JPEG，返回 OpenAI vision 格式的 image_url 块列表。"""
+        doc = fitz.open(pdf_path)
+        blocks = []
+        matrix = fitz.Matrix(IMAGE_DPI / 72, IMAGE_DPI / 72)
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=matrix)
+
+            buf = io.BytesIO()
+            buf.write(pix.tobytes("jpeg", jpg_quality=IMAGE_QUALITY))
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{img_b64}"
+                }
+            })
+
+        doc.close()
+        total_kb = sum(len(b["image_url"]["url"]) * 3 / 4 for b in blocks) / 1024
+        logger.info("Converted %d pages to JPEG images (total ~%.0fKB)", len(blocks), total_kb)
+        return blocks
 
 
 # 全局服务实例

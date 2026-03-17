@@ -19,6 +19,6 @@ pydantic-settings==2.1.0
 python-multipart==0.0.6
 arxiv==2.1.0
 
-# PDF Processing (for future use)
-# pymupdf==1.23.0
+# PDF Processing
+PyMuPDF==1.25.4
 

@@ -2,7 +2,7 @@
 Pydantic 数据模型定义
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
 
@@ -69,10 +69,41 @@ class ChatResponse(BaseModel):
     message: str
     
 
+class ForkData(BaseModel):
+    """分支数据"""
+    alternatives: List[List[ChatMessage]]
+    active: int = 0
+
 class ChatHistory(BaseModel):
     """对话历史"""
     paper_id: str
+    session_id: str = ""
     messages: List[ChatMessage]
+    forks: Optional[Dict[str, ForkData]] = None
+
+class ChatHistoryUpdate(BaseModel):
+    """前端直接更新对话历史（编辑/切换分支时使用）"""
+    messages: List[ChatMessage]
+    forks: Optional[Dict[str, ForkData]] = None
+
+
+# ============ 会话相关模型 ============
+
+class SessionMeta(BaseModel):
+    """会话元信息"""
+    id: str
+    title: str = "新对话"
+    created_at: datetime
+    updated_at: datetime
+
+class SessionList(BaseModel):
+    """会话列表"""
+    sessions: List[SessionMeta]
+    last_active_session_id: Optional[str] = None
+
+class SessionCreate(BaseModel):
+    """新建会话请求"""
+    title: Optional[str] = None
 
 
 # ============ 配置相关模型 ============

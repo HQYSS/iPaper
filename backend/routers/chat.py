@@ -1,12 +1,12 @@
 """
-对话 API 路由
+对话 API 路由（多会话）
 """
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import AuthenticationError, RateLimitError, APIConnectionError, APIStatusError
 
-from models import ChatRequest, ChatMessage, ChatHistory
+from models import ChatRequest, ChatMessage, ChatHistory, ChatHistoryUpdate, SessionList, SessionMeta, SessionCreate
 from services.llm_service import llm_service
 from services.storage_service import storage_service
 from services.arxiv_service import arxiv_service
@@ -14,55 +14,87 @@ from services.arxiv_service import arxiv_service
 router = APIRouter()
 
 
-@router.post("/{paper_id}")
-async def chat(paper_id: str, request: ChatRequest):
-    """
-    发送对话消息（流式响应）
-    """
-    # 检查论文是否存在
+def _check_paper(paper_id: str):
     paper = arxiv_service.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="论文不存在")
-    
-    # 检查 LLM 是否配置
+    return paper
+
+
+# ==================== Session 管理 ====================
+
+@router.get("/{paper_id}/sessions", response_model=SessionList)
+async def list_sessions(paper_id: str):
+    """获取论文的所有会话"""
+    _check_paper(paper_id)
+    return storage_service.list_sessions(paper_id)
+
+
+@router.post("/{paper_id}/sessions", response_model=SessionMeta)
+async def create_session(paper_id: str, request: SessionCreate = None):
+    """新建会话"""
+    _check_paper(paper_id)
+    title = request.title if request else None
+    return storage_service.create_session(paper_id, title)
+
+
+@router.delete("/{paper_id}/sessions/{session_id}")
+async def delete_session(paper_id: str, session_id: str):
+    """删除会话"""
+    _check_paper(paper_id)
+    session_list = storage_service.list_sessions(paper_id)
+    if len(session_list.sessions) <= 1:
+        raise HTTPException(status_code=400, detail="至少保留一个会话")
+    success = storage_service.delete_session(paper_id, session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"message": "会话已删除"}
+
+
+# ==================== 对话（带 session_id） ====================
+
+@router.post("/{paper_id}/{session_id}")
+async def chat(paper_id: str, session_id: str, request: ChatRequest):
+    """发送对话消息（流式响应）"""
+    _check_paper(paper_id)
+
     if not llm_service.is_configured():
         raise HTTPException(status_code=400, detail="LLM API Key 未配置")
-    
-    # 获取历史消息
-    history = storage_service.get_chat_history(paper_id)
-    
-    # 添加用户消息
+
+    messages, forks_raw = storage_service.get_chat_history(paper_id, session_id)
+
     user_message = ChatMessage(role="user", content=request.message)
-    history.append(user_message)
-    
-    # 获取 PDF 路径
+    messages.append(user_message)
+
     pdf_path = arxiv_service.get_pdf_path(paper_id)
-    
+
+    storage_service.set_last_active_session(paper_id, session_id)
+
     async def generate():
         full_response = ""
         reasoning_parts = []
-        
+
         try:
             async for chunk in llm_service.chat_stream(
-                messages=history,
+                messages=messages,
                 pdf_path=pdf_path,
                 quotes=request.quotes,
                 reasoning_collector=reasoning_parts
             ):
                 full_response += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
-            
+
             reasoning = ''.join(reasoning_parts) if reasoning_parts else None
             assistant_message = ChatMessage(
                 role="assistant",
                 content=full_response,
                 reasoning=reasoning
             )
-            history.append(assistant_message)
-            storage_service.save_chat_history(paper_id, history)
-            
+            messages.append(assistant_message)
+            storage_service.save_chat_history(paper_id, session_id, messages, forks_raw)
+
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
-            
+
         except AuthenticationError:
             yield f"data: {json.dumps({'type': 'error', 'message': 'API Key 无效或已过期，请在设置中检查'})}\n\n"
         except RateLimitError:
@@ -73,7 +105,7 @@ async def chat(paper_id: str, request: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'message': f'LLM 服务返回错误 ({e.status_code})，请稍后再试'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': f'AI 服务出现错误：{e}'})}\n\n"
-    
+
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
@@ -84,28 +116,29 @@ async def chat(paper_id: str, request: ChatRequest):
     )
 
 
-@router.get("/{paper_id}/history", response_model=ChatHistory)
-async def get_chat_history(paper_id: str):
+@router.get("/{paper_id}/{session_id}/history", response_model=ChatHistory)
+async def get_chat_history(paper_id: str, session_id: str):
     """获取对话历史"""
-    # 检查论文是否存在
-    paper = arxiv_service.get_paper(paper_id)
-    if not paper:
-        raise HTTPException(status_code=404, detail="论文不存在")
-    
-    messages = storage_service.get_chat_history(paper_id)
-    
-    return ChatHistory(paper_id=paper_id, messages=messages)
+    _check_paper(paper_id)
+    messages, forks_raw = storage_service.get_chat_history(paper_id, session_id)
+    storage_service.set_last_active_session(paper_id, session_id)
+    return ChatHistory(paper_id=paper_id, session_id=session_id, messages=messages, forks=forks_raw)
 
 
-@router.delete("/{paper_id}/history")
-async def clear_chat_history(paper_id: str):
+@router.put("/{paper_id}/{session_id}/history")
+async def update_chat_history(paper_id: str, session_id: str, request: ChatHistoryUpdate):
+    """直接更新对话历史（编辑消息/切换分支时使用）"""
+    _check_paper(paper_id)
+    forks_dict = None
+    if request.forks:
+        forks_dict = {k: v.model_dump() for k, v in request.forks.items()}
+    storage_service.save_chat_history(paper_id, session_id, request.messages, forks_dict)
+    return {"message": "对话历史已更新"}
+
+
+@router.delete("/{paper_id}/{session_id}/history")
+async def clear_chat_history(paper_id: str, session_id: str):
     """清空对话历史"""
-    # 检查论文是否存在
-    paper = arxiv_service.get_paper(paper_id)
-    if not paper:
-        raise HTTPException(status_code=404, detail="论文不存在")
-    
-    storage_service.clear_chat_history(paper_id)
-    
+    _check_paper(paper_id)
+    storage_service.clear_chat_history(paper_id, session_id)
     return {"message": "对话历史已清空"}
-

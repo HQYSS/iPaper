@@ -52,7 +52,11 @@ async def trigger_analysis(request: ProfileAnalysisRequest, background_tasks: Ba
     if not paper:
         raise HTTPException(status_code=404, detail="论文不存在")
 
-    messages = storage_service.get_chat_history(request.paper_id)
+    session_list = storage_service.list_sessions(request.paper_id)
+    active_sid = session_list.last_active_session_id
+    if not active_sid:
+        return {"message": "没有活跃会话，跳过分析"}
+    messages, _ = storage_service.get_chat_history(request.paper_id, active_sid)
     if len(messages) < 2:
         return {"message": "对话轮数不足，跳过分析"}
 

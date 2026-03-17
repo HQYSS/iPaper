@@ -139,3 +139,11 @@
   border-bottom: 1px solid hsl(var(--border));
 }
 
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+

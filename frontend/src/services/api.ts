@@ -86,6 +86,50 @@ export async function getTranslations(paperId: string): Promise<TranslationStatu
   return response.json()
 }
 
+// ============ 会话 API ============
+
+export interface SessionMeta {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionList {
+  sessions: SessionMeta[]
+  last_active_session_id: string | null
+}
+
+export async function listSessions(paperId: string): Promise<SessionList> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions`)
+  if (!response.ok) {
+    throw new Error('Failed to list sessions')
+  }
+  return response.json()
+}
+
+export async function createSession(paperId: string, title?: string): Promise<SessionMeta> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: title ?? null }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to create session')
+  }
+  return response.json()
+}
+
+export async function deleteSession(paperId: string, sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions/${sessionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to delete session')
+  }
+}
+
 // ============ 对话 API ============
 
 export interface ChatMessage {
@@ -93,21 +137,44 @@ export interface ChatMessage {
   content: string
 }
 
-export interface ChatHistory {
-  paper_id: string
-  messages: ChatMessage[]
+export interface ForkData {
+  alternatives: ChatMessage[][]
+  active: number
 }
 
-export async function getChatHistory(paperId: string): Promise<ChatHistory> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/history`)
+export interface ChatHistory {
+  paper_id: string
+  session_id: string
+  messages: ChatMessage[]
+  forks?: Record<string, ForkData>
+}
+
+export async function getChatHistory(paperId: string, sessionId: string): Promise<ChatHistory> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`)
   if (!response.ok) {
     throw new Error('Failed to get chat history')
   }
   return response.json()
 }
 
-export async function clearChatHistory(paperId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/history`, {
+export async function updateChatHistory(
+  paperId: string,
+  sessionId: string,
+  messages: ChatMessage[],
+  forks?: Record<string, ForkData>
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, forks }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update chat history')
+  }
+}
+
+export async function clearChatHistory(paperId: string, sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -122,10 +189,12 @@ export interface QuoteInput {
 
 export async function* sendMessage(
   paperId: string,
+  sessionId: string,
   message: string,
-  quotes?: QuoteInput[]
+  quotes?: QuoteInput[],
+  signal?: AbortSignal
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}`, {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -134,6 +203,7 @@ export async function* sendMessage(
       message,
       quotes: quotes && quotes.length > 0 ? quotes : undefined,
     }),
+    signal,
   })
 
   if (!response.ok) {
