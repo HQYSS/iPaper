@@ -13,6 +13,11 @@ from .schemas import (
     SessionMeta,
     SessionList,
     SessionCreate,
+    CrossPaperSessionCreate,
+    CrossPaperSessionMeta,
+    CrossPaperSessionList,
+    CrossPaperChatRequest,
+    CrossPaperChatHistory,
     LLMConfigUpdate,
     ProfileAnalysisRequest,
 )
@@ -32,6 +37,11 @@ __all__ = [
     "SessionMeta",
     "SessionList",
     "SessionCreate",
+    "CrossPaperSessionCreate",
+    "CrossPaperSessionMeta",
+    "CrossPaperSessionList",
+    "CrossPaperChatRequest",
+    "CrossPaperChatHistory",
     "LLMConfigUpdate",
     "ProfileAnalysisRequest",
 ]

@@ -3,8 +3,10 @@ import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
+import { CrossPaperViewer } from './components/CrossPaperViewer'
 import { SettingsModal } from './components/SettingsModal'
 import { usePaperStore } from './stores/paperStore'
+import { useChatStore } from './stores/chatStore'
 import { getConfig } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
@@ -51,7 +53,8 @@ function getStoredChatWidthRatio() {
 }
 
 function App() {
-  const { fetchPapers, selectedPaper } = usePaperStore()
+  const { fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab } = usePaperStore()
+  const { exitCrossPaperChat } = useChatStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -61,6 +64,9 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode())
   const containerRef = useRef<HTMLDivElement>(null)
   const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
+
+  const isInCrossChat = !!crossPaper.activeCrossPaperSession
+  const showSinglePaper = !!selectedPaper && !isInCrossChat
 
   useEffect(() => {
     fetchPapers()
@@ -161,6 +167,14 @@ function App() {
     setSidebarHoverOpen(false)
   }, [selectedPaper])
 
+  useEffect(() => {
+    if (!isInCrossChat) return
+
+    setSidebarCollapsed(true)
+    setSidebarHoverOpen(false)
+    setChatCollapsed(false)
+  }, [isInCrossChat])
+
   const handleSidebarToggle = useCallback(() => {
     if (sidebarCollapsed) {
       setSidebarCollapsed(false)
@@ -171,6 +185,17 @@ function App() {
     setSidebarCollapsed(true)
     setSidebarHoverOpen(false)
   }, [sidebarCollapsed])
+
+  const handleExitCrossChat = useCallback(() => {
+    exitCrossPaperChat()
+    exitCrossPaperMode()
+  }, [exitCrossPaperChat, exitCrossPaperMode])
+
+  const handlePaperLinkClick = useCallback((paperId: string) => {
+    setCrossPaperPdfTab(paperId)
+  }, [setCrossPaperPdfTab])
+
+  const showChat = (showSinglePaper || isInCrossChat) && !cursorMode
 
   return (
     <div ref={containerRef} className="relative h-screen flex bg-background">
@@ -197,7 +222,7 @@ function App() {
         </div>
       </aside>
 
-      {/* 左栏切换按钮；悬停展开时可点击固定展开 */}
+      {/* 左栏切换按钮 */}
       {isSidebarVisible && (
         <button
           onClick={handleSidebarToggle}
@@ -213,9 +238,11 @@ function App() {
         </button>
       )}
 
-      {/* 中间：PDF 阅读器 */}
+      {/* 中间：PDF 阅读器 / 串讲多 PDF 视图 */}
       <main className="flex-1 flex flex-col min-w-0">
-        {selectedPaper ? (
+        {isInCrossChat ? (
+          <CrossPaperViewer />
+        ) : selectedPaper ? (
           <PdfViewer paperId={selectedPaper.arxiv_id} />
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -227,8 +254,8 @@ function App() {
         )}
       </main>
 
-      {/* 右侧：讲解面板（可折叠、可拖拽调整宽度），Cursor 模式下隐藏 */}
-      {selectedPaper && !cursorMode && (
+      {/* 右侧：讲解面板 */}
+      {showChat && (
         <>
           {chatCollapsed ? (
             <button
@@ -255,7 +282,19 @@ function App() {
                   pointerEvents: isDragging ? 'none' : undefined,
                 }}
               >
-                <ChatPanel paperId={selectedPaper.arxiv_id} onCollapse={() => setChatCollapsed(true)} />
+                {isInCrossChat ? (
+                  <ChatPanel
+                    crossPaperSessionId={crossPaper.activeCrossPaperSession!.id}
+                    onCollapse={() => setChatCollapsed(true)}
+                    onPaperLinkClick={handlePaperLinkClick}
+                    onExitCrossChat={handleExitCrossChat}
+                  />
+                ) : (
+                  <ChatPanel
+                    paperId={selectedPaper!.arxiv_id}
+                    onCollapse={() => setChatCollapsed(true)}
+                  />
+                )}
               </aside>
             </>
           )}

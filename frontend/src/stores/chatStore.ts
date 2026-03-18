@@ -15,6 +15,7 @@ interface ChatStore {
   error: string | null
   currentPaperId: string | null
   quotes: QuoteItem[]
+  focusInputNonce: number
 
   sessions: api.SessionMeta[]
   currentSessionId: string | null
@@ -23,6 +24,10 @@ interface ChatStore {
   forks: Record<string, api.ForkData>
 
   pendingProfileUpdate: api.PendingProfileUpdate | null
+
+  // 串讲模式标记
+  isCrossPaperMode: boolean
+  crossPaperIds: string[]
 
   loadSessions: (paperId: string) => Promise<void>
   createSession: (paperId: string) => Promise<void>
@@ -46,9 +51,22 @@ interface ChatStore {
   checkPendingProfileUpdates: () => Promise<void>
   applyProfileUpdate: () => Promise<void>
   rejectProfileUpdate: () => Promise<void>
+
+  // 串讲
+  initCrossPaperSession: (session: api.CrossPaperSessionMeta) => Promise<void>
+  loadCrossPaperSessions: () => Promise<void>
+  loadCrossPaperSession: (sessionId: string) => Promise<void>
+  deleteCrossPaperSession: (sessionId: string) => Promise<void>
+  switchCrossPaperSession: (sessionId: string) => Promise<void>
+  sendCrossPaperMessage: (sessionId: string, message: string, quotes?: QuoteItem[]) => Promise<void>
+  clearCrossPaperHistory: (sessionId: string) => Promise<void>
+  editCrossPaperMessage: (sessionId: string, messageIndex: number, newContent: string) => Promise<void>
+  switchCrossPaperFork: (sessionId: string, messageIndex: number, forkIndex: number) => Promise<void>
+  exitCrossPaperChat: () => void
 }
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
+const AUTO_CROSS_PAPER_MESSAGE = '请对这组论文进行串讲分析，深入对比它们在技术上的异同。'
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
@@ -57,12 +75,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   error: null,
   currentPaperId: null,
   quotes: [],
+  focusInputNonce: 0,
   sessions: [],
   currentSessionId: null,
   abortController: null,
   forks: {},
   pendingProfileUpdate: null,
   isAnalyzingProfile: false,
+  isCrossPaperMode: false,
+  crossPaperIds: [],
 
   loadSessions: async (paperId: string) => {
     if (get().currentPaperId !== paperId) {
@@ -150,14 +171,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   sendMessage: async (paperId: string, sessionId: string, message: string, quotes?: QuoteItem[]) => {
-    const { messages } = get()
     const controller = new AbortController()
 
     const userMessage: api.ChatMessage = { role: 'user', content: message }
-    set({ messages: [...messages, userMessage], isStreaming: true, error: null, abortController: controller })
+    set((state) => ({ messages: [...state.messages, userMessage], isStreaming: true, error: null, abortController: controller }))
 
     const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
-    set({ messages: [...messages, userMessage, assistantMessage] })
+    set((state) => ({ messages: [...state.messages, assistantMessage] }))
 
     const isStillActive = () =>
       get().currentPaperId === paperId && get().currentSessionId === sessionId
@@ -229,7 +249,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   addQuote: (text: string, source: QuoteSource) => {
-    set((state) => ({ quotes: [...state.quotes, { text, source }] }))
+    set((state) => ({
+      quotes: [...state.quotes, { text, source }],
+      focusInputNonce: state.focusInputNonce + 1,
+    }))
   },
 
   removeQuote: (index: number) => {
@@ -272,11 +295,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
     }
 
-    // Truncate messages at the fork point and set new user message
-    const newMessages = [...messages.slice(0, messageIndex), { role: 'user' as const, content: newContent }]
+    // Truncate messages to before the fork point (sendMessage will add the user message)
+    const newMessages = messages.slice(0, messageIndex)
     set({ messages: newMessages, forks: newForks })
 
-    // Save truncated state, then send the edited message
     try {
       await api.updateChatHistory(paperId, sessionId, newMessages, newForks)
     } catch {
@@ -353,5 +375,253 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     } catch (error) {
       set({ error: (error as Error).message })
     }
+  },
+
+  // ==================== Cross-Paper (串讲) ====================
+
+  initCrossPaperSession: async (session: api.CrossPaperSessionMeta) => {
+    set({
+      isCrossPaperMode: true,
+      crossPaperIds: session.paper_ids,
+      currentPaperId: null,
+      messages: [],
+      sessions: [{ id: session.id, title: session.title, created_at: session.created_at, updated_at: session.updated_at }],
+      currentSessionId: session.id,
+      forks: {},
+    })
+
+    setTimeout(() => {
+      const store = get()
+      if (store.isCrossPaperMode && store.currentSessionId === session.id && store.messages.length === 0 && !store.isStreaming) {
+        store.sendCrossPaperMessage(session.id, AUTO_CROSS_PAPER_MESSAGE)
+      }
+    }, 300)
+  },
+
+  loadCrossPaperSessions: async () => {
+    set({
+      isCrossPaperMode: true,
+      currentPaperId: null,
+      messages: [],
+      sessions: [],
+      currentSessionId: null,
+      forks: {},
+    })
+
+    try {
+      const sessionList = await api.listCrossPaperSessions()
+      const sessions = sessionList.sessions.map((s) => ({
+        id: s.id,
+        title: s.title,
+        created_at: s.created_at,
+        updated_at: s.updated_at,
+      }))
+
+      if (sessions.length === 0) {
+        set({ sessions, isCrossPaperMode: true })
+        return
+      }
+
+      const activeId = sessionList.last_active_session_id || sessions[0].id
+      set({ sessions, currentSessionId: activeId, isCrossPaperMode: true })
+
+      const activeSession = sessionList.sessions.find((s) => s.id === activeId)
+      if (activeSession) {
+        set({ crossPaperIds: activeSession.paper_ids })
+      }
+
+      get().loadCrossPaperSession(activeId)
+    } catch (error) {
+      set({ error: (error as Error).message })
+    }
+  },
+
+  loadCrossPaperSession: async (sessionId: string) => {
+    set({ isLoading: true, error: null })
+    try {
+      const history = await api.getCrossPaperChatHistory(sessionId)
+      set({
+        messages: history.messages,
+        forks: history.forks || {},
+        isLoading: false,
+        crossPaperIds: history.paper_ids,
+        currentSessionId: sessionId,
+      })
+    } catch (error) {
+      set({ error: (error as Error).message, isLoading: false })
+    }
+  },
+
+  deleteCrossPaperSession: async (sessionId: string) => {
+    try {
+      await api.deleteCrossPaperSession(sessionId)
+      const { currentSessionId } = get()
+      set((state) => {
+        const remaining = state.sessions.filter((s) => s.id !== sessionId)
+        const needSwitch = currentSessionId === sessionId
+        return {
+          sessions: remaining,
+          currentSessionId: needSwitch ? (remaining[0]?.id ?? null) : currentSessionId,
+          messages: needSwitch ? [] : state.messages,
+          forks: needSwitch ? {} : state.forks,
+        }
+      })
+      const store = get()
+      if (store.currentSessionId && currentSessionId === sessionId) {
+        store.loadCrossPaperSession(store.currentSessionId)
+      }
+    } catch (error) {
+      set({ error: (error as Error).message })
+    }
+  },
+
+  switchCrossPaperSession: async (sessionId: string) => {
+    const { currentSessionId } = get()
+    if (currentSessionId === sessionId) return
+    set({ currentSessionId: sessionId, messages: [], forks: {} })
+    get().loadCrossPaperSession(sessionId)
+  },
+
+  sendCrossPaperMessage: async (sessionId: string, message: string, quotes?: QuoteItem[]) => {
+    const controller = new AbortController()
+
+    const userMessage: api.ChatMessage = { role: 'user', content: message }
+    set((state) => ({ messages: [...state.messages, userMessage], isStreaming: true, error: null, abortController: controller }))
+
+    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
+    set((state) => ({ messages: [...state.messages, assistantMessage] }))
+
+    const isStillActive = () =>
+      get().isCrossPaperMode && get().currentSessionId === sessionId
+
+    try {
+      for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, controller.signal)) {
+        if (!isStillActive()) continue
+
+        if (data.type === 'chunk' && data.content) {
+          set((state) => {
+            const newMessages = [...state.messages]
+            const lastMessage = newMessages[newMessages.length - 1]
+            if (lastMessage.role === 'assistant') {
+              lastMessage.content += data.content
+            }
+            return { messages: newMessages }
+          })
+        } else if (data.type === 'done') {
+          set({ isStreaming: false, abortController: null })
+        } else if (data.type === 'error') {
+          set((state) => ({
+            error: data.message || 'Unknown error',
+            isStreaming: false,
+            abortController: null,
+            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
+          }))
+        }
+      }
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        set((state) => {
+          const msgs = [...state.messages]
+          const last = msgs[msgs.length - 1]
+          if (last?.role === 'assistant' && !last.content) {
+            msgs.pop()
+          }
+          return { messages: msgs, isStreaming: false, abortController: null }
+        })
+        return
+      }
+      if (!isStillActive()) return
+      set({ error: (error as Error).message, isStreaming: false, abortController: null })
+      set((state) => ({
+        messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
+      }))
+    }
+  },
+
+  clearCrossPaperHistory: async (sessionId: string) => {
+    set({ isLoading: true, error: null })
+    try {
+      await api.clearCrossPaperChatHistory(sessionId)
+      set({ messages: [], forks: {}, isLoading: false })
+    } catch (error) {
+      set({ error: (error as Error).message, isLoading: false })
+    }
+  },
+
+  editCrossPaperMessage: async (sessionId: string, messageIndex: number, newContent: string) => {
+    const { messages, forks } = get()
+    const oldMessage = messages[messageIndex]
+    if (!oldMessage || oldMessage.role !== 'user') return
+
+    const tailFromIndex = messages.slice(messageIndex)
+    const newForks = { ...forks }
+    const key = String(messageIndex)
+
+    if (newForks[key]) {
+      const currentActive = newForks[key].active
+      newForks[key] = {
+        alternatives: [...newForks[key].alternatives],
+        active: currentActive,
+      }
+      newForks[key].alternatives[currentActive] = tailFromIndex
+      newForks[key].alternatives.push([{ role: 'user', content: newContent }])
+      newForks[key].active = newForks[key].alternatives.length - 1
+    } else {
+      newForks[key] = {
+        alternatives: [
+          tailFromIndex,
+          [{ role: 'user', content: newContent }],
+        ],
+        active: 1,
+      }
+    }
+
+    const newMessages = messages.slice(0, messageIndex)
+    set({ messages: newMessages, forks: newForks })
+
+    try {
+      await api.updateCrossPaperChatHistory(sessionId, newMessages, newForks)
+    } catch {
+      // best effort
+    }
+
+    get().sendCrossPaperMessage(sessionId, newContent)
+  },
+
+  switchCrossPaperFork: async (sessionId: string, messageIndex: number, forkIndex: number) => {
+    const { messages, forks } = get()
+    const key = String(messageIndex)
+    const fork = forks[key]
+    if (!fork || forkIndex < 0 || forkIndex >= fork.alternatives.length) return
+
+    const currentTail = messages.slice(messageIndex)
+    const newForks = { ...forks }
+    newForks[key] = {
+      alternatives: [...fork.alternatives],
+      active: forkIndex,
+    }
+    newForks[key].alternatives[fork.active] = currentTail
+
+    const targetBranch = newForks[key].alternatives[forkIndex]
+    const newMessages = [...messages.slice(0, messageIndex), ...targetBranch]
+    set({ messages: newMessages, forks: newForks })
+
+    try {
+      await api.updateCrossPaperChatHistory(sessionId, newMessages, newForks)
+    } catch {
+      // best effort
+    }
+  },
+
+  exitCrossPaperChat: () => {
+    set({
+      isCrossPaperMode: false,
+      crossPaperIds: [],
+      messages: [],
+      sessions: [],
+      currentSessionId: null,
+      forks: {},
+      currentPaperId: null,
+    })
   },
 }))

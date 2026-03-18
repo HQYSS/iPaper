@@ -106,6 +106,39 @@ class SessionCreate(BaseModel):
     title: Optional[str] = None
 
 
+# ============ 串讲（Cross-Paper）相关模型 ============
+
+class CrossPaperSessionCreate(BaseModel):
+    """新建串讲会话请求"""
+    paper_ids: List[str] = Field(..., min_length=2, max_length=5, description="参与串讲的论文 ID 列表")
+    title: Optional[str] = None
+
+
+class CrossPaperSessionMeta(SessionMeta):
+    """串讲会话元信息（扩展 SessionMeta）"""
+    paper_ids: List[str] = Field(default_factory=list, description="参与串讲的论文 ID 列表")
+
+
+class CrossPaperSessionList(BaseModel):
+    """串讲会话列表"""
+    sessions: List[CrossPaperSessionMeta]
+    last_active_session_id: Optional[str] = None
+
+
+class CrossPaperChatRequest(BaseModel):
+    """串讲对话请求"""
+    message: str = Field(..., description="用户消息")
+    quotes: Optional[List[Quote]] = Field(None, description="用户引用的文本片段")
+
+
+class CrossPaperChatHistory(BaseModel):
+    """串讲对话历史"""
+    session_id: str
+    paper_ids: List[str]
+    messages: List[ChatMessage]
+    forks: Optional[Dict[str, ForkData]] = None
+
+
 # ============ 配置相关模型 ============
 
 class LLMConfigUpdate(BaseModel):

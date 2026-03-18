@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
-import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil } from 'lucide-react'
+import { useEffect, useRef, useState, useMemo, type ReactNode } from 'react'
+import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil, GitCompareArrows, ArrowLeft } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
+import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { useChatStore } from '../../stores/chatStore'
 
 interface ChatPanelProps {
-  paperId: string
+  paperId?: string
+  crossPaperSessionId?: string
   onCollapse?: () => void
+  onPaperLinkClick?: (paperId: string) => void
+  onExitCrossChat?: () => void
 }
 
 import type { PendingProfileUpdate, SessionMeta } from '../../services/api'
@@ -181,6 +185,28 @@ const parseMessageWithQuote = (content: string) => {
   return { source: null, quote: null, question: content }
 }
 
+function processChildren(
+  children: ReactNode,
+  renderLinks: (text: string) => ReactNode[]
+): ReactNode {
+  if (typeof children === 'string') {
+    const parts = renderLinks(children)
+    if (parts.length === 1 && typeof parts[0] === 'string') return parts[0]
+    return <>{parts}</>
+  }
+  if (Array.isArray(children)) {
+    return children.map((child, i) => {
+      if (typeof child === 'string') {
+        const parts = renderLinks(child)
+        if (parts.length === 1 && typeof parts[0] === 'string') return child
+        return <span key={i}>{parts}</span>
+      }
+      return child
+    })
+  }
+  return children
+}
+
 function cleanSelectedText(raw: string): string {
   return raw
     .replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '')
@@ -283,7 +309,9 @@ function ForkNavigator({
   )
 }
 
-export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
+export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLinkClick, onExitCrossChat }: ChatPanelProps) {
+  const isCrossMode = !!crossPaperSessionId
+
   const {
     messages,
     isLoading,
@@ -312,6 +340,11 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
     forks,
     editMessage,
     switchFork,
+    focusInputNonce,
+    sendCrossPaperMessage,
+    clearCrossPaperHistory,
+    editCrossPaperMessage,
+    switchCrossPaperFork,
   } = useChatStore()
 
   const [input, setInput] = useState('')
@@ -319,13 +352,16 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
   const [editingContent, setEditingContent] = useState('')
   const [chatSelectedText, setChatSelectedText] = useState('')
   const [chatSelectionPosition, setChatSelectionPosition] = useState<{ x: number; y: number } | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
 
   useEffect(() => {
-    loadSessions(paperId)
-  }, [paperId, loadSessions])
+    if (!isCrossMode && paperId) {
+      loadSessions(paperId)
+    }
+  }, [paperId, loadSessions, isCrossMode])
 
   useEffect(() => {
     checkPendingProfileUpdates()
@@ -348,6 +384,15 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [messages])
+
+  useEffect(() => {
+    const textarea = inputRef.current
+    if (!textarea || textarea.disabled) return
+
+    textarea.focus()
+    const cursorPosition = textarea.value.length
+    textarea.setSelectionRange(cursorPosition, cursorPosition)
+  }, [focusInputNonce])
 
   useEffect(() => {
     const container = messagesContainerRef.current
@@ -403,8 +448,10 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
     }
   }
 
+  const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
+
   const handleSend = async () => {
-    if (!input.trim() || isStreaming || !currentSessionId) return
+    if (!input.trim() || isStreaming || !activeSessionId) return
 
     const messageContent = input.trim()
     const currentQuotes = quotes.length > 0 ? [...quotes] : undefined
@@ -412,22 +459,94 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
     setInput('')
     clearQuotes()
     isNearBottomRef.current = true
-    await sendMessage(paperId, currentSessionId, messageContent, currentQuotes)
+
+    if (isCrossMode) {
+      await sendCrossPaperMessage(activeSessionId, messageContent, currentQuotes)
+    } else if (paperId) {
+      await sendMessage(paperId, activeSessionId, messageContent, currentQuotes)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
     }
   }
+
+  const renderPaperLinks = useMemo(() => {
+    const PAPER_LINK_RE = /\[\[(\d{4}\.\d{4,5})\]\]/g
+
+    return (text: string): ReactNode[] => {
+      if (!onPaperLinkClick) return [text]
+
+      const parts: ReactNode[] = []
+      let lastIndex = 0
+      let match: RegExpExecArray | null
+
+      while ((match = PAPER_LINK_RE.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(text.slice(lastIndex, match.index))
+        }
+        const arxivId = match[1]
+        parts.push(
+          <button
+            key={`${match.index}-${arxivId}`}
+            onClick={() => onPaperLinkClick(arxivId)}
+            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 -my-0.5 rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50 text-sm font-mono transition-colors cursor-pointer"
+            title={`切换到论文 ${arxivId}`}
+          >
+            {arxivId}
+          </button>
+        )
+        lastIndex = match.index + match[0].length
+      }
+
+      if (lastIndex < text.length) {
+        parts.push(text.slice(lastIndex))
+      }
+
+      return parts.length > 0 ? parts : [text]
+    }
+  }, [onPaperLinkClick])
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const crossPaperMarkdownComponents = useMemo((): any => {
+    if (!onPaperLinkClick) return undefined
+
+    const makeComponent = (Tag: any) => {
+      const Component = ({ children, node: _node, ...rest }: any) => {
+        const processed = processChildren(children, renderPaperLinks)
+        return <Tag {...rest}>{processed}</Tag>
+      }
+      return Component
+    }
+
+    return {
+      p: makeComponent('p'),
+      li: makeComponent('li'),
+      td: makeComponent('td'),
+      th: makeComponent('th'),
+      strong: makeComponent('strong'),
+    }
+  }, [onPaperLinkClick, renderPaperLinks])
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   return (
     <div className="h-full flex flex-col relative">
       {/* 标题栏 */}
       <div className="p-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-1">
-          {onCollapse && (
+          {isCrossMode && onExitCrossChat && (
+            <button
+              onClick={onExitCrossChat}
+              className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+              title="退出串讲"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
+          {!isCrossMode && onCollapse && (
             <button
               onClick={onCollapse}
               className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
@@ -436,25 +555,33 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
               <PanelRightClose className="w-4 h-4" />
             </button>
           )}
-          <h2 className="font-semibold">AI 助手</h2>
+          <h2 className="font-semibold flex items-center gap-1.5">
+            {isCrossMode && <GitCompareArrows className="w-4 h-4 text-purple-500" />}
+            {isCrossMode ? '串讲' : 'AI 助手'}
+          </h2>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => triggerProfileAnalysis(paperId)}
-            disabled={isAnalyzingProfile || messages.length < 2}
-            className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
-            title="分析对话并更新画像"
-          >
-            {isAnalyzingProfile ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-          </button>
+          {!isCrossMode && (
+            <button
+              onClick={() => paperId && triggerProfileAnalysis(paperId)}
+              disabled={isAnalyzingProfile || messages.length < 2}
+              className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+              title="分析对话并更新画像"
+            >
+              {isAnalyzingProfile ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+            </button>
+          )}
           <button
             onClick={() => {
-              if (currentSessionId && confirm('确定清空当前对话历史吗？')) {
-                clearHistory(paperId, currentSessionId)
+              if (!activeSessionId || !confirm('确定清空当前对话历史吗？')) return
+              if (isCrossMode) {
+                clearCrossPaperHistory(activeSessionId)
+              } else if (paperId) {
+                clearHistory(paperId, activeSessionId)
               }
             }}
             className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
@@ -465,15 +592,17 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
         </div>
       </div>
 
-      {/* 会话标签栏 */}
-      <SessionTabBar
-        sessions={sessions}
-        currentSessionId={currentSessionId}
-        onSwitch={switchSession}
-        onCreate={createSession}
-        onDelete={deleteSession}
-        paperId={paperId}
-      />
+      {/* 会话标签栏（仅单论文模式） */}
+      {!isCrossMode && paperId && (
+        <SessionTabBar
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onSwitch={switchSession}
+          onCreate={createSession}
+          onDelete={deleteSession}
+          paperId={paperId}
+        />
+      )}
 
       {/* 画像更新通知 */}
       {pendingProfileUpdate && (
@@ -509,9 +638,11 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
-            <p>开始提问吧！</p>
+            <p>{isCrossMode ? '串讲即将开始…' : '开始提问吧！'}</p>
             <p className="text-xs mt-2 text-center px-4">
-              你可以询问关于这篇论文的任何问题，AI 会基于论文内容为你解答。
+              {isCrossMode
+                ? 'AI 正在阅读所有论文，即将产出对比分析。'
+                : '你可以询问关于这篇论文的任何问题，AI 会基于论文内容为你解答。'}
             </p>
           </div>
         ) : (
@@ -544,8 +675,12 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
                         </button>
                         <button
                           onClick={() => {
-                            if (editingContent.trim() && currentSessionId) {
-                              editMessage(paperId, currentSessionId, index, editingContent.trim())
+                            if (editingContent.trim() && activeSessionId) {
+                              if (isCrossMode) {
+                                editCrossPaperMessage(activeSessionId, index, editingContent.trim())
+                              } else if (paperId) {
+                                editMessage(paperId, activeSessionId, index, editingContent.trim())
+                              }
                               setEditingIndex(null)
                             }
                           }}
@@ -572,7 +707,14 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
                           {forks[String(index)] && (
                             <ForkNavigator
                               forkData={forks[String(index)]}
-                              onSwitch={(fi) => currentSessionId && switchFork(paperId, currentSessionId, index, fi)}
+                              onSwitch={(fi) => {
+                                if (!activeSessionId) return
+                                if (isCrossMode) {
+                                  switchCrossPaperFork(activeSessionId, index, fi)
+                                } else if (paperId) {
+                                  switchFork(paperId, activeSessionId, index, fi)
+                                }
+                              }}
                             />
                           )}
                         </div>
@@ -609,8 +751,9 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
                     prose-hr:my-6 prose-hr:border-border
                   ">
                     <ReactMarkdown
-                      remarkPlugins={[remarkMath]}
+                      remarkPlugins={[remarkGfm, remarkMath]}
                       rehypePlugins={[rehypeKatex]}
+                      components={isCrossMode ? crossPaperMarkdownComponents : undefined}
                     >
                       {message.content || '...'}
                     </ReactMarkdown>
@@ -648,6 +791,7 @@ export function ChatPanel({ paperId, onCollapse }: ChatPanelProps) {
 
         <div className="flex gap-2">
           <textarea
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}

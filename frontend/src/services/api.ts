@@ -240,6 +240,144 @@ export async function* sendMessage(
   }
 }
 
+// ============ 串讲 (Cross-Paper) API ============
+
+export interface CrossPaperSessionMeta {
+  id: string
+  title: string
+  paper_ids: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CrossPaperSessionList {
+  sessions: CrossPaperSessionMeta[]
+  last_active_session_id: string | null
+}
+
+export interface CrossPaperChatHistory {
+  session_id: string
+  paper_ids: string[]
+  messages: ChatMessage[]
+  forks?: Record<string, ForkData>
+}
+
+export async function listCrossPaperSessions(): Promise<CrossPaperSessionList> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions`)
+  if (!response.ok) {
+    throw new Error('Failed to list cross-paper sessions')
+  }
+  return response.json()
+}
+
+export async function createCrossPaperSession(
+  paperIds: string[],
+  title?: string
+): Promise<CrossPaperSessionMeta> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_ids: paperIds, title: title ?? null }),
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to create cross-paper session')
+  }
+  return response.json()
+}
+
+export async function deleteCrossPaperSession(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to delete cross-paper session')
+  }
+}
+
+export async function getCrossPaperChatHistory(sessionId: string): Promise<CrossPaperChatHistory> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`)
+  if (!response.ok) {
+    throw new Error('Failed to get cross-paper chat history')
+  }
+  return response.json()
+}
+
+export async function updateCrossPaperChatHistory(
+  sessionId: string,
+  messages: ChatMessage[],
+  forks?: Record<string, ForkData>
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, forks }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update cross-paper chat history')
+  }
+}
+
+export async function clearCrossPaperChatHistory(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to clear cross-paper chat history')
+  }
+}
+
+export async function* sendCrossPaperMessage(
+  sessionId: string,
+  message: string,
+  quotes?: QuoteInput[],
+  signal?: AbortSignal
+): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      quotes: quotes && quotes.length > 0 ? quotes : undefined,
+    }),
+    signal,
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to send cross-paper message')
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('No response body')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          yield data
+        } catch {
+          // skip malformed SSE lines
+        }
+      }
+    }
+  }
+}
+
 // ============ 配置 API ============
 
 export interface Config {

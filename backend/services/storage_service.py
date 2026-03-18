@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from config import settings
-from models import ChatMessage, ForkData, SessionMeta, SessionList
+from models import ChatMessage, ForkData, SessionMeta, SessionList, CrossPaperSessionMeta, CrossPaperSessionList
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,140 @@ class StorageService:
         index_file.parent.mkdir(parents=True, exist_ok=True)
         with open(index_file, "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2, ensure_ascii=False, default=str)
+
+    # ==================== Cross-Paper (串讲) ====================
+
+    def _get_cross_paper_dir(self) -> Path:
+        return settings.data_dir / "cross-paper"
+
+    def _get_cross_paper_chats_dir(self) -> Path:
+        return self._get_cross_paper_dir() / "chats"
+
+    def _get_cross_paper_index_file(self) -> Path:
+        return self._get_cross_paper_dir() / "sessions.json"
+
+    def _get_cross_paper_chat_file(self, session_id: str) -> Path:
+        return self._get_cross_paper_chats_dir() / f"{session_id}.json"
+
+    def _load_cross_paper_index(self) -> dict:
+        index_file = self._get_cross_paper_index_file()
+        if not index_file.exists():
+            return {"sessions": [], "last_active_session_id": None}
+        with open(index_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _save_cross_paper_index(self, index: dict):
+        index_file = self._get_cross_paper_index_file()
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(index_file, "w", encoding="utf-8") as f:
+            json.dump(index, f, indent=2, ensure_ascii=False, default=str)
+
+    def list_cross_paper_sessions(self) -> CrossPaperSessionList:
+        index = self._load_cross_paper_index()
+        sessions = [CrossPaperSessionMeta(**s) for s in index.get("sessions", [])]
+        return CrossPaperSessionList(
+            sessions=sessions,
+            last_active_session_id=index.get("last_active_session_id"),
+        )
+
+    def create_cross_paper_session(
+        self, paper_ids: List[str], title: Optional[str] = None
+    ) -> CrossPaperSessionMeta:
+        chats_dir = self._get_cross_paper_chats_dir()
+        chats_dir.mkdir(parents=True, exist_ok=True)
+
+        session_id = f"cp_{int(time.time() * 1000)}"
+        now = datetime.now()
+        meta = CrossPaperSessionMeta(
+            id=session_id,
+            title=title or "串讲",
+            paper_ids=paper_ids,
+            created_at=now,
+            updated_at=now,
+        )
+
+        index = self._load_cross_paper_index()
+        index.setdefault("sessions", []).append(meta.model_dump(mode="json"))
+        self._save_cross_paper_index(index)
+        return meta
+
+    def delete_cross_paper_session(self, session_id: str) -> bool:
+        index = self._load_cross_paper_index()
+        sessions = index.get("sessions", [])
+        original_len = len(sessions)
+        index["sessions"] = [s for s in sessions if s["id"] != session_id]
+        if len(index["sessions"]) == original_len:
+            return False
+
+        if index.get("last_active_session_id") == session_id:
+            index["last_active_session_id"] = (
+                index["sessions"][0]["id"] if index["sessions"] else None
+            )
+        self._save_cross_paper_index(index)
+
+        chat_file = self._get_cross_paper_chat_file(session_id)
+        if chat_file.exists():
+            chat_file.unlink()
+        return True
+
+    def set_last_active_cross_paper_session(self, session_id: str):
+        index = self._load_cross_paper_index()
+        index["last_active_session_id"] = session_id
+        self._save_cross_paper_index(index)
+
+    def get_cross_paper_session(self, session_id: str) -> Optional[CrossPaperSessionMeta]:
+        index = self._load_cross_paper_index()
+        for s in index.get("sessions", []):
+            if s["id"] == session_id:
+                return CrossPaperSessionMeta(**s)
+        return None
+
+    def get_cross_paper_chat_history(self, session_id: str) -> tuple[List[ChatMessage], Optional[dict]]:
+        chat_file = self._get_cross_paper_chat_file(session_id)
+        if not chat_file.exists():
+            return [], None
+        with open(chat_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        messages = [ChatMessage(**msg) for msg in data.get("messages", [])]
+        forks = data.get("forks")
+        return messages, forks
+
+    def save_cross_paper_chat_history(
+        self,
+        session_id: str,
+        paper_ids: List[str],
+        messages: List[ChatMessage],
+        forks: Optional[dict] = None,
+    ):
+        chat_file = self._get_cross_paper_chat_file(session_id)
+        chat_file.parent.mkdir(parents=True, exist_ok=True)
+
+        data = {
+            "session_id": session_id,
+            "paper_ids": paper_ids,
+            "messages": [msg.model_dump() for msg in messages],
+        }
+        if forks:
+            data["forks"] = forks
+        with open(chat_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        self._update_cross_paper_session_timestamp(session_id)
+
+    def clear_cross_paper_chat_history(self, session_id: str) -> bool:
+        chat_file = self._get_cross_paper_chat_file(session_id)
+        if chat_file.exists():
+            chat_file.unlink()
+            return True
+        return False
+
+    def _update_cross_paper_session_timestamp(self, session_id: str):
+        index = self._load_cross_paper_index()
+        for s in index.get("sessions", []):
+            if s["id"] == session_id:
+                s["updated_at"] = datetime.now().isoformat()
+                break
+        self._save_cross_paper_index(index)
 
     # ==================== 迁移 ====================
 
