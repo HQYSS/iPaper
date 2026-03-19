@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { useChatStore } from '../../stores/chatStore'
+import { usePaperStore } from '../../stores/paperStore'
 
 interface ChatPanelProps {
   paperId?: string
@@ -341,17 +342,24 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     editMessage,
     switchFork,
     focusInputNonce,
+    crossPaperIds,
     sendCrossPaperMessage,
     clearCrossPaperHistory,
     editCrossPaperMessage,
     switchCrossPaperFork,
+    addPaperToCrossChat,
   } = useChatStore()
+
+  const { papers, updateCrossPaperSessionPaperIds } = usePaperStore()
 
   const [input, setInput] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingContent, setEditingContent] = useState('')
   const [chatSelectedText, setChatSelectedText] = useState('')
   const [chatSelectionPosition, setChatSelectionPosition] = useState<{ x: number; y: number } | null>(null)
+  const [showAddPaperPanel, setShowAddPaperPanel] = useState(false)
+  const [addPaperSelected, setAddPaperSelected] = useState<string[]>([])
+  const [addPaperNote, setAddPaperNote] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -561,6 +569,20 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
           </h2>
         </div>
         <div className="flex items-center gap-1">
+          {isCrossMode && (
+            <button
+              onClick={() => {
+                setShowAddPaperPanel(!showAddPaperPanel)
+                setAddPaperSelected([])
+                setAddPaperNote('')
+              }}
+              disabled={isStreaming}
+              className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground disabled:opacity-30"
+              title="添加论文到串讲"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
           {!isCrossMode && (
             <button
               onClick={() => paperId && triggerProfileAnalysis(paperId)}
@@ -591,6 +613,68 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
           </button>
         </div>
       </div>
+
+      {/* 添加论文面板（串讲模式） */}
+      {isCrossMode && showAddPaperPanel && (
+        <div className="border-b border-border bg-muted/30 p-3 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">选择要加入串讲的论文</p>
+          <div className="max-h-32 overflow-y-auto space-y-1">
+            {papers
+              .filter((p) => !crossPaperIds.includes(p.arxiv_id))
+              .map((paper) => {
+                const checked = addPaperSelected.includes(paper.arxiv_id)
+                return (
+                  <label
+                    key={paper.arxiv_id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent/50 cursor-pointer text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setAddPaperSelected((prev) =>
+                          checked ? prev.filter((id) => id !== paper.arxiv_id) : [...prev, paper.arxiv_id]
+                        )
+                      }}
+                      className="rounded border-input"
+                    />
+                    <span className="truncate">{paper.title}</span>
+                  </label>
+                )
+              })}
+            {papers.filter((p) => !crossPaperIds.includes(p.arxiv_id)).length === 0 && (
+              <p className="text-xs text-muted-foreground px-2 py-1">论文库中没有其他论文了</p>
+            )}
+          </div>
+          {addPaperSelected.length > 0 && (
+            <>
+              <textarea
+                value={addPaperNote}
+                onChange={(e) => setAddPaperNote(e.target.value)}
+                placeholder="补充说明（可选，如：重点对比新论文的 XX 方面）"
+                className="w-full px-2 py-1.5 text-sm rounded border border-input bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                rows={2}
+              />
+              <button
+                onClick={async () => {
+                  if (!activeSessionId || addPaperSelected.length === 0) return
+                  const note = addPaperNote
+                  const selected = [...addPaperSelected]
+                  setShowAddPaperPanel(false)
+                  setAddPaperSelected([])
+                  setAddPaperNote('')
+                  await addPaperToCrossChat(activeSessionId, selected, note)
+                  updateCrossPaperSessionPaperIds([...crossPaperIds, ...selected])
+                }}
+                disabled={isStreaming}
+                className="w-full px-3 py-1.5 text-sm font-medium bg-purple-500 text-white rounded-md hover:bg-purple-600 disabled:opacity-50 transition-colors"
+              >
+                添加并分析 ({addPaperSelected.length} 篇)
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 会话标签栏（仅单论文模式） */}
       {!isCrossMode && paperId && (

@@ -296,6 +296,22 @@ export async function deleteCrossPaperSession(sessionId: string): Promise<void> 
   }
 }
 
+export async function addPapersToCrossPaperSession(
+  sessionId: string,
+  paperIds: string[]
+): Promise<CrossPaperSessionMeta> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}/papers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_ids: paperIds }),
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to add papers to cross-paper session')
+  }
+  return response.json()
+}
+
 export async function getCrossPaperChatHistory(sessionId: string): Promise<CrossPaperChatHistory> {
   const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`)
   if (!response.ok) {

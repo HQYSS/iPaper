@@ -125,6 +125,11 @@ class CrossPaperSessionList(BaseModel):
     last_active_session_id: Optional[str] = None
 
 
+class CrossPaperAddPapersRequest(BaseModel):
+    """向串讲会话添加论文"""
+    paper_ids: List[str] = Field(..., min_length=1, description="要添加的论文 ID 列表")
+
+
 class CrossPaperChatRequest(BaseModel):
     """串讲对话请求"""
     message: str = Field(..., description="用户消息")

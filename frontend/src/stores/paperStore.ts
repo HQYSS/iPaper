@@ -28,6 +28,7 @@ interface PaperStore {
   startCrossChat: () => Promise<void>
   enterCrossChatSession: (session: api.CrossPaperSessionMeta) => void
   setCrossPaperPdfTab: (paperId: string) => void
+  updateCrossPaperSessionPaperIds: (paperIds: string[]) => void
 }
 
 export const usePaperStore = create<PaperStore>((set, get) => ({
@@ -176,6 +177,21 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
     set((state) => ({
       crossPaper: { ...state.crossPaper, activePdfTab: paperId },
     }))
+  },
+
+  updateCrossPaperSessionPaperIds: (paperIds: string[]) => {
+    set((state) => {
+      if (!state.crossPaper.activeCrossPaperSession) return state
+      return {
+        crossPaper: {
+          ...state.crossPaper,
+          activeCrossPaperSession: {
+            ...state.crossPaper.activeCrossPaperSession,
+            paper_ids: paperIds,
+          },
+        },
+      }
+    })
   },
 }))
 

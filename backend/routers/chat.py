@@ -13,7 +13,7 @@ from models import (
     ChatRequest, ChatMessage, ChatHistory, ChatHistoryUpdate,
     SessionList, SessionMeta, SessionCreate,
     CrossPaperSessionCreate, CrossPaperSessionMeta, CrossPaperSessionList,
-    CrossPaperChatRequest, CrossPaperChatHistory,
+    CrossPaperAddPapersRequest, CrossPaperChatRequest, CrossPaperChatHistory,
 )
 from services.llm_service import llm_service
 from services.storage_service import storage_service
@@ -65,6 +65,22 @@ async def delete_cross_paper_session(session_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="串讲会话不存在")
     return {"message": "串讲会话已删除"}
+
+
+@router.put("/cross-paper/sessions/{session_id}/papers", response_model=CrossPaperSessionMeta)
+async def add_papers_to_cross_paper_session(session_id: str, request: CrossPaperAddPapersRequest):
+    """向串讲会话添加论文"""
+    _check_cross_paper_session(session_id)
+
+    for pid in request.paper_ids:
+        paper = arxiv_service.get_paper(pid)
+        if not paper:
+            raise HTTPException(status_code=404, detail=f"论文 {pid} 不存在")
+
+    updated = storage_service.add_papers_to_cross_paper_session(session_id, request.paper_ids)
+    if not updated:
+        raise HTTPException(status_code=404, detail="串讲会话不存在")
+    return updated
 
 
 @router.post("/cross-paper/{session_id}")

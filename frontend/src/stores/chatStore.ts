@@ -62,6 +62,7 @@ interface ChatStore {
   clearCrossPaperHistory: (sessionId: string) => Promise<void>
   editCrossPaperMessage: (sessionId: string, messageIndex: number, newContent: string) => Promise<void>
   switchCrossPaperFork: (sessionId: string, messageIndex: number, forkIndex: number) => Promise<void>
+  addPaperToCrossChat: (sessionId: string, paperIds: string[], userMessage: string) => Promise<void>
   exitCrossPaperChat: () => void
 }
 
@@ -610,6 +611,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       await api.updateCrossPaperChatHistory(sessionId, newMessages, newForks)
     } catch {
       // best effort
+    }
+  },
+
+  addPaperToCrossChat: async (sessionId: string, newPaperIds: string[], userMessage: string) => {
+    try {
+      const updatedSession = await api.addPapersToCrossPaperSession(sessionId, newPaperIds)
+      set({ crossPaperIds: updatedSession.paper_ids })
+
+      const titles = newPaperIds.map((id) => `[[${id}]]`).join('、')
+      const prefix = `用户将新论文 ${titles} 加入了串讲。请将这篇新论文纳入之前的对比分析框架中，分析它与已有论文在技术路线上的异同。`
+      const fullMessage = userMessage.trim()
+        ? `${prefix}\n\n用户补充说明：${userMessage.trim()}`
+        : prefix
+
+      await get().sendCrossPaperMessage(sessionId, fullMessage)
+    } catch (error) {
+      set({ error: (error as Error).message })
     }
   },
 

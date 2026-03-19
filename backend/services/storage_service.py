@@ -234,6 +234,21 @@ class StorageService:
         index["last_active_session_id"] = session_id
         self._save_cross_paper_index(index)
 
+    def add_papers_to_cross_paper_session(self, session_id: str, new_paper_ids: List[str]) -> Optional[CrossPaperSessionMeta]:
+        """向串讲会话添加论文，返回更新后的 session meta"""
+        index = self._load_cross_paper_index()
+        for s in index.get("sessions", []):
+            if s["id"] == session_id:
+                existing = s.get("paper_ids", [])
+                for pid in new_paper_ids:
+                    if pid not in existing:
+                        existing.append(pid)
+                s["paper_ids"] = existing
+                s["updated_at"] = datetime.now().isoformat()
+                self._save_cross_paper_index(index)
+                return CrossPaperSessionMeta(**s)
+        return None
+
     def get_cross_paper_session(self, session_id: str) -> Optional[CrossPaperSessionMeta]:
         index = self._load_cross_paper_index()
         for s in index.get("sessions", []):
