@@ -7,6 +7,8 @@ from .schemas import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
+    ChatDraft,
+    ChatDraftUpdate,
     ForkData,
     ChatHistory,
     ChatHistoryUpdate,
@@ -21,6 +23,8 @@ from .schemas import (
     CrossPaperChatHistory,
     LLMConfigUpdate,
     ProfileAnalysisRequest,
+    EvolutionChatRequest,
+    SaveEditPlanRequest,
 )
 
 __all__ = [
@@ -32,6 +36,8 @@ __all__ = [
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
+    "ChatDraft",
+    "ChatDraftUpdate",
     "ForkData",
     "ChatHistory",
     "ChatHistoryUpdate",
@@ -46,5 +52,7 @@ __all__ = [
     "CrossPaperChatHistory",
     "LLMConfigUpdate",
     "ProfileAnalysisRequest",
+    "EvolutionChatRequest",
+    "SaveEditPlanRequest",
 ]
 

@@ -10,7 +10,7 @@ from openai import AuthenticationError, RateLimitError, APIConnectionError, APIS
 logger = logging.getLogger(__name__)
 
 from models import (
-    ChatRequest, ChatMessage, ChatHistory, ChatHistoryUpdate,
+    ChatDraftUpdate, ChatRequest, ChatMessage, ChatHistory, ChatHistoryUpdate,
     SessionList, SessionMeta, SessionCreate,
     CrossPaperSessionCreate, CrossPaperSessionMeta, CrossPaperSessionList,
     CrossPaperAddPapersRequest, CrossPaperChatRequest, CrossPaperChatHistory,
@@ -91,13 +91,21 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest):
     if not llm_service.is_configured():
         raise HTTPException(status_code=400, detail="LLM API Key 未配置")
 
-    messages, forks_raw = storage_service.get_cross_paper_chat_history(session_id)
+    messages, forks_raw, _ = storage_service.get_cross_paper_chat_history(session_id)
 
-    user_message = ChatMessage(role="user", content=request.message)
+    user_message = ChatMessage(
+        role="user",
+        content=request.message,
+        quotes=request.quotes,
+    )
     messages.append(user_message)
 
     storage_service.save_cross_paper_chat_history(
-        session_id, session.paper_ids, messages, forks_raw
+        session_id,
+        session.paper_ids,
+        messages,
+        forks_raw,
+        {"input": "", "quotes": None},
     )
     storage_service.set_last_active_cross_paper_session(session_id)
 
@@ -123,7 +131,11 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest):
             )
             messages.append(assistant_message)
             storage_service.save_cross_paper_chat_history(
-                session_id, session.paper_ids, messages, forks_raw
+                session_id,
+                session.paper_ids,
+                messages,
+                forks_raw,
+                {"input": "", "quotes": None},
             )
 
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
@@ -166,13 +178,14 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest):
 async def get_cross_paper_chat_history(session_id: str):
     """获取串讲对话历史"""
     session = _check_cross_paper_session(session_id)
-    messages, forks_raw = storage_service.get_cross_paper_chat_history(session_id)
+    messages, forks_raw, draft_raw = storage_service.get_cross_paper_chat_history(session_id)
     storage_service.set_last_active_cross_paper_session(session_id)
     return CrossPaperChatHistory(
         session_id=session_id,
         paper_ids=session.paper_ids,
         messages=messages,
         forks=forks_raw,
+        draft=draft_raw,
     )
 
 
@@ -180,13 +193,30 @@ async def get_cross_paper_chat_history(session_id: str):
 async def update_cross_paper_chat_history(session_id: str, request: ChatHistoryUpdate):
     """直接更新串讲对话历史"""
     session = _check_cross_paper_session(session_id)
+    _, _, draft_raw = storage_service.get_cross_paper_chat_history(session_id)
     forks_dict = None
     if request.forks:
         forks_dict = {k: v.model_dump() for k, v in request.forks.items()}
     storage_service.save_cross_paper_chat_history(
-        session_id, session.paper_ids, request.messages, forks_dict
+        session_id, session.paper_ids, request.messages, forks_dict, draft_raw
     )
     return {"message": "对话历史已更新"}
+
+
+@router.put("/cross-paper/{session_id}/history/draft")
+async def update_cross_paper_chat_draft(session_id: str, request: ChatDraftUpdate):
+    """更新串讲会话的未发送草稿"""
+    session = _check_cross_paper_session(session_id)
+    messages, forks_raw, _ = storage_service.get_cross_paper_chat_history(session_id)
+    storage_service.save_cross_paper_chat_history(
+        session_id,
+        session.paper_ids,
+        messages,
+        forks_raw,
+        request.draft.model_dump(exclude_none=True),
+    )
+    storage_service.set_last_active_cross_paper_session(session_id)
+    return {"message": "草稿已更新"}
 
 
 @router.delete("/cross-paper/{session_id}/history")
@@ -237,14 +267,24 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest):
     if not llm_service.is_configured():
         raise HTTPException(status_code=400, detail="LLM API Key 未配置")
 
-    messages, forks_raw = storage_service.get_chat_history(paper_id, session_id)
+    messages, forks_raw, _ = storage_service.get_chat_history(paper_id, session_id)
 
-    user_message = ChatMessage(role="user", content=request.message)
+    user_message = ChatMessage(
+        role="user",
+        content=request.message,
+        quotes=request.quotes,
+    )
     messages.append(user_message)
 
     pdf_path = arxiv_service.get_pdf_path(paper_id)
 
-    storage_service.save_chat_history(paper_id, session_id, messages, forks_raw)
+    storage_service.save_chat_history(
+        paper_id,
+        session_id,
+        messages,
+        forks_raw,
+        {"input": "", "quotes": None},
+    )
     storage_service.set_last_active_session(paper_id, session_id)
 
     async def generate():
@@ -268,7 +308,13 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest):
                 reasoning=reasoning
             )
             messages.append(assistant_message)
-            storage_service.save_chat_history(paper_id, session_id, messages, forks_raw)
+            storage_service.save_chat_history(
+                paper_id,
+                session_id,
+                messages,
+                forks_raw,
+                {"input": "", "quotes": None},
+            )
 
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
 
@@ -310,20 +356,49 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest):
 async def get_chat_history(paper_id: str, session_id: str):
     """获取对话历史"""
     _check_paper(paper_id)
-    messages, forks_raw = storage_service.get_chat_history(paper_id, session_id)
+    messages, forks_raw, draft_raw = storage_service.get_chat_history(paper_id, session_id)
     storage_service.set_last_active_session(paper_id, session_id)
-    return ChatHistory(paper_id=paper_id, session_id=session_id, messages=messages, forks=forks_raw)
+    return ChatHistory(
+        paper_id=paper_id,
+        session_id=session_id,
+        messages=messages,
+        forks=forks_raw,
+        draft=draft_raw,
+    )
 
 
 @router.put("/{paper_id}/{session_id}/history")
 async def update_chat_history(paper_id: str, session_id: str, request: ChatHistoryUpdate):
     """直接更新对话历史（编辑消息/切换分支时使用）"""
     _check_paper(paper_id)
+    _, _, draft_raw = storage_service.get_chat_history(paper_id, session_id)
     forks_dict = None
     if request.forks:
         forks_dict = {k: v.model_dump() for k, v in request.forks.items()}
-    storage_service.save_chat_history(paper_id, session_id, request.messages, forks_dict)
+    storage_service.save_chat_history(
+        paper_id,
+        session_id,
+        request.messages,
+        forks_dict,
+        draft_raw,
+    )
     return {"message": "对话历史已更新"}
+
+
+@router.put("/{paper_id}/{session_id}/history/draft")
+async def update_chat_draft(paper_id: str, session_id: str, request: ChatDraftUpdate):
+    """更新会话的未发送草稿"""
+    _check_paper(paper_id)
+    messages, forks_raw, _ = storage_service.get_chat_history(paper_id, session_id)
+    storage_service.save_chat_history(
+        paper_id,
+        session_id,
+        messages,
+        forks_raw,
+        request.draft.model_dump(exclude_none=True),
+    )
+    storage_service.set_last_active_session(paper_id, session_id)
+    return {"message": "草稿已更新"}
 
 
 @router.delete("/{paper_id}/{session_id}/history")

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo, type ReactNode } from 'react'
-import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, Check, RefreshCw, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil, GitCompareArrows, ArrowLeft } from 'lucide-react'
+import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil, GitCompareArrows, ArrowLeft } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
@@ -14,107 +14,14 @@ interface ChatPanelProps {
   onCollapse?: () => void
   onPaperLinkClick?: (paperId: string) => void
   onExitCrossChat?: () => void
+  onOpenEvolution?: () => void
 }
 
-import type { PendingProfileUpdate, SessionMeta } from '../../services/api'
-
-const SIGNAL_TYPE_LABELS: Record<string, string> = {
-  knowledge_update: '知识更新',
-  positive_example: '好的讲解',
-  negative_example: '待改进',
-  preference_update: '偏好变化',
-  interest_update: '兴趣变化',
-}
-
-function ProfileUpdateNotification({
-  update,
-  onApply,
-  onReject,
-}: {
-  update: PendingProfileUpdate
-  onApply: () => void
-  onReject: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="mx-4 mt-3 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
-      <div className="flex items-start gap-2">
-        <UserCog className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-blue-700 dark:text-blue-300">画像更新建议</p>
-          <p className="text-blue-600 dark:text-blue-400 mt-1 text-xs">
-            {update.summary}
-          </p>
-          {update.paper_title && (
-            <p className="text-blue-500/70 dark:text-blue-500/50 mt-0.5 text-xs">
-              来源：{update.paper_title}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="mt-2 ml-6 text-xs text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-1"
-      >
-        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        {expanded ? '收起详情' : '查看详情'}
-      </button>
-
-      {expanded && (
-        <div className="mt-2 ml-6 space-y-2">
-          {update.signals && update.signals.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-blue-600 dark:text-blue-400">识别到的信号：</p>
-              <ul className="mt-1 space-y-1">
-                {update.signals.map((sig, i) => (
-                  <li key={i} className="text-xs text-blue-600/80 dark:text-blue-400/80 pl-2 border-l-2 border-blue-300 dark:border-blue-700">
-                    <span className="font-medium">[{SIGNAL_TYPE_LABELS[sig.type] || sig.type}]</span>{' '}
-                    {sig.description}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {update.edits && update.edits.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-blue-600 dark:text-blue-400">将执行的编辑：</p>
-              <ul className="mt-1 space-y-1">
-                {update.edits.map((edit, i) => (
-                  <li key={i} className="text-xs text-blue-600/80 dark:text-blue-400/80 pl-2 border-l-2 border-blue-300 dark:border-blue-700">
-                    {edit.reason}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="flex gap-2 mt-2 ml-6">
-        <button
-          onClick={onApply}
-          className="flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
-        >
-          <Check className="w-3 h-3" />
-          应用
-        </button>
-        <button
-          onClick={onReject}
-          className="flex items-center gap-1 px-2.5 py-1 text-xs bg-transparent text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
-        >
-          <X className="w-3 h-3" />
-          忽略
-        </button>
-      </div>
-    </div>
-  )
-}
+import type { SessionMeta } from '../../services/api'
 
 import type { QuoteItem } from '../../stores/chatStore'
 
-function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove: () => void }) {
+function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove?: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const isPdf = quote.source === 'pdf'
   const truncated = quote.text.length > 80 ? quote.text.slice(0, 80) + '...' : quote.text
@@ -139,12 +46,14 @@ function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove: () => void
           {expanded ? quote.text : truncated}
         </p>
       </div>
-      <button
-        onClick={(e) => { e.stopPropagation(); onRemove() }}
-        className="px-2 flex-shrink-0 text-slate-300 hover:text-red-400 transition-colors"
-      >
-        <X className="w-3 h-3" />
-      </button>
+      {onRemove && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onRemove() }}
+          className="px-2 flex-shrink-0 text-slate-300 hover:text-red-400 transition-colors"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
     </div>
   )
 }
@@ -184,6 +93,13 @@ const parseMessageWithQuote = (content: string) => {
     }
   }
   return { source: null, quote: null, question: content }
+}
+
+const getMessageQuestion = (message: { content: string; quotes?: QuoteItem[] }) => {
+  if (message.quotes && message.quotes.length > 0) {
+    return message.content
+  }
+  return parseMessageWithQuote(message.content).question
 }
 
 function processChildren(
@@ -310,7 +226,7 @@ function ForkNavigator({
   )
 }
 
-export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLinkClick, onExitCrossChat }: ChatPanelProps) {
+export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLinkClick, onExitCrossChat, onOpenEvolution }: ChatPanelProps) {
   const isCrossMode = !!crossPaperSessionId
 
   const {
@@ -321,18 +237,13 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     sendMessage,
     stopStreaming,
     clearHistory,
+    draftInput,
+    setDraftInput,
     quotes,
     addQuote,
     removeQuote,
-    clearQuotes,
     error,
     clearError,
-    pendingProfileUpdate,
-    isAnalyzingProfile,
-    triggerProfileAnalysis,
-    checkPendingProfileUpdates,
-    applyProfileUpdate,
-    rejectProfileUpdate,
     sessions,
     currentSessionId,
     createSession,
@@ -341,18 +252,19 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     forks,
     editMessage,
     switchFork,
+    saveDraft,
     focusInputNonce,
     crossPaperIds,
     sendCrossPaperMessage,
     clearCrossPaperHistory,
     editCrossPaperMessage,
     switchCrossPaperFork,
+    saveCrossPaperDraft,
     addPaperToCrossChat,
   } = useChatStore()
 
   const { papers, updateCrossPaperSessionPaperIds } = usePaperStore()
 
-  const [input, setInput] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editingContent, setEditingContent] = useState('')
   const [chatSelectedText, setChatSelectedText] = useState('')
@@ -364,16 +276,13 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
+  const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
 
   useEffect(() => {
     if (!isCrossMode && paperId) {
       loadSessions(paperId)
     }
   }, [paperId, loadSessions, isCrossMode])
-
-  useEffect(() => {
-    checkPendingProfileUpdates()
-  }, [checkPendingProfileUpdates])
 
   useEffect(() => {
     const container = messagesContainerRef.current
@@ -401,6 +310,20 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     const cursorPosition = textarea.value.length
     textarea.setSelectionRange(cursorPosition, cursorPosition)
   }, [focusInputNonce])
+
+  useEffect(() => {
+    if (!activeSessionId) return
+
+    const timer = window.setTimeout(() => {
+      if (isCrossMode) {
+        void saveCrossPaperDraft(activeSessionId, draftInput, quotes)
+      } else if (paperId) {
+        void saveDraft(paperId, activeSessionId, draftInput, quotes)
+      }
+    }, 300)
+
+    return () => window.clearTimeout(timer)
+  }, [activeSessionId, draftInput, isCrossMode, paperId, quotes, saveDraft, saveCrossPaperDraft])
 
   useEffect(() => {
     const container = messagesContainerRef.current
@@ -456,16 +379,12 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     }
   }
 
-  const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
-
   const handleSend = async () => {
-    if (!input.trim() || isStreaming || !activeSessionId) return
+    if (!draftInput.trim() || isStreaming || !activeSessionId) return
 
-    const messageContent = input.trim()
+    const messageContent = draftInput.trim()
     const currentQuotes = quotes.length > 0 ? [...quotes] : undefined
 
-    setInput('')
-    clearQuotes()
     isNearBottomRef.current = true
 
     if (isCrossMode) {
@@ -583,20 +502,14 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
               <Plus className="w-4 h-4" />
             </button>
           )}
-          {!isCrossMode && (
-            <button
-              onClick={() => paperId && triggerProfileAnalysis(paperId)}
-              disabled={isAnalyzingProfile || messages.length < 2}
-              className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
-              title="分析对话并更新画像"
-            >
-              {isAnalyzingProfile ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4" />
-              )}
-            </button>
-          )}
+          <button
+            onClick={onOpenEvolution}
+            disabled={messages.length < 2}
+            className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+            title="画像进化"
+          >
+            <UserCog className="w-4 h-4" />
+          </button>
           <button
             onClick={() => {
               if (!activeSessionId || !confirm('确定清空当前对话历史吗？')) return
@@ -688,15 +601,6 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
         />
       )}
 
-      {/* 画像更新通知 */}
-      {pendingProfileUpdate && (
-        <ProfileUpdateNotification
-          update={pendingProfileUpdate}
-          onApply={applyProfileUpdate}
-          onReject={rejectProfileUpdate}
-        />
-      )}
-
       {/* 消息列表（笔记本式文档流） */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto relative">
         {/* 聊天内容引用按钮 */}
@@ -777,15 +681,26 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                     </div>
                   ) : (
                     <>
-                      {(() => {
-                        const { quote, source, question } = parseMessageWithQuote(message.content)
-                        return (
-                          <>
-                            {quote && source && <CollapsibleQuote quote={quote} source={source} />}
-                            <p className="text-[15px] leading-relaxed text-foreground/70 whitespace-pre-wrap">{question}</p>
-                          </>
-                        )
-                      })()}
+                      {message.quotes && message.quotes.length > 0 ? (
+                        <div className="mb-2 space-y-2">
+                          {message.quotes.map((quote, quoteIndex) => (
+                            <QuoteCard
+                              key={`${index}-${quoteIndex}`}
+                              quote={quote}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        (() => {
+                          const { quote, source } = parseMessageWithQuote(message.content)
+                          return quote && source
+                            ? <CollapsibleQuote quote={quote} source={source} />
+                            : null
+                        })()
+                      )}
+                      <p className="text-[15px] leading-relaxed text-foreground/70 whitespace-pre-wrap">
+                        {getMessageQuestion(message)}
+                      </p>
                       <div className="flex items-center justify-between mt-1">
                         <div>
                           {forks[String(index)] && (
@@ -806,7 +721,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                           <button
                             onClick={() => {
                               setEditingIndex(index)
-                              setEditingContent(parseMessageWithQuote(message.content).question)
+                              setEditingContent(getMessageQuestion(message))
                             }}
                             className="p-1 rounded opacity-0 group-hover/msg:opacity-100 hover:bg-accent text-muted-foreground hover:text-foreground transition-all"
                             title="编辑消息"
@@ -876,8 +791,8 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
         <div className="flex gap-2">
           <textarea
             ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
+            value={draftInput}
+            onChange={(e) => setDraftInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="输入问题..."
             className="flex-1 px-3 py-2 text-sm rounded-md border border-input bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
@@ -895,7 +810,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
           ) : (
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!draftInput.trim()}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
             >
               <Send className="w-4 h-4" />

@@ -9,7 +9,14 @@ from datetime import datetime
 from typing import List, Optional
 
 from config import settings
-from models import ChatMessage, ForkData, SessionMeta, SessionList, CrossPaperSessionMeta, CrossPaperSessionList
+from models import (
+    ChatDraft,
+    ChatMessage,
+    CrossPaperSessionList,
+    CrossPaperSessionMeta,
+    SessionList,
+    SessionMeta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,16 +94,19 @@ class StorageService:
 
     # ==================== 对话历史 ====================
 
-    def get_chat_history(self, paper_id: str, session_id: str) -> tuple[List[ChatMessage], Optional[dict]]:
-        """Returns (messages, forks_raw_dict_or_None)"""
+    def get_chat_history(
+        self, paper_id: str, session_id: str
+    ) -> tuple[List[ChatMessage], Optional[dict], Optional[dict]]:
+        """Returns (messages, forks_raw_dict_or_None, draft_raw_dict_or_None)"""
         chat_file = self._get_chat_file(paper_id, session_id)
         if not chat_file.exists():
-            return [], None
+            return [], None, None
         with open(chat_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         messages = [ChatMessage(**msg) for msg in data.get("messages", [])]
         forks = data.get("forks")
-        return messages, forks
+        draft = self._normalize_draft(data.get("draft"))
+        return messages, forks, draft
 
     def save_chat_history(
         self,
@@ -104,6 +114,7 @@ class StorageService:
         session_id: str,
         messages: List[ChatMessage],
         forks: Optional[dict] = None,
+        draft: Optional[dict] = None,
     ):
         chat_file = self._get_chat_file(paper_id, session_id)
         chat_file.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +126,9 @@ class StorageService:
         }
         if forks:
             data["forks"] = forks
+        normalized_draft = self._normalize_draft(draft)
+        if normalized_draft is not None:
+            data["draft"] = normalized_draft
         with open(chat_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -256,15 +270,18 @@ class StorageService:
                 return CrossPaperSessionMeta(**s)
         return None
 
-    def get_cross_paper_chat_history(self, session_id: str) -> tuple[List[ChatMessage], Optional[dict]]:
+    def get_cross_paper_chat_history(
+        self, session_id: str
+    ) -> tuple[List[ChatMessage], Optional[dict], Optional[dict]]:
         chat_file = self._get_cross_paper_chat_file(session_id)
         if not chat_file.exists():
-            return [], None
+            return [], None, None
         with open(chat_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         messages = [ChatMessage(**msg) for msg in data.get("messages", [])]
         forks = data.get("forks")
-        return messages, forks
+        draft = self._normalize_draft(data.get("draft"))
+        return messages, forks, draft
 
     def save_cross_paper_chat_history(
         self,
@@ -272,6 +289,7 @@ class StorageService:
         paper_ids: List[str],
         messages: List[ChatMessage],
         forks: Optional[dict] = None,
+        draft: Optional[dict] = None,
     ):
         chat_file = self._get_cross_paper_chat_file(session_id)
         chat_file.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +301,9 @@ class StorageService:
         }
         if forks:
             data["forks"] = forks
+        normalized_draft = self._normalize_draft(draft)
+        if normalized_draft is not None:
+            data["draft"] = normalized_draft
         with open(chat_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -302,6 +323,11 @@ class StorageService:
                 s["updated_at"] = datetime.now().isoformat()
                 break
         self._save_cross_paper_index(index)
+
+    def _normalize_draft(self, draft: Optional[dict]) -> Optional[dict]:
+        if draft is None:
+            return None
+        return ChatDraft(**draft).model_dump(exclude_none=True)
 
     # ==================== 迁移 ====================
 

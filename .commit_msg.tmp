@@ -1,0 +1,11 @@
+feat: 画像自进化重构 — 从静默 pipeline 改为人机协作对话
+
+将原来的后台静默 4 步 pipeline 重构为可视化的进化 Agent 对话模式：
+- 新增 ProfilePanel（左右分栏：画像渲染 + 进化 Agent 对话）
+- 新增 evolution_service.py 替代旧 pipeline，支持 SSE 流式对话
+- 进化 Agent 上下文包含论文 PDF 原文 + 画像 + 对话记录
+- 单论文和串讲都支持触发进化
+- 进化 prompt 以"让用户不需要追问"为终极目标
+- 示例库写入要求泛用性，不记录特定论文的特定概念
+- Agent 拥有完全编辑权，用户确认后才生效
+- SSE 断开检测和关闭面板中断处理

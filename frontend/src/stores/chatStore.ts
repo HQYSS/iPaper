@@ -14,6 +14,7 @@ interface ChatStore {
   isStreaming: boolean
   error: string | null
   currentPaperId: string | null
+  draftInput: string
   quotes: QuoteItem[]
   focusInputNonce: number
 
@@ -22,8 +23,6 @@ interface ChatStore {
 
   abortController: AbortController | null
   forks: Record<string, api.ForkData>
-
-  pendingProfileUpdate: api.PendingProfileUpdate | null
 
   // 串讲模式标记
   isCrossPaperMode: boolean
@@ -39,18 +38,14 @@ interface ChatStore {
   stopStreaming: () => void
   clearHistory: (paperId: string, sessionId: string) => Promise<void>
   clearError: () => void
+  setDraftInput: (input: string) => void
   addQuote: (text: string, source: QuoteSource) => void
   removeQuote: (index: number) => void
   clearQuotes: () => void
+  saveDraft: (paperId: string, sessionId: string, input: string, quotes: QuoteItem[]) => Promise<void>
 
   editMessage: (paperId: string, sessionId: string, messageIndex: number, newContent: string) => Promise<void>
   switchFork: (paperId: string, sessionId: string, messageIndex: number, forkIndex: number) => Promise<void>
-
-  triggerProfileAnalysis: (paperId: string) => Promise<void>
-  isAnalyzingProfile: boolean
-  checkPendingProfileUpdates: () => Promise<void>
-  applyProfileUpdate: () => Promise<void>
-  rejectProfileUpdate: () => Promise<void>
 
   // 串讲
   initCrossPaperSession: (session: api.CrossPaperSessionMeta) => Promise<void>
@@ -62,12 +57,17 @@ interface ChatStore {
   clearCrossPaperHistory: (sessionId: string) => Promise<void>
   editCrossPaperMessage: (sessionId: string, messageIndex: number, newContent: string) => Promise<void>
   switchCrossPaperFork: (sessionId: string, messageIndex: number, forkIndex: number) => Promise<void>
+  saveCrossPaperDraft: (sessionId: string, input: string, quotes: QuoteItem[]) => Promise<void>
   addPaperToCrossChat: (sessionId: string, paperIds: string[], userMessage: string) => Promise<void>
   exitCrossPaperChat: () => void
 }
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
 const AUTO_CROSS_PAPER_MESSAGE = '请对这组论文进行串讲分析，深入对比它们在技术上的异同。'
+const buildDraft = (input: string, quotes: QuoteItem[]): api.ChatDraft => ({
+  input,
+  quotes: quotes.length > 0 ? [...quotes] : undefined,
+})
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
@@ -75,20 +75,37 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   error: null,
   currentPaperId: null,
+  draftInput: '',
   quotes: [],
   focusInputNonce: 0,
   sessions: [],
   currentSessionId: null,
   abortController: null,
   forks: {},
-  pendingProfileUpdate: null,
-  isAnalyzingProfile: false,
   isCrossPaperMode: false,
   crossPaperIds: [],
 
   loadSessions: async (paperId: string) => {
-    if (get().currentPaperId !== paperId) {
-      set({ messages: [], currentPaperId: paperId, currentSessionId: null, sessions: [], forks: {} })
+    const store = get()
+    if (
+      !store.isCrossPaperMode &&
+      store.currentPaperId &&
+      store.currentSessionId &&
+      store.currentPaperId !== paperId
+    ) {
+      await store.saveDraft(store.currentPaperId, store.currentSessionId, store.draftInput, store.quotes)
+    }
+
+    if (store.currentPaperId !== paperId) {
+      set({
+        messages: [],
+        currentPaperId: paperId,
+        currentSessionId: null,
+        sessions: [],
+        forks: {},
+        draftInput: '',
+        quotes: [],
+      })
     }
 
     try {
@@ -125,6 +142,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         currentSessionId: newSession.id,
         messages: [],
         forks: {},
+        draftInput: '',
+        quotes: [],
       }))
     } catch (error) {
       set({ error: (error as Error).message })
@@ -143,6 +162,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           currentSessionId: needSwitch ? (remaining[0]?.id ?? null) : currentSessionId,
           messages: needSwitch ? [] : state.messages,
           forks: needSwitch ? {} : state.forks,
+          draftInput: needSwitch ? '' : state.draftInput,
+          quotes: needSwitch ? [] : state.quotes,
         }
       })
       const store = get()
@@ -155,17 +176,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   switchSession: async (paperId: string, sessionId: string) => {
-    const { currentSessionId } = get()
+    const { currentSessionId, currentPaperId, draftInput, quotes } = get()
     if (currentSessionId === sessionId) return
-    set({ currentSessionId: sessionId, messages: [], forks: {} })
-    get().loadHistory(paperId, sessionId)
+    if (currentPaperId === paperId && currentSessionId) {
+      await get().saveDraft(paperId, currentSessionId, draftInput, quotes)
+    }
+    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [] })
+    await get().loadHistory(paperId, sessionId)
   },
 
   loadHistory: async (paperId: string, sessionId: string) => {
     set({ isLoading: true, error: null })
     try {
       const history = await api.getChatHistory(paperId, sessionId)
-      set({ messages: history.messages, forks: history.forks || {}, isLoading: false })
+      set({
+        messages: history.messages,
+        forks: history.forks || {},
+        draftInput: history.draft?.input || '',
+        quotes: history.draft?.quotes || [],
+        isLoading: false,
+      })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -174,8 +204,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   sendMessage: async (paperId: string, sessionId: string, message: string, quotes?: QuoteItem[]) => {
     const controller = new AbortController()
 
-    const userMessage: api.ChatMessage = { role: 'user', content: message }
-    set((state) => ({ messages: [...state.messages, userMessage], isStreaming: true, error: null, abortController: controller }))
+    const userMessage: api.ChatMessage = {
+      role: 'user',
+      content: message,
+      quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
+    }
+    set((state) => ({
+      messages: [...state.messages, userMessage],
+      isStreaming: true,
+      error: null,
+      abortController: controller,
+      draftInput: '',
+      quotes: [],
+    }))
 
     const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
     set((state) => ({ messages: [...state.messages, assistantMessage] }))
@@ -239,7 +280,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       await api.clearChatHistory(paperId, sessionId)
-      set({ messages: [], forks: {}, isLoading: false })
+      set({ messages: [], forks: {}, draftInput: '', quotes: [], isLoading: false })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -247,6 +288,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   clearError: () => {
     set({ error: null })
+  },
+
+  setDraftInput: (input: string) => {
+    set({ draftInput: input })
   },
 
   addQuote: (text: string, source: QuoteSource) => {
@@ -262,6 +307,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   clearQuotes: () => {
     set({ quotes: [] })
+  },
+
+  saveDraft: async (paperId: string, sessionId: string, input: string, quotes: QuoteItem[]) => {
+    try {
+      await api.updateChatDraft(paperId, sessionId, buildDraft(input, quotes))
+    } catch {
+      // 输入过程中的草稿保存失败不打断交互
+    }
   },
 
   editMessage: async (paperId: string, sessionId: string, messageIndex: number, newContent: string) => {
@@ -336,51 +389,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  triggerProfileAnalysis: async (paperId: string) => {
-    set({ isAnalyzingProfile: true })
-    try {
-      await api.triggerProfileAnalysis(paperId)
-      await new Promise((r) => setTimeout(r, 3000))
-      const pending = await api.getPendingProfileUpdates()
-      set({
-        pendingProfileUpdate: pending.has_updates ? pending : null,
-        isAnalyzingProfile: false,
-      })
-    } catch {
-      set({ isAnalyzingProfile: false })
-    }
-  },
-
-  checkPendingProfileUpdates: async () => {
-    try {
-      const pending = await api.getPendingProfileUpdates()
-      set({ pendingProfileUpdate: pending.has_updates ? pending : null })
-    } catch {
-      // 静默失败
-    }
-  },
-
-  applyProfileUpdate: async () => {
-    try {
-      await api.applyProfileUpdates()
-      set({ pendingProfileUpdate: null })
-    } catch (error) {
-      set({ error: (error as Error).message })
-    }
-  },
-
-  rejectProfileUpdate: async () => {
-    try {
-      await api.rejectProfileUpdates()
-      set({ pendingProfileUpdate: null })
-    } catch (error) {
-      set({ error: (error as Error).message })
-    }
-  },
-
   // ==================== Cross-Paper (串讲) ====================
 
   initCrossPaperSession: async (session: api.CrossPaperSessionMeta) => {
+    const store = get()
+    if (!store.isCrossPaperMode && store.currentPaperId && store.currentSessionId) {
+      await store.saveDraft(store.currentPaperId, store.currentSessionId, store.draftInput, store.quotes)
+    }
+
     set({
       isCrossPaperMode: true,
       crossPaperIds: session.paper_ids,
@@ -389,6 +405,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       sessions: [{ id: session.id, title: session.title, created_at: session.created_at, updated_at: session.updated_at }],
       currentSessionId: session.id,
       forks: {},
+      draftInput: '',
+      quotes: [],
     })
 
     setTimeout(() => {
@@ -400,6 +418,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   loadCrossPaperSessions: async () => {
+    const store = get()
+    if (!store.isCrossPaperMode && store.currentPaperId && store.currentSessionId) {
+      await store.saveDraft(store.currentPaperId, store.currentSessionId, store.draftInput, store.quotes)
+    }
+
     set({
       isCrossPaperMode: true,
       currentPaperId: null,
@@ -407,6 +430,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       sessions: [],
       currentSessionId: null,
       forks: {},
+      draftInput: '',
+      quotes: [],
     })
 
     try {
@@ -444,6 +469,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       set({
         messages: history.messages,
         forks: history.forks || {},
+        draftInput: history.draft?.input || '',
+        quotes: history.draft?.quotes || [],
         isLoading: false,
         crossPaperIds: history.paper_ids,
         currentSessionId: sessionId,
@@ -465,6 +492,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           currentSessionId: needSwitch ? (remaining[0]?.id ?? null) : currentSessionId,
           messages: needSwitch ? [] : state.messages,
           forks: needSwitch ? {} : state.forks,
+          draftInput: needSwitch ? '' : state.draftInput,
+          quotes: needSwitch ? [] : state.quotes,
         }
       })
       const store = get()
@@ -477,17 +506,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   switchCrossPaperSession: async (sessionId: string) => {
-    const { currentSessionId } = get()
+    const { currentSessionId, draftInput, quotes } = get()
     if (currentSessionId === sessionId) return
-    set({ currentSessionId: sessionId, messages: [], forks: {} })
-    get().loadCrossPaperSession(sessionId)
+    if (currentSessionId) {
+      await get().saveCrossPaperDraft(currentSessionId, draftInput, quotes)
+    }
+    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [] })
+    await get().loadCrossPaperSession(sessionId)
   },
 
   sendCrossPaperMessage: async (sessionId: string, message: string, quotes?: QuoteItem[]) => {
     const controller = new AbortController()
 
-    const userMessage: api.ChatMessage = { role: 'user', content: message }
-    set((state) => ({ messages: [...state.messages, userMessage], isStreaming: true, error: null, abortController: controller }))
+    const userMessage: api.ChatMessage = {
+      role: 'user',
+      content: message,
+      quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
+    }
+    set((state) => ({
+      messages: [...state.messages, userMessage],
+      isStreaming: true,
+      error: null,
+      abortController: controller,
+      draftInput: '',
+      quotes: [],
+    }))
 
     const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
     set((state) => ({ messages: [...state.messages, assistantMessage] }))
@@ -543,7 +586,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       await api.clearCrossPaperChatHistory(sessionId)
-      set({ messages: [], forks: {}, isLoading: false })
+      set({ messages: [], forks: {}, draftInput: '', quotes: [], isLoading: false })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -614,6 +657,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
+  saveCrossPaperDraft: async (sessionId: string, input: string, quotes: QuoteItem[]) => {
+    try {
+      await api.updateCrossPaperChatDraft(sessionId, buildDraft(input, quotes))
+    } catch {
+      // 输入过程中的草稿保存失败不打断交互
+    }
+  },
+
   addPaperToCrossChat: async (sessionId: string, newPaperIds: string[], userMessage: string) => {
     try {
       const updatedSession = await api.addPapersToCrossPaperSession(sessionId, newPaperIds)
@@ -632,6 +683,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   exitCrossPaperChat: () => {
+    const { currentSessionId, draftInput, quotes } = get()
+    if (currentSessionId) {
+      void get().saveCrossPaperDraft(currentSessionId, draftInput, quotes)
+    }
     set({
       isCrossPaperMode: false,
       crossPaperIds: [],
@@ -640,6 +695,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       currentSessionId: null,
       forks: {},
       currentPaperId: null,
+      draftInput: '',
+      quotes: [],
     })
   },
 }))

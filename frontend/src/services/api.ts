@@ -135,6 +135,13 @@ export async function deleteSession(paperId: string, sessionId: string): Promise
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  quotes?: QuoteInput[]
+  reasoning?: string
+}
+
+export interface ChatDraft {
+  input: string
+  quotes?: QuoteInput[]
 }
 
 export interface ForkData {
@@ -147,6 +154,7 @@ export interface ChatHistory {
   session_id: string
   messages: ChatMessage[]
   forks?: Record<string, ForkData>
+  draft?: ChatDraft
 }
 
 export async function getChatHistory(paperId: string, sessionId: string): Promise<ChatHistory> {
@@ -173,6 +181,21 @@ export async function updateChatHistory(
   }
 }
 
+export async function updateChatDraft(
+  paperId: string,
+  sessionId: string,
+  draft: ChatDraft
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update chat draft')
+  }
+}
+
 export async function clearChatHistory(paperId: string, sessionId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
     method: 'DELETE',
@@ -184,7 +207,7 @@ export async function clearChatHistory(paperId: string, sessionId: string): Prom
 
 export interface QuoteInput {
   text: string
-  source: string
+  source: 'pdf' | 'chat'
 }
 
 export async function* sendMessage(
@@ -260,6 +283,7 @@ export interface CrossPaperChatHistory {
   paper_ids: string[]
   messages: ChatMessage[]
   forks?: Record<string, ForkData>
+  draft?: ChatDraft
 }
 
 export async function listCrossPaperSessions(): Promise<CrossPaperSessionList> {
@@ -332,6 +356,20 @@ export async function updateCrossPaperChatHistory(
   })
   if (!response.ok) {
     throw new Error('Failed to update cross-paper chat history')
+  }
+}
+
+export async function updateCrossPaperChatDraft(
+  sessionId: string,
+  draft: ChatDraft
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update cross-paper chat draft')
   }
 }
 
@@ -435,13 +473,6 @@ export async function updateLLMConfig(config: {
 
 // ============ 用户画像 API ============
 
-export interface ProfileSignal {
-  type: string
-  description: string
-  evidence?: string
-  context?: string
-}
-
 export interface ProfileEdit {
   operation: string
   section?: string
@@ -456,15 +487,92 @@ export interface PendingProfileUpdate {
   timestamp?: string
   paper_title?: string
   summary?: string
-  signals?: ProfileSignal[]
   edits?: ProfileEdit[]
+  validation?: { valid: boolean; issue: string }
 }
 
-export async function getPendingProfileUpdates(): Promise<PendingProfileUpdate> {
-  const response = await fetch(`${API_BASE}/profile/pending-updates`)
+export async function getProfile(): Promise<{ content: string }> {
+  const response = await fetch(`${API_BASE}/profile/current`)
   if (!response.ok) {
-    throw new Error('Failed to get pending profile updates')
+    throw new Error('Failed to get profile')
   }
+  return response.json()
+}
+
+export async function getChangelog(): Promise<{ content: string }> {
+  const response = await fetch(`${API_BASE}/profile/changelog`)
+  if (!response.ok) {
+    throw new Error('Failed to get changelog')
+  }
+  return response.json()
+}
+
+export async function* sendEvolutionMessage(
+  message: string,
+  evolutionMessages: { role: string; content: string }[],
+  paperId?: string,
+  crossPaperSessionId?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<{
+  type: string
+  content?: string
+  full_response?: string
+  message?: string
+  edit_plan?: { edits: ProfileEdit[]; changelog_summary: string }
+}> {
+  const response = await fetch(`${API_BASE}/profile/evolution-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      paper_id: paperId ?? null,
+      cross_paper_session_id: crossPaperSessionId ?? null,
+      evolution_messages: evolutionMessages,
+    }),
+    signal,
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to send evolution message')
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          yield JSON.parse(line.slice(6))
+        } catch {
+          // skip malformed SSE
+        }
+      }
+    }
+  }
+}
+
+export async function saveEditPlan(
+  editPlan: { edits: ProfileEdit[]; changelog_summary: string },
+  paperTitle: string,
+): Promise<{ validation: { valid: boolean; issue: string } }> {
+  const response = await fetch(`${API_BASE}/profile/save-edit-plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ edit_plan: editPlan, paper_title: paperTitle }),
+  })
+  if (!response.ok) throw new Error('Failed to save edit plan')
   return response.json()
 }
 
@@ -472,30 +580,13 @@ export async function applyProfileUpdates(): Promise<void> {
   const response = await fetch(`${API_BASE}/profile/apply-updates`, {
     method: 'POST',
   })
-  if (!response.ok) {
-    throw new Error('Failed to apply profile updates')
-  }
+  if (!response.ok) throw new Error('Failed to apply profile updates')
 }
 
 export async function rejectProfileUpdates(): Promise<void> {
   const response = await fetch(`${API_BASE}/profile/reject-updates`, {
     method: 'POST',
   })
-  if (!response.ok) {
-    throw new Error('Failed to reject profile updates')
-  }
-}
-
-export async function triggerProfileAnalysis(paperId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/profile/trigger-analysis`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ paper_id: paperId }),
-  })
-  if (!response.ok) {
-    throw new Error('Failed to trigger profile analysis')
-  }
+  if (!response.ok) throw new Error('Failed to reject profile updates')
 }
 

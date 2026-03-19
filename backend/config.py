@@ -20,7 +20,7 @@ class ProfileAnalysisConfig(BaseSettings):
     """画像分析专用模型配置（使用 Claude，指令跟随更好）"""
     model: str = "anthropic/claude-opus-4.6"
     temperature: float = 0.2
-    max_tokens: int = 4096
+    max_tokens: int = 16384
 
 
 PROJECT_ROOT = Path(__file__).parent.parent

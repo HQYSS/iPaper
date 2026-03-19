@@ -4,9 +4,11 @@ import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
 import { CrossPaperViewer } from './components/CrossPaperViewer'
+import { ProfilePanel } from './components/ProfilePanel'
 import { SettingsModal } from './components/SettingsModal'
 import { usePaperStore } from './stores/paperStore'
 import { useChatStore } from './stores/chatStore'
+import { useProfileStore } from './stores/profileStore'
 import { getConfig } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
@@ -55,6 +57,7 @@ function getStoredChatWidthRatio() {
 function App() {
   const { fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab } = usePaperStore()
   const { exitCrossPaperChat } = useChatStore()
+  const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -195,6 +198,18 @@ function App() {
     setCrossPaperPdfTab(paperId)
   }, [setCrossPaperPdfTab])
 
+  const handleOpenEvolution = useCallback(() => {
+    if (isInCrossChat && crossPaper.activeCrossPaperSession) {
+      openEvolution(null, crossPaper.activeCrossPaperSession.id)
+    } else if (selectedPaper) {
+      openEvolution(selectedPaper.arxiv_id, null)
+    }
+  }, [isInCrossChat, crossPaper.activeCrossPaperSession, selectedPaper, openEvolution])
+
+  const handleCloseEvolution = useCallback(() => {
+    closeEvolution()
+  }, [closeEvolution])
+
   const showChat = (showSinglePaper || isInCrossChat) && !cursorMode
 
   return (
@@ -238,9 +253,11 @@ function App() {
         </button>
       )}
 
-      {/* 中间：PDF 阅读器 / 串讲多 PDF 视图 */}
+      {/* 中间：PDF 阅读器 / 串讲多 PDF 视图 / 进化面板 */}
       <main className="flex-1 flex flex-col min-w-0">
-        {isInCrossChat ? (
+        {isEvolutionOpen ? (
+          <ProfilePanel onClose={handleCloseEvolution} />
+        ) : isInCrossChat ? (
           <CrossPaperViewer />
         ) : selectedPaper ? (
           <PdfViewer paperId={selectedPaper.arxiv_id} />
@@ -288,11 +305,13 @@ function App() {
                     onCollapse={() => setChatCollapsed(true)}
                     onPaperLinkClick={handlePaperLinkClick}
                     onExitCrossChat={handleExitCrossChat}
+                    onOpenEvolution={handleOpenEvolution}
                   />
                 ) : (
                   <ChatPanel
                     paperId={selectedPaper!.arxiv_id}
                     onCollapse={() => setChatCollapsed(true)}
+                    onOpenEvolution={handleOpenEvolution}
                   />
                 )}
               </aside>

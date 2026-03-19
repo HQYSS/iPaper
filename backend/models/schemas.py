@@ -44,17 +44,18 @@ class PaperDetail(PaperMeta):
 
 # ============ 对话相关模型 ============
 
-class ChatMessage(BaseModel):
-    """对话消息"""
-    role: str = Field(..., description="消息角色: user | assistant")
-    content: str = Field(..., description="消息内容")
-    reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
-
-
 class Quote(BaseModel):
     """引用片段"""
     text: str = Field(..., description="引用的文本内容")
     source: str = Field(..., description="引用来源: pdf | chat")
+
+
+class ChatMessage(BaseModel):
+    """对话消息"""
+    role: str = Field(..., description="消息角色: user | assistant")
+    content: str = Field(..., description="消息内容")
+    quotes: Optional[List[Quote]] = Field(None, description="消息关联的引用片段")
+    reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
 
 
 class ChatRequest(BaseModel):
@@ -67,7 +68,12 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """对话响应"""
     message: str
-    
+
+
+class ChatDraft(BaseModel):
+    """未发送草稿"""
+    input: str = Field("", description="输入框中尚未发送的内容")
+    quotes: Optional[List[Quote]] = Field(None, description="待发送消息关联的引用片段")
 
 class ForkData(BaseModel):
     """分支数据"""
@@ -80,11 +86,17 @@ class ChatHistory(BaseModel):
     session_id: str = ""
     messages: List[ChatMessage]
     forks: Optional[Dict[str, ForkData]] = None
+    draft: Optional[ChatDraft] = None
 
 class ChatHistoryUpdate(BaseModel):
     """前端直接更新对话历史（编辑/切换分支时使用）"""
     messages: List[ChatMessage]
     forks: Optional[Dict[str, ForkData]] = None
+
+
+class ChatDraftUpdate(BaseModel):
+    """更新未发送草稿"""
+    draft: ChatDraft
 
 
 # ============ 会话相关模型 ============
@@ -142,6 +154,7 @@ class CrossPaperChatHistory(BaseModel):
     paper_ids: List[str]
     messages: List[ChatMessage]
     forks: Optional[Dict[str, ForkData]] = None
+    draft: Optional[ChatDraft] = None
 
 
 # ============ 配置相关模型 ============
@@ -159,4 +172,19 @@ class LLMConfigUpdate(BaseModel):
 class ProfileAnalysisRequest(BaseModel):
     """触发画像分析请求"""
     paper_id: str = Field(..., description="论文 ID，用于获取对话历史")
+    cross_paper_session_id: Optional[str] = Field(None, description="串讲会话 ID（串讲模式时使用）")
+
+
+class EvolutionChatRequest(BaseModel):
+    """进化 Agent 对话请求"""
+    message: str = Field(..., description="用户消息")
+    paper_id: Optional[str] = Field(None, description="论文 ID")
+    cross_paper_session_id: Optional[str] = Field(None, description="串讲会话 ID")
+    evolution_messages: List[dict] = Field(default_factory=list, description="进化面板的对话历史")
+
+
+class SaveEditPlanRequest(BaseModel):
+    """保存编辑计划请求"""
+    edit_plan: dict = Field(..., description="编辑计划 JSON")
+    paper_title: str = Field("", description="来源论文标题")
 
