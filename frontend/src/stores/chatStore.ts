@@ -125,7 +125,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       const activeId = sessionList.last_active_session_id || sessions[0].id
-      set({ sessions, currentSessionId: activeId })
+      set({ sessions, currentSessionId: activeId, isLoading: true })
 
       const store = get()
       store.loadHistory(paperId, activeId)
@@ -181,7 +181,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (currentPaperId === paperId && currentSessionId) {
       await get().saveDraft(paperId, currentSessionId, draftInput, quotes)
     }
-    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [] })
+    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [], isLoading: true })
     await get().loadHistory(paperId, sessionId)
   },
 
@@ -449,7 +449,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       const activeId = sessionList.last_active_session_id || sessions[0].id
-      set({ sessions, currentSessionId: activeId, isCrossPaperMode: true })
+      set({ sessions, currentSessionId: activeId, isCrossPaperMode: true, isLoading: true })
 
       const activeSession = sessionList.sessions.find((s) => s.id === activeId)
       if (activeSession) {
@@ -511,7 +511,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (currentSessionId) {
       await get().saveCrossPaperDraft(currentSessionId, draftInput, quotes)
     }
-    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [] })
+    set({ currentSessionId: sessionId, messages: [], forks: {}, draftInput: '', quotes: [], isLoading: true })
     await get().loadCrossPaperSession(sessionId)
   },
 

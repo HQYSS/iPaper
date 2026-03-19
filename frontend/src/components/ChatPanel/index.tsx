@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useMemo, type ReactNode } from 'react'
 import { Send, Square, Trash2, Loader2, X, ChevronDown, ChevronRight, ChevronLeft, UserCog, FileText, MessageSquare, AlertCircle, PanelRightClose, Plus, Pencil, GitCompareArrows, ArrowLeft } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -20,6 +20,42 @@ interface ChatPanelProps {
 import type { SessionMeta } from '../../services/api'
 
 import type { QuoteItem } from '../../stores/chatStore'
+
+interface ChatScrollState {
+  scrollTop: number
+  isNearBottom: boolean
+}
+
+const CHAT_SCROLL_THRESHOLD = 80
+const chatScrollStateCache = new Map<string, ChatScrollState>()
+
+function getChatScrollStateKey(
+  paperId: string | undefined,
+  crossPaperSessionId: string | undefined,
+  activeSessionId: string | null
+): string | null {
+  if (!activeSessionId) return null
+  if (crossPaperSessionId) {
+    return `cross:${activeSessionId}`
+  }
+  if (paperId) {
+    return `paper:${paperId}:${activeSessionId}`
+  }
+  return null
+}
+
+function readChatScrollState(container: HTMLDivElement): ChatScrollState {
+  return {
+    scrollTop: container.scrollTop,
+    isNearBottom:
+      container.scrollHeight - container.scrollTop - container.clientHeight < CHAT_SCROLL_THRESHOLD,
+  }
+}
+
+function saveChatScrollState(key: string | null, container: HTMLDivElement | null) {
+  if (!key || !container) return
+  chatScrollStateCache.set(key, readChatScrollState(container))
+}
 
 function QuoteCard({ quote, onRemove }: { quote: QuoteItem; onRemove?: () => void }) {
   const [expanded, setExpanded] = useState(false)
@@ -277,6 +313,12 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
+  const activeSessionKey = getChatScrollStateKey(paperId, crossPaperSessionId, activeSessionId)
+  const pendingRestoreSessionKeyRef = useRef<string | null>(null)
+  const isRestoringScrollRef = useRef(false)
+  const captureCurrentScrollState = () => {
+    saveChatScrollState(activeSessionKey, messagesContainerRef.current)
+  }
 
   useEffect(() => {
     if (!isCrossMode && paperId) {
@@ -285,22 +327,74 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   }, [paperId, loadSessions, isCrossMode])
 
   useEffect(() => {
-    const container = messagesContainerRef.current
-    if (!container) return
-    const handleScroll = () => {
-      const threshold = 80
-      isNearBottomRef.current =
-        container.scrollHeight - container.scrollTop - container.clientHeight < threshold
-    }
-    container.addEventListener('scroll', handleScroll)
-    return () => container.removeEventListener('scroll', handleScroll)
-  }, [])
+    pendingRestoreSessionKeyRef.current = activeSessionKey
+    isRestoringScrollRef.current = !!activeSessionKey
+    isNearBottomRef.current = activeSessionKey
+      ? (chatScrollStateCache.get(activeSessionKey)?.isNearBottom ?? true)
+      : true
+  }, [activeSessionKey])
 
   useEffect(() => {
+    const container = messagesContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      if (isRestoringScrollRef.current) return
+      const scrollState = readChatScrollState(container)
+      isNearBottomRef.current = scrollState.isNearBottom
+      if (activeSessionKey) {
+        chatScrollStateCache.set(activeSessionKey, scrollState)
+      }
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+    }
+  }, [activeSessionKey])
+
+  useEffect(() => {
+    if (pendingRestoreSessionKeyRef.current === activeSessionKey) return
     if (isNearBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [messages])
+
+  useLayoutEffect(() => {
+    const container = messagesContainerRef.current
+    if (!container || !activeSessionKey || isLoading) return
+    if (pendingRestoreSessionKeyRef.current !== activeSessionKey) return
+
+    const savedScrollState = chatScrollStateCache.get(activeSessionKey)
+    if (!savedScrollState) {
+      pendingRestoreSessionKeyRef.current = null
+      isRestoringScrollRef.current = false
+      return
+    }
+
+    const restoreScroll = () => {
+      const currentContainer = messagesContainerRef.current
+      if (!currentContainer) return
+
+      if (savedScrollState.isNearBottom) {
+        currentContainer.scrollTop = currentContainer.scrollHeight
+        return
+      }
+
+      const maxScrollTop = Math.max(0, currentContainer.scrollHeight - currentContainer.clientHeight)
+      currentContainer.scrollTop = Math.min(savedScrollState.scrollTop, maxScrollTop)
+    }
+
+    window.requestAnimationFrame(() => {
+      restoreScroll()
+      window.requestAnimationFrame(() => {
+        restoreScroll()
+        isNearBottomRef.current = savedScrollState.isNearBottom
+        pendingRestoreSessionKeyRef.current = null
+        isRestoringScrollRef.current = false
+      })
+    })
+  }, [activeSessionKey, isLoading, messages])
 
   useEffect(() => {
     const textarea = inputRef.current
@@ -594,9 +688,18 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
         <SessionTabBar
           sessions={sessions}
           currentSessionId={currentSessionId}
-          onSwitch={switchSession}
-          onCreate={createSession}
-          onDelete={deleteSession}
+          onSwitch={(nextPaperId, sessionId) => {
+            captureCurrentScrollState()
+            void switchSession(nextPaperId, sessionId)
+          }}
+          onCreate={(nextPaperId) => {
+            captureCurrentScrollState()
+            void createSession(nextPaperId)
+          }}
+          onDelete={(nextPaperId, sessionId) => {
+            captureCurrentScrollState()
+            void deleteSession(nextPaperId, sessionId)
+          }}
           paperId={paperId}
         />
       )}
