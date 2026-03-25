@@ -1,11 +1,12 @@
 """
 论文管理 API 路由
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 
 from models import PaperCreate, PaperMeta, PaperListItem
 from services.arxiv_service import arxiv_service
+from services.translation_service import translation_service
 
 router = APIRouter()
 
@@ -34,6 +35,8 @@ async def add_paper(request: PaperCreate):
     
     if not success:
         raise HTTPException(status_code=400, detail=message)
+    
+    await translation_service.ensure_translation(meta.arxiv_id)
     
     return meta
 

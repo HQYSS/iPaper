@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor } from 'lucide-react'
-import { getConfig, updateLLMConfig } from '../../services/api'
+import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe } from 'lucide-react'
+import { getConfig, updateLLMConfig, updateHjfyCookie } from '../../services/api'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
 
@@ -20,6 +20,10 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
+  const [hjfyCookie, setHjfyCookie] = useState('')
+  const [hjfyConfigured, setHjfyConfigured] = useState(false)
+  const [hjfySaving, setHjfySaving] = useState(false)
+  const [hjfySaveSuccess, setHjfySaveSuccess] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
@@ -31,6 +35,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setModel(config.llm.model)
       setIsConfigured(config.llm.api_key_configured)
       setApiKey('')
+      setHjfyConfigured(config.hjfy_cookie_configured)
+      setHjfyCookie('')
     } catch {
       addToast('error', '加载配置失败')
     } finally {
@@ -42,6 +48,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     if (open) {
       loadConfig()
       setSaveSuccess(false)
+      setHjfySaveSuccess(false)
     }
   }, [open, loadConfig])
 
@@ -53,6 +60,26 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
   }, [open, onClose])
+
+  const handleSaveHjfyCookie = async () => {
+    const raw = hjfyCookie.trim()
+    if (!raw) return
+    const cookieValue = raw.startsWith('session=') ? raw : `session=${raw}`
+    setHjfySaving(true)
+    setHjfySaveSuccess(false)
+    try {
+      await updateHjfyCookie(cookieValue)
+      setHjfyConfigured(true)
+      setHjfySaveSuccess(true)
+      setHjfyCookie('')
+      addToast('success', '幻觉翻译登录成功')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : ''
+      addToast('error', msg.includes('无效') || msg.includes('过期') ? 'Cookie 无效或已过期' : '保存失败')
+    } finally {
+      setHjfySaving(false)
+    }
+  }
 
   const handleSave = async () => {
     if (!apiKey.trim()) return
@@ -202,6 +229,71 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                         </button>
                       )
                     })}
+                  </div>
+                </div>
+
+                {/* 幻觉翻译 */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    论文翻译
+                    <span className="ml-1.5 text-xs font-normal text-slate-400">由 hjfy.top 提供，大部分论文无需登录</span>
+                  </label>
+                  <div className={cn(
+                    "flex items-center gap-2 mb-3 px-3 py-2 rounded-lg text-xs",
+                    hjfyConfigured
+                      ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400"
+                      : "bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400"
+                  )}>
+                    <Globe className="w-3.5 h-3.5 shrink-0" />
+                    {hjfyConfigured ? '已登录幻觉翻译' : '未登录（遇到未翻译的论文时需要）'}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => window.open('https://hjfy.top', '_blank', 'noopener')}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        1. 打开 hjfy.top 并登录
+                      </button>
+                    </div>
+                    <div className="px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      2. 登录后按 <kbd className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-mono text-[10px]">F12</kbd> 打开 DevTools → <span className="text-slate-700 dark:text-slate-200">Application</span> → <span className="text-slate-700 dark:text-slate-200">Cookies</span> → hjfy.top → 复制 <span className="text-slate-700 dark:text-slate-200 font-mono">session</span> 的值
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={hjfyCookie}
+                        onChange={(e) => setHjfyCookie(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && hjfyCookie.trim()) {
+                            e.preventDefault()
+                            handleSaveHjfyCookie()
+                          }
+                        }}
+                        placeholder="3. 粘贴 session 值"
+                        className="flex-1 pl-3 pr-3 py-2.5 text-sm font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400 placeholder:font-sans"
+                      />
+                      <button
+                        onClick={handleSaveHjfyCookie}
+                        disabled={!hjfyCookie.trim() || hjfySaving}
+                        className={cn(
+                          "px-4 py-2.5 text-sm font-medium rounded-xl flex items-center gap-1.5 transition-all whitespace-nowrap",
+                          hjfySaveSuccess
+                            ? "bg-emerald-500 text-white"
+                            : "bg-slate-800 text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-300",
+                          (!hjfyCookie.trim() || hjfySaving) && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        {hjfySaving ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : hjfySaveSuccess ? (
+                          <CheckCircle className="w-3.5 h-3.5" />
+                        ) : null}
+                        {hjfySaveSuccess ? '已验证' : '验证并保存'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

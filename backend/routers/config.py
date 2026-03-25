@@ -1,7 +1,11 @@
 """
 配置管理 API 路由
 """
-from fastapi import APIRouter
+import httpx
+from fastapi import APIRouter, HTTPException
+
+from pydantic import BaseModel
+from typing import Optional
 
 from config import settings
 from models import LLMConfigUpdate
@@ -20,7 +24,8 @@ async def get_config():
             "temperature": settings.llm.temperature,
             "max_tokens": settings.llm.max_tokens
         },
-        "data_dir": str(settings.data_dir)
+        "data_dir": str(settings.data_dir),
+        "hjfy_cookie_configured": bool(settings.hjfy_cookie),
     }
 
 
@@ -36,8 +41,31 @@ async def update_llm_config(update: LLMConfigUpdate):
     if update.max_tokens is not None:
         settings.llm.max_tokens = update.max_tokens
     
-    # 保存配置
     settings.save_config()
-    
     return {"message": "配置已更新"}
+
+
+class HjfyCookieUpdate(BaseModel):
+    cookie: str
+
+
+@router.put("/hjfy")
+async def update_hjfy_cookie(update: HjfyCookieUpdate):
+    """验证并保存幻觉翻译 Cookie"""
+    cookie = update.cookie.strip()
+    if not cookie:
+        raise HTTPException(status_code=400, detail="Cookie 不能为空")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://hjfy.top/api/userinfo",
+            headers={"Cookie": cookie},
+        )
+        data = resp.json()
+        if not data.get("login"):
+            raise HTTPException(status_code=400, detail="Cookie 无效或已过期，请重新登录 hjfy.top")
+
+    settings.hjfy_cookie = cookie
+    settings.save_config()
+    return {"message": "Cookie 已验证并保存", "nickname": data.get("nickname", "")}
 

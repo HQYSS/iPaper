@@ -11,7 +11,7 @@ import '@react-pdf-viewer/bookmark/lib/styles/index.css'
 import '@react-pdf-viewer/page-navigation/lib/styles/index.css'
 import '@react-pdf-viewer/zoom/lib/styles/index.css'
 
-import { getPdfUrl, getTranslations, type PdfLang, type TranslationStatus } from '../../services/api'
+import { getPdfUrl, getTranslations, triggerTranslation, getTranslateStatus, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 
 interface PdfViewerProps {
@@ -22,6 +22,8 @@ const PDF_SCALE_STORAGE_KEY = 'ipaper.pdfScale'
 const PDF_DIMMING_MODE_STORAGE_KEY = 'ipaper.pdfDimmingMode'
 const PDF_OVERLAY_OPACITY_STORAGE_KEY = 'ipaper.pdfOverlayOpacity'
 const PDF_BRIGHTNESS_STORAGE_KEY = 'ipaper.pdfBrightness'
+const PDF_READING_POSITIONS_STORAGE_KEY = 'ipaper.pdfReadingPositions'
+const PDF_LANG_STORAGE_KEY = 'ipaper.pdfLangs'
 
 type PdfDimmingMode = 'off' | 'overlay' | 'brightness'
 
@@ -55,6 +57,85 @@ function getStoredPdfScale() {
   }
 
   return scale
+}
+
+function getPdfReadingPositionKey(paperId: string, pdfLang: PdfLang) {
+  return `${paperId}:${pdfLang}`
+}
+
+function getStoredPdfReadingPositions(): Record<string, number> {
+  try {
+    const rawValue = window.localStorage.getItem(PDF_READING_POSITIONS_STORAGE_KEY)
+    if (!rawValue) return {}
+
+    const parsed: unknown = JSON.parse(rawValue)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    return Object.entries(parsed).reduce<Record<string, number>>((acc, [key, value]) => {
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
+        acc[key] = value
+      }
+      return acc
+    }, {})
+  } catch {
+    return {}
+  }
+}
+
+function getStoredPdfReadingPosition(paperId: string, pdfLang: PdfLang) {
+  const positions = getStoredPdfReadingPositions()
+  const key = getPdfReadingPositionKey(paperId, pdfLang)
+  return positions[key] ?? null
+}
+
+function savePdfReadingPosition(paperId: string, pdfLang: PdfLang, ratio: number) {
+  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) return
+
+  const positions = getStoredPdfReadingPositions()
+  positions[getPdfReadingPositionKey(paperId, pdfLang)] = ratio
+  window.localStorage.setItem(PDF_READING_POSITIONS_STORAGE_KEY, JSON.stringify(positions))
+}
+
+function getStoredPdfLang(paperId: string): PdfLang {
+  try {
+    const raw = window.localStorage.getItem(PDF_LANG_STORAGE_KEY)
+    if (!raw) return 'en'
+    const map: unknown = JSON.parse(raw)
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return 'en'
+    const val = (map as Record<string, string>)[paperId]
+    if (val === 'zh' || val === 'bilingual') return val
+    return 'en'
+  } catch {
+    return 'en'
+  }
+}
+
+function savePdfLang(paperId: string, lang: PdfLang) {
+  try {
+    const raw = window.localStorage.getItem(PDF_LANG_STORAGE_KEY)
+    const map: Record<string, string> = raw ? JSON.parse(raw) : {}
+    if (lang === 'en') {
+      delete map[paperId]
+    } else {
+      map[paperId] = lang
+    }
+    window.localStorage.setItem(PDF_LANG_STORAGE_KEY, JSON.stringify(map))
+  } catch {
+    // ignore
+  }
+}
+
+function isSelectionInsidePdf(container: HTMLDivElement, selection: Selection | null): boolean {
+  if (!selection || selection.rangeCount === 0) return false
+
+  const innerPages = container.querySelector('.rpv-core__inner-pages')
+  const selectionRoot = innerPages ?? container
+  const range = selection.getRangeAt(0)
+  const anchorNode = range.commonAncestorContainer || selection.anchorNode
+
+  return !!anchorNode && selectionRoot.contains(anchorNode)
 }
 
 function SearchBox({
@@ -269,8 +350,12 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [selectionPosition, setSelectionPosition] = useState<{ x: number; y: number } | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
+  const [pageInputValue, setPageInputValue] = useState('1')
+  const [isEditingPageInput, setIsEditingPageInput] = useState(false)
   const [pdfLang, setPdfLang] = useState<PdfLang>('en')
   const [translations, setTranslations] = useState<TranslationStatus>({ zh: false, bilingual: false })
+  const [translateStatus, setTranslateStatus] = useState<TranslateStatus | null>(null)
+  const translatePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [scrollBackStack, setScrollBackStack] = useState<number[]>([])
   const [pdfDimmingMode, setPdfDimmingMode] = useState<PdfDimmingMode>(() => getStoredPdfDimmingMode())
   const [overlayOpacity, setOverlayOpacity] = useState(() => getStoredPdfValue(PDF_OVERLAY_OPACITY_STORAGE_KEY, OVERLAY_LEVELS, 0.12))
@@ -279,6 +364,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const restoreScaleRef = useRef<number | null>(null)
   const restoreScrollRatioRef = useRef<number | null>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
+  const cancelPageInputCommitRef = useRef(false)
 
   const addQuote = useChatStore((state) => state.addQuote)
 
@@ -295,6 +381,16 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
   const persistScale = useCallback((scale: number) => {
     window.localStorage.setItem(PDF_SCALE_STORAGE_KEY, String(scale))
+  }, [])
+
+  const persistReadingPosition = useCallback((targetPaperId: string, targetPdfLang: PdfLang) => {
+    const scrollContainer = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement | null
+    if (!scrollContainer) return null
+
+    const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
+    const ratio = maxScrollTop > 0 ? scrollContainer.scrollTop / maxScrollTop : 0
+    savePdfReadingPosition(targetPaperId, targetPdfLang, ratio)
+    return ratio
   }, [])
 
   const handleDimmingModeChange = useCallback((mode: PdfDimmingMode) => {
@@ -318,15 +414,83 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   }, [paperId, pdfLang])
 
   useEffect(() => {
-    setPdfLang('en')
+    if (!isEditingPageInput) {
+      setPageInputValue(String(currentPage))
+    }
+  }, [currentPage, isEditingPageInput])
+
+  const stopTranslatePoll = useCallback(() => {
+    if (translatePollRef.current) {
+      clearInterval(translatePollRef.current)
+      translatePollRef.current = null
+    }
+  }, [])
+
+  const startTranslatePoll = useCallback((targetPaperId: string) => {
+    stopTranslatePoll()
+    const poll = async () => {
+      try {
+        const st = await getTranslateStatus(targetPaperId)
+        setTranslateStatus(st)
+        if (st.status === 'finished') {
+          stopTranslatePoll()
+          setTranslations(prev => ({ ...prev, zh: true }))
+          fetch(getPdfUrl(targetPaperId, 'zh'))
+            .then(r => r.blob())
+            .then(blob => {
+              blobCache.current['zh'] = URL.createObjectURL(blob)
+              restoreScaleRef.current = scaleRef.current
+              setPdfLang('zh')
+              savePdfLang(targetPaperId, 'zh')
+            })
+            .catch(() => {})
+        } else if (st.status === 'failed' || st.status === 'error' || st.status === 'needs_login') {
+          stopTranslatePoll()
+        }
+      } catch {
+        // ignore transient errors
+      }
+    }
+    poll()
+    translatePollRef.current = setInterval(poll, 5000)
+  }, [stopTranslatePoll])
+
+  const handleTriggerTranslation = useCallback(async (targetPaperId: string) => {
+    try {
+      const st = await triggerTranslation(targetPaperId)
+      setTranslateStatus(st)
+      if (st.status === 'polling') {
+        startTranslatePoll(targetPaperId)
+      } else if (st.status === 'finished') {
+        setTranslations(prev => ({ ...prev, zh: true }))
+      }
+    } catch {
+      setTranslateStatus({ status: 'error', info: '', error: '触发翻译失败' })
+    }
+  }, [startTranslatePoll])
+
+  useEffect(() => {
+    setTranslateStatus(null)
+    stopTranslatePoll()
     Object.values(blobCache.current).forEach(URL.revokeObjectURL)
     blobCache.current = {}
-    getTranslations(paperId).then(setTranslations)
+    getTranslations(paperId).then(tr => {
+      setTranslations(tr)
+      const saved = getStoredPdfLang(paperId)
+      setPdfLang(saved !== 'en' && tr[saved] ? saved : 'en')
+    })
     return () => {
+      stopTranslatePoll()
       Object.values(blobCache.current).forEach(URL.revokeObjectURL)
       blobCache.current = {}
     }
-  }, [paperId])
+  }, [paperId, stopTranslatePoll])
+
+  useEffect(() => {
+    return () => {
+      persistReadingPosition(paperId, pdfLang)
+    }
+  }, [paperId, pdfLang, persistReadingPosition])
 
   useEffect(() => {
     (['zh', 'bilingual'] as const).forEach(lang => {
@@ -423,9 +587,10 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
         const raw = selection?.toString() || ''
         const text = raw.replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '').replace(/\s+/g, ' ').trim()
         if (text && text.length > 0) {
-          const range = selection?.getRangeAt(0)
+          if (!selection || selection.rangeCount === 0) return
+          const range = selection.getRangeAt(0)
           const rect = range?.getBoundingClientRect()
-          if (rect && container.contains(selection?.anchorNode as Node)) {
+          if (rect && isSelectionInsidePdf(container, selection)) {
             setSelectedText(text)
             setSelectionPosition({
               x: rect.left + rect.width / 2,
@@ -440,7 +605,11 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     }
 
     const handleMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest('[data-quote-button]')) {
+      const target = e.target as HTMLElement
+      if (target.closest('[data-quote-button]')) {
+        return
+      }
+      if (target.closest('.rpv-core__text-layer') || target.closest('.rpv-core__inner-pages')) {
         return
       }
       setSelectedText('')
@@ -463,6 +632,44 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       window.getSelection()?.removeAllRanges()
     }
   }
+
+  const commitPageInput = useCallback(() => {
+    if (!totalPages) {
+      setPageInputValue(String(currentPage))
+      return
+    }
+
+    const trimmedValue = pageInputValue.trim()
+    if (!trimmedValue) {
+      setPageInputValue(String(currentPage))
+      return
+    }
+
+    const parsedPage = Number.parseInt(trimmedValue, 10)
+    if (!Number.isFinite(parsedPage)) {
+      setPageInputValue(String(currentPage))
+      return
+    }
+
+    const targetPage = Math.min(Math.max(parsedPage, 1), totalPages)
+    setPageInputValue(String(targetPage))
+
+    if (targetPage !== currentPage) {
+      pageNavigationPluginInstance.jumpToPage(targetPage - 1)
+    }
+  }, [currentPage, pageInputValue, pageNavigationPluginInstance, totalPages])
+
+  const handlePageInputBlur = useCallback(() => {
+    if (cancelPageInputCommitRef.current) {
+      cancelPageInputCommitRef.current = false
+      setPageInputValue(String(currentPage))
+      setIsEditingPageInput(false)
+      return
+    }
+
+    commitPageInput()
+    setIsEditingPageInput(false)
+  }, [commitPageInput, currentPage])
 
   // 包装缩放操作：先淡出，再缩放，最后居中并淡入
   const handleZoomWithFade = (zoomAction: () => void, shouldPersist = false) => {
@@ -581,6 +788,10 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             <Worker workerUrl="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
               <Viewer
                 fileUrl={pdfUrl}
+                characterMap={{
+                  url: 'https://unpkg.com/pdfjs-dist@3.11.174/cmaps/',
+                  isCompressed: true,
+                }}
                 plugins={[
                   searchPluginInstance,
                   bookmarkPluginInstance,
@@ -591,7 +802,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                 onDocumentLoad={(e) => {
                   setTotalPages(e.doc.numPages)
                   const savedScale = restoreScaleRef.current ?? getStoredPdfScale()
-                  const savedRatio = restoreScrollRatioRef.current
+                  const savedRatio = restoreScrollRatioRef.current ?? getStoredPdfReadingPosition(paperId, pdfLang)
                   restoreScaleRef.current = null
                   restoreScrollRatioRef.current = null
 
@@ -787,10 +998,38 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
             <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
 
-            {/* 页码显示 */}
-            <span className="min-w-[60px] text-center text-sm text-slate-600 dark:text-slate-300">
-              {currentPage} / {totalPages}
-            </span>
+            {/* 页码跳转 */}
+            <div className="flex items-center gap-1 text-sm text-slate-600 dark:text-slate-300">
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={pageInputValue}
+                onFocus={(e) => {
+                  setIsEditingPageInput(true)
+                  e.target.select()
+                }}
+                onChange={(e) => {
+                  const nextValue = e.target.value.replace(/\D/g, '')
+                  setPageInputValue(nextValue)
+                }}
+                onBlur={handlePageInputBlur}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur()
+                    return
+                  }
+
+                  if (e.key === 'Escape') {
+                    cancelPageInputCommitRef.current = true
+                    e.currentTarget.blur()
+                  }
+                }}
+                className="w-12 rounded-md border border-slate-200 bg-white px-2 py-1 text-center text-sm text-slate-700 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
+                aria-label="输入页码跳转"
+              />
+              <span>/ {totalPages}</span>
+            </div>
 
             <button
               onClick={() => setShowDimmingControls(prev => !prev)}
@@ -809,35 +1048,77 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             </button>
 
             {/* 语言切换 */}
-            {(translations.zh || translations.bilingual) && (
-              <>
-                <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
-                <div className="flex items-center gap-0.5">
-                  {(['en', 'zh', 'bilingual'] as const)
-                    .filter(lang => lang === 'en' || translations[lang])
-                    .map(lang => (
-                      <button
-                        key={lang}
-                        onClick={() => {
-                          restoreScaleRef.current = scaleRef.current
-                          const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
-                          if (sc && sc.scrollHeight > sc.clientHeight) {
-                            restoreScrollRatioRef.current = sc.scrollTop / (sc.scrollHeight - sc.clientHeight)
-                          }
-                          setPdfLang(lang)
-                        }}
-                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                          pdfLang === lang
-                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
-                            : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
-                        }`}
-                      >
-                        {{ en: 'EN', zh: '中文', bilingual: '双语' }[lang]}
-                      </button>
-                    ))
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={() => {
+                  if (pdfLang === 'en') return
+                  restoreScaleRef.current = scaleRef.current
+                  const currentRatio = persistReadingPosition(paperId, pdfLang)
+                  if (currentRatio !== null) {
+                    restoreScrollRatioRef.current = currentRatio
                   }
-                </div>
-              </>
+                  setPdfLang('en')
+                  savePdfLang(paperId, 'en')
+                }}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                  pdfLang === 'en'
+                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                    : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                }`}
+              >
+                EN
+              </button>
+              <button
+                onClick={() => {
+                  if (translations.zh) {
+                    if (pdfLang === 'zh') return
+                    restoreScaleRef.current = scaleRef.current
+                    const currentRatio = persistReadingPosition(paperId, pdfLang)
+                    if (currentRatio !== null) {
+                      restoreScrollRatioRef.current = currentRatio
+                    }
+                    setPdfLang('zh')
+                    savePdfLang(paperId, 'zh')
+                  } else {
+                    handleTriggerTranslation(paperId)
+                  }
+                }}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                  pdfLang === 'zh'
+                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                    : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+                }`}
+              >
+                中文
+              </button>
+            </div>
+            {/* 翻译进度 */}
+            {translateStatus && translateStatus.status !== 'finished' && translateStatus.status !== 'none' && (
+              <div className="flex items-center gap-1.5 text-xs max-w-[200px]">
+                {translateStatus.status === 'polling' && (
+                  <>
+                    <svg className="h-3 w-3 animate-spin text-blue-500 shrink-0" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                    <span className="text-blue-600 dark:text-blue-400 truncate">{translateStatus.info || '翻译中…'}</span>
+                  </>
+                )}
+                {translateStatus.status === 'pending' && (
+                  <span className="text-slate-500 dark:text-slate-400 truncate">等待翻译…</span>
+                )}
+                {(translateStatus.status === 'failed' || translateStatus.status === 'error') && (
+                  <span className="text-red-500 dark:text-red-400 truncate" title={translateStatus.error}>
+                    {translateStatus.error || '翻译失败'}
+                  </span>
+                )}
+                {translateStatus.status === 'needs_login' && (
+                  <span className="text-amber-600 dark:text-amber-400 truncate" title={translateStatus.error}>
+                    需要配置 Cookie
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>

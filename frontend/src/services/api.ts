@@ -86,6 +86,44 @@ export async function getTranslations(paperId: string): Promise<TranslationStatu
   return response.json()
 }
 
+// ============ 翻译 API ============
+
+export interface TranslateStatus {
+  status: 'none' | 'pending' | 'polling' | 'finished' | 'failed' | 'error' | 'needs_login'
+  info: string
+  error: string
+}
+
+export async function triggerTranslation(paperId: string): Promise<TranslateStatus> {
+  const response = await fetch(`${API_BASE}/papers/${paperId}/translate`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to trigger translation')
+  }
+  return response.json()
+}
+
+export async function getTranslateStatus(paperId: string): Promise<TranslateStatus> {
+  const response = await fetch(`${API_BASE}/papers/${paperId}/translate/status`)
+  if (!response.ok) {
+    throw new Error('Failed to get translation status')
+  }
+  return response.json()
+}
+
+export async function updateHjfyCookie(cookie: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/config/hjfy`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookie }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.detail || 'Failed to update hjfy cookie')
+  }
+}
+
 // ============ 会话 API ============
 
 export interface SessionMeta {
@@ -241,6 +279,17 @@ export async function* sendMessage(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  const flushBuffer = function* (rawBuffer: string) {
+    for (const rawLine of rawBuffer.split('\n')) {
+      const line = rawLine.trim()
+      if (!line.startsWith('data: ')) continue
+      try {
+        yield JSON.parse(line.slice(6))
+      } catch {
+        // 跳过格式异常的 SSE 行
+      }
+    }
+  }
 
   while (true) {
     const { done, value } = await reader.read()
@@ -250,16 +299,14 @@ export async function* sendMessage(
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
 
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6))
-          yield data
-        } catch {
-          // 跳过格式异常的 SSE 行
-        }
-      }
+    for (const data of flushBuffer(lines.join('\n'))) {
+      yield data
     }
+  }
+
+  buffer += decoder.decode()
+  for (const data of flushBuffer(buffer)) {
+    yield data
   }
 }
 
@@ -410,6 +457,17 @@ export async function* sendCrossPaperMessage(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  const flushBuffer = function* (rawBuffer: string) {
+    for (const rawLine of rawBuffer.split('\n')) {
+      const line = rawLine.trim()
+      if (!line.startsWith('data: ')) continue
+      try {
+        yield JSON.parse(line.slice(6))
+      } catch {
+        // skip malformed SSE lines
+      }
+    }
+  }
 
   while (true) {
     const { done, value } = await reader.read()
@@ -419,16 +477,14 @@ export async function* sendCrossPaperMessage(
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
 
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6))
-          yield data
-        } catch {
-          // skip malformed SSE lines
-        }
-      }
+    for (const data of flushBuffer(lines.join('\n'))) {
+      yield data
     }
+  }
+
+  buffer += decoder.decode()
+  for (const data of flushBuffer(buffer)) {
+    yield data
   }
 }
 
@@ -443,6 +499,7 @@ export interface Config {
     max_tokens: number
   }
   data_dir: string
+  hjfy_cookie_configured: boolean
 }
 
 export async function getConfig(): Promise<Config> {

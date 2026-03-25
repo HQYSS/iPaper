@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # 画像分析配置（共用 llm 的 api_base 和 api_key）
     profile_analysis: ProfileAnalysisConfig = Field(default_factory=ProfileAnalysisConfig)
     
+    # 幻觉翻译 Cookie（可选，仅未被翻译过的论文需要）
+    hjfy_cookie: str = ""
+    
     class Config:
         env_prefix = "IPAPER_"
     
@@ -65,6 +68,8 @@ class Settings(BaseSettings):
                     for key, value in data["llm"].items():
                         if hasattr(self.llm, key):
                             setattr(self.llm, key, value)
+                if "hjfy_cookie" in data:
+                    self.hjfy_cookie = data["hjfy_cookie"]
     
     def save_config(self):
         """保存配置到文件"""
@@ -76,7 +81,8 @@ class Settings(BaseSettings):
                 "model": self.llm.model,
                 "temperature": self.llm.temperature,
                 "max_tokens": self.llm.max_tokens,
-            }
+            },
+            "hjfy_cookie": self.hjfy_cookie,
         }
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
