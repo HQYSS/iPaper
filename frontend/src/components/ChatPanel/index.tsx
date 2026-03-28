@@ -5,8 +5,28 @@ import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
+import katexModule from 'katex'
+import { marked } from 'marked'
 import { useChatStore } from '../../stores/chatStore'
 import { usePaperStore } from '../../stores/paperStore'
+
+const _isTouch = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
+
+function texToMathML(tex: string, displayMode: boolean): string {
+  try {
+    return katexModule.renderToString(tex.trim(), { displayMode, throwOnError: false, output: 'mathml' })
+  } catch {
+    return displayMode ? `<pre>${tex}</pre>` : `<code>${tex}</code>`
+  }
+}
+
+function renderMarkdownLight(text: string): string {
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex: string) =>
+    `<div class="my-3 text-center">${texToMathML(tex, true)}</div>`)
+  processed = processed.replace(/\$([^\$]+?)\$/g, (_, tex: string) =>
+    texToMathML(tex, false))
+  return marked.parse(processed, { async: false, gfm: true, breaks: false }) as string
+}
 
 interface ChatPanelProps {
   paperId?: string
@@ -869,13 +889,17 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                     prose-code:text-[14px] prose-code:before:content-none prose-code:after:content-none
                     prose-hr:my-6 prose-hr:border-border
                   ">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                      components={isCrossMode ? crossPaperMarkdownComponents : undefined}
-                    >
-                      {message.content || '...'}
-                    </ReactMarkdown>
+                    {_isTouch ? (
+                      <div className="text-[15px] leading-[1.8]" dangerouslySetInnerHTML={{ __html: renderMarkdownLight(message.content || '...') }} />
+                    ) : (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={isCrossMode ? crossPaperMarkdownComponents : undefined}
+                      >
+                        {message.content || '...'}
+                      </ReactMarkdown>
+                    )}
                   </div>
                 </div>
               )
