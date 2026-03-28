@@ -36,6 +36,7 @@ export async function authFetch(url: string, options?: RequestInit): Promise<Res
 export interface AuthUser {
   id: string
   username: string
+  is_admin?: boolean
 }
 
 export interface AuthResponse {
@@ -740,5 +741,46 @@ export async function rejectProfileUpdates(): Promise<void> {
     method: 'POST',
   })
   if (!response.ok) throw new Error('Failed to reject profile updates')
+}
+
+// ============ 管理员 API ============
+
+export async function listUsers(): Promise<AuthUser[]> {
+  const response = await authFetch(`${API_BASE}/auth/admin/users`)
+  if (!response.ok) throw new Error('Failed to list users')
+  return response.json()
+}
+
+export async function deleteUser(userId: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/auth/admin/users/${userId}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to delete user')
+  }
+}
+
+export async function getInviteCode(): Promise<string> {
+  const response = await authFetch(`${API_BASE}/auth/admin/invite-code`)
+  if (!response.ok) throw new Error('Failed to get invite code')
+  const data = await response.json()
+  return data.invite_code
+}
+
+export async function updateInviteCode(code: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/auth/admin/invite-code`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invite_code: code }),
+  })
+  if (!response.ok) throw new Error('Failed to update invite code')
+}
+
+export async function changePassword(newPassword: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/auth/change-password`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_password: newPassword }),
+  })
+  if (!response.ok) throw new Error('Failed to change password')
 }
 

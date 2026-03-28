@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe } from 'lucide-react'
-import { getConfig, updateLLMConfig, updateHjfyCookie } from '../../services/api'
+import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key } from 'lucide-react'
+import { getConfig, updateLLMConfig, updateHjfyCookie, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, type AuthUser } from '../../services/api'
+import { useAuthStore } from '../../stores/authStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
 
 type ThemeMode = 'light' | 'dark' | 'system'
+type SettingsTab = 'general' | 'account' | 'admin'
 
 interface SettingsModalProps {
   open: boolean
@@ -16,6 +18,8 @@ interface SettingsModalProps {
 
 export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeModeChange }: SettingsModalProps) {
   const { addToast } = useToastStore()
+  const { user: currentUser } = useAuthStore()
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
@@ -49,6 +53,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       loadConfig()
       setSaveSuccess(false)
       setHjfySaveSuccess(false)
+      setActiveTab('general')
     }
   }, [open, loadConfig])
 
@@ -132,10 +137,37 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
             </button>
           </div>
 
+          {/* Tab bar */}
+          <div className="flex border-b border-slate-200 dark:border-slate-700 px-6 gap-1">
+            {([
+              { key: 'general' as const, label: '通用', icon: Settings },
+              { key: 'account' as const, label: '账号', icon: User },
+              ...(currentUser?.is_admin ? [{ key: 'admin' as const, label: '管理', icon: Shield }] : []),
+            ]).map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+                  activeTab === key
+                    ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                )}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+
           {isLoading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
             </div>
+          ) : activeTab === 'account' ? (
+            <AccountTab onClose={onClose} />
+          ) : activeTab === 'admin' ? (
+            <AdminTab />
           ) : (
             <>
               {/* Body */}
@@ -328,6 +360,222 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
               </div>
             </>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AccountTab({ onClose }: { onClose: () => void }) {
+  const { user, logout } = useAuthStore()
+  const { addToast } = useToastStore()
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleChangePassword = async () => {
+    if (!newPassword || newPassword.length < 4) {
+      addToast('error', '密码至少 4 个字符')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      addToast('error', '两次密码不一致')
+      return
+    }
+    setSaving(true)
+    try {
+      await changePassword(newPassword)
+      addToast('success', '密码已更新')
+      setNewPassword('')
+      setConfirmPassword('')
+    } catch {
+      addToast('error', '修改密码失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="px-6 py-5 space-y-5">
+      <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/50">
+        <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-950/50 flex items-center justify-center">
+          <User className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+        </div>
+        <div>
+          <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{user?.username || 'local'}</p>
+          <p className="text-xs text-slate-400">{user?.is_admin ? '管理员' : '普通用户'}</p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">修改密码</label>
+        <input
+          type="password"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+          placeholder="新密码"
+          className="w-full px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+        />
+        <input
+          type="password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          placeholder="确认新密码"
+          onKeyDown={(e) => e.key === 'Enter' && handleChangePassword()}
+          className="w-full px-4 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+        />
+        <button
+          onClick={handleChangePassword}
+          disabled={!newPassword || saving}
+          className={cn(
+            'w-full px-4 py-2.5 text-sm font-medium rounded-xl transition-all',
+            'bg-slate-800 text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-300',
+            (!newPassword || saving) && 'opacity-50 cursor-not-allowed'
+          )}
+        >
+          {saving ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : '更新密码'}
+        </button>
+      </div>
+
+      <button
+        onClick={() => { logout(); onClose() }}
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
+      >
+        <LogOut className="w-4 h-4" />
+        退出登录
+      </button>
+    </div>
+  )
+}
+
+function AdminTab() {
+  const { addToast } = useToastStore()
+  const [users, setUsers] = useState<AuthUser[]>([])
+  const [inviteCode, setInviteCode] = useState('')
+  const [editingCode, setEditingCode] = useState('')
+  const [isEditingCode, setIsEditingCode] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [userList, code] = await Promise.all([listUsers(), getInviteCode()])
+      setUsers(userList)
+      setInviteCode(code)
+      setEditingCode(code)
+    } catch {
+      addToast('error', '加载管理信息失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  const handleDeleteUser = async (userId: string, username: string) => {
+    if (!confirm(`确定删除用户 ${username}？其所有数据将保留在服务器上。`)) return
+    try {
+      await deleteUser(userId)
+      setUsers((prev) => prev.filter((u) => u.id !== userId))
+      addToast('success', `用户 ${username} 已删除`)
+    } catch (e) {
+      addToast('error', (e as Error).message)
+    }
+  }
+
+  const handleSaveInviteCode = async () => {
+    try {
+      await updateInviteCode(editingCode)
+      setInviteCode(editingCode)
+      setIsEditingCode(false)
+      addToast('success', '邀请码已更新')
+    } catch {
+      addToast('error', '更新邀请码失败')
+    }
+  }
+
+  const handleCopyInviteCode = () => {
+    navigator.clipboard.writeText(inviteCode).then(() => addToast('success', '已复制邀请码'))
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="px-6 py-5 space-y-5">
+      {/* Invite code */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+          <Key className="w-3.5 h-3.5 inline mr-1.5" />
+          邀请码
+        </label>
+        {isEditingCode ? (
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={editingCode}
+              onChange={(e) => setEditingCode(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveInviteCode()}
+              className="flex-1 px-3 py-2 text-sm font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+              autoFocus
+            />
+            <button
+              onClick={handleSaveInviteCode}
+              className="px-3 py-2 text-sm font-medium rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 transition-all"
+            >
+              保存
+            </button>
+            <button
+              onClick={() => { setEditingCode(inviteCode); setIsEditingCode(false) }}
+              className="px-3 py-2 text-sm font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <code className="flex-1 text-sm font-mono text-slate-700 dark:text-slate-300">{inviteCode || '(未设置)'}</code>
+            <button onClick={handleCopyInviteCode} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-all" title="复制">
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => setIsEditingCode(true)} className="px-2.5 py-1 text-xs font-medium rounded-lg text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all">
+              修改
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Users */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+          用户列表（{users.length}）
+        </label>
+        <div className="space-y-2">
+          {users.map((u) => (
+            <div key={u.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+              <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
+                {u.is_admin ? <Shield className="w-4 h-4 text-indigo-500" /> : <User className="w-4 h-4 text-slate-400" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{u.username}</p>
+                <p className="text-xs text-slate-400">{u.is_admin ? '管理员' : '普通用户'}</p>
+              </div>
+              {!u.is_admin && (
+                <button
+                  onClick={() => handleDeleteUser(u.id, u.username)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
+                  title="删除用户"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>
