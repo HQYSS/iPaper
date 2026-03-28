@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import * as api from '../services/api'
+import { fetchPapersOffline } from '../services/offlineApi'
 import { usePreferencesStore } from './preferencesStore'
 
 function getStoredRecentPaperIds(): string[] {
@@ -67,7 +68,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
   fetchPapers: async () => {
     set({ isLoading: true, error: null })
     try {
-      const papers = await api.fetchPapers()
+      const papers = await fetchPapersOffline()
       const recentPaperIds = syncRecentPaperIds(get().recentPaperIds, papers)
       saveRecentPaperIds(recentPaperIds)
       set({ papers, recentPaperIds, isLoading: false })
@@ -80,7 +81,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const paper = await api.addPaper(arxivInput)
-      const papers = await api.fetchPapers()
+      const papers = await fetchPapersOffline()
       const newPaper = papers.find(p => p.arxiv_id === paper.arxiv_id)
       const syncedRecentPaperIds = syncRecentPaperIds(get().recentPaperIds, papers)
       const recentPaperIds = newPaper
@@ -107,7 +108,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       await api.deletePaper(paperId)
-      const papers = await api.fetchPapers()
+      const papers = await fetchPapersOffline()
       const { selectedPaper, recentPaperIds } = get()
       const nextRecentPaperIds = syncRecentPaperIds(
         recentPaperIds.filter((id) => id !== paperId),

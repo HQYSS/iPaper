@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { getPreferences, updatePreferencesApi } from '../services/api'
+import { getPreferencesOffline, updatePreferencesOffline } from '../services/offlineApi'
 
 const PREFERENCES_CACHE_KEY = 'ipaper.preferences'
 
@@ -188,18 +188,16 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
 
   loadPreferences: async () => {
     try {
-      const serverData = await getPreferences()
+      const serverData = await getPreferencesOffline()
 
       if (isServerEmpty(serverData)) {
-        // Server has no data — migrate legacy localStorage if available
         const legacy = collectLegacyPreferences()
         if (legacy) {
           const merged = { ...DEFAULT_PREFERENCES, ...legacy }
           set({ preferences: merged, isLoaded: true })
           writeCachedPreferences(merged)
           cleanupLegacyKeys()
-          // Upload legacy data to server (fire-and-forget)
-          updatePreferencesApi(legacy as Record<string, unknown>).catch(() => {})
+          updatePreferencesOffline(legacy as Record<string, unknown>).catch(() => {})
           return
         }
       }
@@ -209,7 +207,6 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
       writeCachedPreferences(merged)
       cleanupLegacyKeys()
     } catch {
-      // Offline fallback: use cached data
       set({ isLoaded: true })
     }
   },
@@ -221,7 +218,7 @@ export const usePreferencesStore = create<PreferencesStore>((set, get) => ({
 
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
-      updatePreferencesApi(partial as Record<string, unknown>).catch(() => {})
+      updatePreferencesOffline(partial as Record<string, unknown>).catch(() => {})
     }, 500)
   },
 

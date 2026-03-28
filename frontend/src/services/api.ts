@@ -784,3 +784,21 @@ export async function changePassword(newPassword: string): Promise<void> {
   if (!response.ok) throw new Error('Failed to change password')
 }
 
+// ============ 离线代理 re-exports ============
+// 消费侧可直接 import { fetchPapersOffline } from './api' 使用离线增强版
+export {
+  fetchPapersOffline,
+  fetchPdfBlobOffline,
+  getChatHistoryOffline,
+  getCrossPaperChatHistoryOffline,
+  listSessionsOffline,
+  listCrossPaperSessionsOffline,
+  getPreferencesOffline,
+  updatePreferencesOffline,
+  updateChatHistoryOffline,
+  updateCrossPaperChatHistoryOffline,
+  replayPendingOps,
+  setupOfflineListeners,
+  isOnline,
+} from './offlineApi'
+

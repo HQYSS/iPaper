@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # 注册邀请码（未设置则拒绝所有注册）
     invite_code: str = ""
     
+    # Electron 双向同步配置
+    sync_url: str = ""      # 云端 API 地址，如 https://www.moshang.xyz/ipaper/api
+    sync_token: str = ""    # 用于同步的 JWT token
+    
     class Config:
         env_prefix = "IPAPER_"
     

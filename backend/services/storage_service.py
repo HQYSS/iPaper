@@ -119,6 +119,7 @@ class StorageService:
             "paper_id": paper_id,
             "session_id": session_id,
             "messages": [msg.model_dump() for msg in messages],
+            "updated_at": datetime.now().isoformat(),
         }
         if forks:
             data["forks"] = forks
@@ -296,6 +297,7 @@ class StorageService:
             "session_id": session_id,
             "paper_ids": paper_ids,
             "messages": [msg.model_dump() for msg in messages],
+            "updated_at": datetime.now().isoformat(),
         }
         if forks:
             data["forks"] = forks

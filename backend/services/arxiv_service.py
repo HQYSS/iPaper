@@ -142,8 +142,10 @@ class ArxivService:
         return PaperMeta(**data)
     
     def _save_meta(self, meta_file: Path, meta: PaperMeta):
+        data = meta.model_dump(mode="json")
+        data["updated_at"] = datetime.now().isoformat()
         with open(meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta.model_dump(mode="json"), f, indent=2, ensure_ascii=False, default=str)
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
     
     def _update_index(self, user_id: str, meta: PaperMeta):
         papers_dir = settings.get_user_papers_dir(user_id)

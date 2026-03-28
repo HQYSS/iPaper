@@ -1,5 +1,13 @@
 import { create } from 'zustand'
 import * as api from '../services/api'
+import {
+  listSessionsOffline,
+  getChatHistoryOffline,
+  getCrossPaperChatHistoryOffline,
+  listCrossPaperSessionsOffline,
+  updateChatHistoryOffline,
+  updateCrossPaperChatHistoryOffline,
+} from '../services/offlineApi'
 
 export type QuoteSource = 'pdf' | 'chat'
 
@@ -109,7 +117,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     try {
-      const sessionList = await api.listSessions(paperId)
+      const sessionList = await listSessionsOffline(paperId)
       const sessions = sessionList.sessions
 
       if (sessions.length === 0) {
@@ -188,7 +196,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   loadHistory: async (paperId: string, sessionId: string) => {
     set({ isLoading: true, error: null })
     try {
-      const history = await api.getChatHistory(paperId, sessionId)
+      const history = await getChatHistoryOffline(paperId, sessionId)
       set({
         messages: history.messages,
         forks: history.forks || {},
@@ -372,7 +380,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ messages: newMessages, forks: newForks })
 
     try {
-      await api.updateChatHistory(paperId, sessionId, newMessages, newForks)
+      await updateChatHistoryOffline(paperId, sessionId, newMessages, newForks)
     } catch {
       // Best effort save
     }
@@ -386,7 +394,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const fork = forks[key]
     if (!fork || forkIndex < 0 || forkIndex >= fork.alternatives.length) return
 
-    // Save current tail into the currently active alternative
     const currentTail = messages.slice(messageIndex)
     const newForks = { ...forks }
     newForks[key] = {
@@ -395,13 +402,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     newForks[key].alternatives[fork.active] = currentTail
 
-    // Replace messages: keep everything before the fork point, append the target branch
     const targetBranch = newForks[key].alternatives[forkIndex]
     const newMessages = [...messages.slice(0, messageIndex), ...targetBranch]
     set({ messages: newMessages, forks: newForks })
 
     try {
-      await api.updateChatHistory(paperId, sessionId, newMessages, newForks)
+      await updateChatHistoryOffline(paperId, sessionId, newMessages, newForks)
     } catch {
       // Best effort save
     }
@@ -453,7 +459,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })
 
     try {
-      const sessionList = await api.listCrossPaperSessions()
+      const sessionList = await listCrossPaperSessionsOffline()
       const sessions = sessionList.sessions.map((s) => ({
         id: s.id,
         title: s.title,
@@ -483,7 +489,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   loadCrossPaperSession: async (sessionId: string) => {
     set({ isLoading: true, error: null })
     try {
-      const history = await api.getCrossPaperChatHistory(sessionId)
+      const history = await getCrossPaperChatHistoryOffline(sessionId)
       set({
         messages: history.messages,
         forks: history.forks || {},
@@ -660,7 +666,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ messages: newMessages, forks: newForks })
 
     try {
-      await api.updateCrossPaperChatHistory(sessionId, newMessages, newForks)
+      await updateCrossPaperChatHistoryOffline(sessionId, newMessages, newForks)
     } catch {
       // best effort
     }
@@ -687,7 +693,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ messages: newMessages, forks: newForks })
 
     try {
-      await api.updateCrossPaperChatHistory(sessionId, newMessages, newForks)
+      await updateCrossPaperChatHistoryOffline(sessionId, newMessages, newForks)
     } catch {
       // best effort
     }
