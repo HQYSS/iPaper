@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
@@ -6,10 +6,12 @@ import { ChatPanel } from './components/ChatPanel'
 import { CrossPaperViewer } from './components/CrossPaperViewer'
 import { ProfilePanel } from './components/ProfilePanel'
 import { SettingsModal } from './components/SettingsModal'
+import { PaperQuickSwitcher } from './components/PaperQuickSwitcher'
 import { usePaperStore } from './stores/paperStore'
 import { useChatStore } from './stores/chatStore'
 import { useProfileStore } from './stores/profileStore'
 import { getConfig } from './services/api'
+import type { PaperListItem } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
@@ -55,7 +57,7 @@ function getStoredChatWidthRatio() {
 }
 
 function App() {
-  const { fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab } = usePaperStore()
+  const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper } = usePaperStore()
   const { exitCrossPaperChat } = useChatStore()
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -64,12 +66,33 @@ function App() {
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode())
   const containerRef = useRef<HTMLDivElement>(null)
   const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
 
   const isInCrossChat = !!crossPaper.activeCrossPaperSession
   const showSinglePaper = !!selectedPaper && !isInCrossChat
+  const currentQuickSwitcherPaperId = isInCrossChat
+    ? (crossPaper.activePdfTab ?? crossPaper.activeCrossPaperSession?.paper_ids[0] ?? null)
+    : (selectedPaper?.arxiv_id ?? null)
+  const quickSwitcherPapers = useMemo(() => {
+    const paperMap = new Map(papers.map((paper) => [paper.arxiv_id, paper]))
+    const allowedPaperIds = isInCrossChat && crossPaper.activeCrossPaperSession
+      ? crossPaper.activeCrossPaperSession.paper_ids
+      : papers.map((paper) => paper.arxiv_id)
+
+    const allowedPaperIdSet = new Set(allowedPaperIds)
+    const orderedPaperIds = [
+      ...recentPaperIds.filter((paperId) => allowedPaperIdSet.has(paperId)),
+      ...allowedPaperIds.filter((paperId) => !recentPaperIds.includes(paperId)),
+    ]
+
+    return orderedPaperIds
+      .filter((paperId) => paperId !== currentQuickSwitcherPaperId)
+      .map((paperId) => paperMap.get(paperId))
+      .filter((paper): paper is PaperListItem => Boolean(paper))
+  }, [isInCrossChat, crossPaper.activeCrossPaperSession, papers, recentPaperIds, currentQuickSwitcherPaperId])
 
   useEffect(() => {
     fetchPapers()
@@ -82,19 +105,25 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (quickSwitcherOpen) return
       if (!(e.metaKey || e.ctrlKey)) return
-      if (e.key === 'b') {
+      const key = e.key.toLowerCase()
+      if (key === 'p') {
+        if (quickSwitcherPapers.length === 0) return
+        e.preventDefault()
+        setQuickSwitcherOpen(true)
+      } else if (key === 'b') {
         e.preventDefault()
         setSidebarCollapsed(prev => !prev)
         setSidebarHoverOpen(false)
-      } else if (e.key === 'l') {
+      } else if (key === 'l') {
         e.preventDefault()
         setChatCollapsed(prev => !prev)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [quickSwitcherOpen, quickSwitcherPapers.length])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -209,6 +238,24 @@ function App() {
   const handleCloseEvolution = useCallback(() => {
     closeEvolution()
   }, [closeEvolution])
+
+  const handleQuickSwitcherClose = useCallback(() => {
+    setQuickSwitcherOpen(false)
+  }, [])
+
+  const handleQuickSwitcherSelect = useCallback((paper: PaperListItem) => {
+    if (isInCrossChat) {
+      setCrossPaperPdfTab(paper.arxiv_id)
+    } else {
+      selectPaper(paper)
+    }
+    setQuickSwitcherOpen(false)
+  }, [isInCrossChat, selectPaper, setCrossPaperPdfTab])
+
+  useEffect(() => {
+    if (!settingsOpen && !isEvolutionOpen) return
+    setQuickSwitcherOpen(false)
+  }, [settingsOpen, isEvolutionOpen])
 
   const showChat = (showSinglePaper || isInCrossChat) && !cursorMode
 
@@ -330,6 +377,13 @@ function App() {
         onClose={() => setSettingsOpen(false)}
         themeMode={themeMode}
         onThemeModeChange={handleThemeModeChange}
+      />
+      <PaperQuickSwitcher
+        open={quickSwitcherOpen}
+        papers={quickSwitcherPapers}
+        title={isInCrossChat ? '切换当前串讲中的论文' : '切换论文'}
+        onClose={handleQuickSwitcherClose}
+        onSelect={handleQuickSwitcherSelect}
       />
     </div>
   )

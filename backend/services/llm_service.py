@@ -19,6 +19,7 @@ from services.arxiv_service import arxiv_service
 logger = logging.getLogger(__name__)
 
 PDF_SIZE_THRESHOLD = 15 * 1024 * 1024  # 15MB
+IMAGE_PAYLOAD_LIMIT = 20 * 1024 * 1024  # 20MB (base64 payload before data URL prefix)
 IMAGE_DPI = 150
 IMAGE_QUALITY = 85
 
@@ -209,18 +210,33 @@ class LLMService:
 
     @staticmethod
     def _pdf_to_image_blocks(pdf_path: Path) -> list:
-        """将 PDF 逐页渲染为 JPEG，返回 OpenAI vision 格式的 image_url 块列表。"""
+        """将 PDF 逐页渲染为 JPEG，累计图片 payload 不超过上限。"""
         doc = fitz.open(pdf_path)
+        total_pages = len(doc)
         blocks = []
         matrix = fitz.Matrix(IMAGE_DPI / 72, IMAGE_DPI / 72)
+        total_payload_bytes = 0
+        rendered_pages = 0
 
-        for page_num in range(len(doc)):
+        for page_num in range(total_pages):
             page = doc[page_num]
             pix = page.get_pixmap(matrix=matrix)
 
             buf = io.BytesIO()
             buf.write(pix.tobytes("jpeg", jpg_quality=IMAGE_QUALITY))
-            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            img_bytes = buf.getvalue()
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            payload_bytes = len(img_b64.encode("ascii"))
+
+            if blocks and total_payload_bytes + payload_bytes > IMAGE_PAYLOAD_LIMIT:
+                logger.info(
+                    "Truncated PDF image payload at %d/%d pages (~%.1fMB payload, limit %dMB)",
+                    rendered_pages,
+                    total_pages,
+                    total_payload_bytes / 1024 / 1024,
+                    IMAGE_PAYLOAD_LIMIT // 1024 // 1024,
+                )
+                break
 
             blocks.append({
                 "type": "image_url",
@@ -228,10 +244,27 @@ class LLMService:
                     "url": f"data:image/jpeg;base64,{img_b64}"
                 }
             })
+            total_payload_bytes += payload_bytes
+            rendered_pages += 1
 
         doc.close()
-        total_kb = sum(len(b["image_url"]["url"]) * 3 / 4 for b in blocks) / 1024
-        logger.info("Converted %d pages to JPEG images (total ~%.0fKB)", len(blocks), total_kb)
+        logger.info(
+            "Converted %d/%d pages to JPEG images (~%.1fMB base64 payload)",
+            rendered_pages,
+            total_pages,
+            total_payload_bytes / 1024 / 1024,
+        )
+
+        if rendered_pages < total_pages:
+            blocks.append({
+                "type": "text",
+                "text": (
+                    f"注意：原始 PDF 共 {total_pages} 页，但由于输入体积限制，这里只提供了前 "
+                    f"{rendered_pages} 页的页面图像。请明确说明你的判断主要基于这些已提供页面，"
+                    "不要假装已经读取了全文。"
+                )
+            })
+
         return blocks
 
     # ==================== Cross-Paper (串讲) ====================

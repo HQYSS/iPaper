@@ -316,6 +316,8 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const activeSessionKey = getChatScrollStateKey(paperId, crossPaperSessionId, activeSessionId)
   const pendingRestoreSessionKeyRef = useRef<string | null>(null)
   const isRestoringScrollRef = useRef(false)
+  const hasHydratedSessionRef = useRef(false)
+  const lastMessageCountRef = useRef(0)
   const captureCurrentScrollState = () => {
     saveChatScrollState(activeSessionKey, messagesContainerRef.current)
   }
@@ -329,6 +331,8 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   useEffect(() => {
     pendingRestoreSessionKeyRef.current = activeSessionKey
     isRestoringScrollRef.current = !!activeSessionKey
+    hasHydratedSessionRef.current = false
+    lastMessageCountRef.current = 0
     isNearBottomRef.current = activeSessionKey
       ? (chatScrollStateCache.get(activeSessionKey)?.isNearBottom ?? true)
       : true
@@ -354,11 +358,24 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   }, [activeSessionKey])
 
   useEffect(() => {
+    const previousMessageCount = lastMessageCountRef.current
+    const currentMessageCount = messages.length
+    const didAppendMessage = currentMessageCount > previousMessageCount
+    lastMessageCountRef.current = currentMessageCount
+
+    if (!activeSessionKey || isLoading) return
     if (pendingRestoreSessionKeyRef.current === activeSessionKey) return
-    if (isNearBottomRef.current) {
+    if (isRestoringScrollRef.current) return
+
+    if (!hasHydratedSessionRef.current) {
+      hasHydratedSessionRef.current = true
+      return
+    }
+
+    if ((didAppendMessage || isStreaming) && isNearBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [messages])
+  }, [activeSessionKey, isLoading, isStreaming, messages])
 
   useLayoutEffect(() => {
     const container = messagesContainerRef.current

@@ -224,8 +224,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const isStillActive = () =>
       get().currentPaperId === paperId && get().currentSessionId === sessionId
 
+    const clearStreamingState = () => {
+      set((state) => (
+        state.abortController === controller
+          ? { isStreaming: false, abortController: null }
+          : {}
+      ))
+    }
+
     try {
       for await (const data of api.sendMessage(paperId, sessionId, message, quotes, controller.signal)) {
+        if (data.type === 'done') {
+          clearStreamingState()
+          continue
+        }
+
+        if (data.type === 'error') {
+          clearStreamingState()
+          if (!isStillActive()) continue
+          set((state) => ({
+            error: data.message || 'Unknown error',
+            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
+          }))
+          continue
+        }
+
         if (!isStillActive()) continue
 
         if (data.type === 'chunk' && data.content) {
@@ -237,32 +260,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             }
             return { messages: newMessages }
           })
-        } else if (data.type === 'done') {
-          set({ isStreaming: false, abortController: null })
-        } else if (data.type === 'error') {
-          set((state) => ({
-            error: data.message || 'Unknown error',
-            isStreaming: false,
-            abortController: null,
-            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-          }))
         }
       }
+      clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         // Stopped by user — keep partial content if any, remove empty assistant message
+        clearStreamingState()
+        if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
           const last = msgs[msgs.length - 1]
           if (last?.role === 'assistant' && !last.content) {
             msgs.pop()
           }
-          return { messages: msgs, isStreaming: false, abortController: null }
+          return { messages: msgs }
         })
         return
       }
+      clearStreamingState()
       if (!isStillActive()) return
-      set({ error: (error as Error).message, isStreaming: false, abortController: null })
+      set({ error: (error as Error).message })
       set((state) => ({
         messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
       }))
@@ -538,8 +556,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const isStillActive = () =>
       get().isCrossPaperMode && get().currentSessionId === sessionId
 
+    const clearStreamingState = () => {
+      set((state) => (
+        state.abortController === controller
+          ? { isStreaming: false, abortController: null }
+          : {}
+      ))
+    }
+
     try {
       for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, controller.signal)) {
+        if (data.type === 'done') {
+          clearStreamingState()
+          continue
+        }
+
+        if (data.type === 'error') {
+          clearStreamingState()
+          if (!isStillActive()) continue
+          set((state) => ({
+            error: data.message || 'Unknown error',
+            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
+          }))
+          continue
+        }
+
         if (!isStillActive()) continue
 
         if (data.type === 'chunk' && data.content) {
@@ -551,31 +592,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             }
             return { messages: newMessages }
           })
-        } else if (data.type === 'done') {
-          set({ isStreaming: false, abortController: null })
-        } else if (data.type === 'error') {
-          set((state) => ({
-            error: data.message || 'Unknown error',
-            isStreaming: false,
-            abortController: null,
-            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-          }))
         }
       }
+      clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
+        clearStreamingState()
+        if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
           const last = msgs[msgs.length - 1]
           if (last?.role === 'assistant' && !last.content) {
             msgs.pop()
           }
-          return { messages: msgs, isStreaming: false, abortController: null }
+          return { messages: msgs }
         })
         return
       }
+      clearStreamingState()
       if (!isStillActive()) return
-      set({ error: (error as Error).message, isStreaming: false, abortController: null })
+      set({ error: (error as Error).message })
       set((state) => ({
         messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
       }))
