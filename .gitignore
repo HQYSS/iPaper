@@ -32,6 +32,7 @@ logs/
 
 # 论文数据（PDF、元信息、对话历史，不入 git）
 papers/
+exports/
 
 # Cursor
 .cursor/

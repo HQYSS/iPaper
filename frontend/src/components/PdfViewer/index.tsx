@@ -24,6 +24,7 @@ const PDF_OVERLAY_OPACITY_STORAGE_KEY = 'ipaper.pdfOverlayOpacity'
 const PDF_BRIGHTNESS_STORAGE_KEY = 'ipaper.pdfBrightness'
 const PDF_READING_POSITIONS_STORAGE_KEY = 'ipaper.pdfReadingPositions'
 const PDF_LANG_STORAGE_KEY = 'ipaper.pdfLangs'
+const pdfScrollBackStackCache = new Map<string, number[]>()
 
 type PdfDimmingMode = 'off' | 'overlay' | 'brightness'
 
@@ -60,6 +61,10 @@ function getStoredPdfScale() {
 }
 
 function getPdfReadingPositionKey(paperId: string, pdfLang: PdfLang) {
+  return `${paperId}:${pdfLang}`
+}
+
+function getPdfScrollBackStackKey(paperId: string, pdfLang: PdfLang) {
   return `${paperId}:${pdfLang}`
 }
 
@@ -127,6 +132,14 @@ function savePdfLang(paperId: string, lang: PdfLang) {
   }
 }
 
+function getCachedPdfScrollBackStack(paperId: string, pdfLang: PdfLang) {
+  return [...(pdfScrollBackStackCache.get(getPdfScrollBackStackKey(paperId, pdfLang)) ?? [])]
+}
+
+function saveCachedPdfScrollBackStack(paperId: string, pdfLang: PdfLang, stack: number[]) {
+  pdfScrollBackStackCache.set(getPdfScrollBackStackKey(paperId, pdfLang), [...stack])
+}
+
 function isSelectionInsidePdf(container: HTMLDivElement, selection: Selection | null): boolean {
   if (!selection || selection.rangeCount === 0) return false
 
@@ -138,12 +151,34 @@ function isSelectionInsidePdf(container: HTMLDivElement, selection: Selection | 
   return !!anchorNode && selectionRoot.contains(anchorNode)
 }
 
+function cleanSelectedPdfText(raw: string): string {
+  return raw
+    .replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isPdfNavigationTrigger(target: HTMLElement | null): boolean {
+  if (!target) return false
+  return Boolean(
+    target.closest('[data-annotation-id]') ||
+    target.closest('.rpv-core__annotation-layer') ||
+    target.closest('.rpv-bookmark__container') ||
+    target.closest('.rpv-bookmark__item') ||
+    target.closest('.rpv-bookmark__title') ||
+    target.closest('a[href]') ||
+    target.closest('[role="link"]')
+  )
+}
+
 function SearchBox({
   onClose,
-  searchPluginInstance
+  searchPluginInstance,
+  onBeforeNavigate
 }: {
   onClose: () => void
   searchPluginInstance: ReturnType<typeof searchPlugin>
+  onBeforeNavigate?: () => void
 }) {
   const [keyword, setKeyword] = useState('')
   const [lastKeyword, setLastKeyword] = useState('')
@@ -240,7 +275,8 @@ function SearchBox({
 
   const goToNext = useCallback(() => {
     if (!keyword) return
-    
+
+    onBeforeNavigate?.()
     if (keyword !== lastKeyword) {
       searchPluginInstance.highlight(keyword).then((matches) => {
         const count = matches?.length || 0
@@ -255,11 +291,12 @@ function SearchBox({
     searchPluginInstance.jumpToNextMatch()
     setCurrentMatch((prev) => (prev >= matchCount ? 1 : prev + 1))
     scrollCurrentMatchToCenter()
-  }, [keyword, lastKeyword, matchCount, searchPluginInstance, scrollCurrentMatchToCenter])
+  }, [keyword, lastKeyword, matchCount, onBeforeNavigate, searchPluginInstance, scrollCurrentMatchToCenter])
 
   const goToPrev = useCallback(() => {
     if (!keyword) return
-    
+
+    onBeforeNavigate?.()
     if (keyword !== lastKeyword) {
       searchPluginInstance.highlight(keyword).then((matches) => {
         const count = matches?.length || 0
@@ -274,7 +311,7 @@ function SearchBox({
     searchPluginInstance.jumpToPreviousMatch()
     setCurrentMatch((prev) => (prev <= 1 ? matchCount : prev - 1))
     scrollCurrentMatchToCenter()
-  }, [keyword, lastKeyword, matchCount, searchPluginInstance, scrollCurrentMatchToCenter])
+  }, [keyword, lastKeyword, matchCount, onBeforeNavigate, searchPluginInstance, scrollCurrentMatchToCenter])
 
   const handleClose = () => {
     searchPluginInstance.clearHighlights()
@@ -356,7 +393,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [translations, setTranslations] = useState<TranslationStatus>({ zh: false, bilingual: false })
   const [translateStatus, setTranslateStatus] = useState<TranslateStatus | null>(null)
   const translatePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const [scrollBackStack, setScrollBackStack] = useState<number[]>([])
+  const [scrollBackStack, setScrollBackStack] = useState<number[]>(() => getCachedPdfScrollBackStack(paperId, 'en'))
   const [pdfDimmingMode, setPdfDimmingMode] = useState<PdfDimmingMode>(() => getStoredPdfDimmingMode())
   const [overlayOpacity, setOverlayOpacity] = useState(() => getStoredPdfValue(PDF_OVERLAY_OPACITY_STORAGE_KEY, OVERLAY_LEVELS, 0.12))
   const [brightnessLevel, setBrightnessLevel] = useState(() => getStoredPdfValue(PDF_BRIGHTNESS_STORAGE_KEY, BRIGHTNESS_LEVELS, 0.85))
@@ -365,6 +402,9 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const restoreScrollRatioRef = useRef<number | null>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
   const cancelPageInputCommitRef = useRef(false)
+  const pendingScrollBackTargetRef = useRef<number | null>(null)
+  const pendingScrollBackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectionRafRef = useRef<number | null>(null)
 
   const addQuote = useChatStore((state) => state.addQuote)
 
@@ -383,15 +423,87 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     window.localStorage.setItem(PDF_SCALE_STORAGE_KEY, String(scale))
   }, [])
 
+  const getScrollContainer = useCallback(() => {
+    return pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement | null
+  }, [])
+
   const persistReadingPosition = useCallback((targetPaperId: string, targetPdfLang: PdfLang) => {
-    const scrollContainer = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement | null
+    const scrollContainer = getScrollContainer()
     if (!scrollContainer) return null
 
     const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
     const ratio = maxScrollTop > 0 ? scrollContainer.scrollTop / maxScrollTop : 0
     savePdfReadingPosition(targetPaperId, targetPdfLang, ratio)
     return ratio
+  }, [getScrollContainer])
+
+  const clearPendingScrollBackTarget = useCallback(() => {
+    if (pendingScrollBackTimeoutRef.current) {
+      clearTimeout(pendingScrollBackTimeoutRef.current)
+      pendingScrollBackTimeoutRef.current = null
+    }
+    pendingScrollBackTargetRef.current = null
   }, [])
+
+  const pushScrollBackPosition = useCallback((position?: number | null) => {
+    const scrollContainer = getScrollContainer()
+    const rawPosition = position ?? scrollContainer?.scrollTop ?? null
+    if (rawPosition === null || !Number.isFinite(rawPosition)) return
+
+    const nextPosition = Math.max(0, rawPosition)
+    setScrollBackStack((prev) => {
+      const lastPosition = prev[prev.length - 1]
+      if (lastPosition !== undefined && Math.abs(lastPosition - nextPosition) < 4) {
+        return prev
+      }
+      return [...prev, nextPosition]
+    })
+  }, [getScrollContainer])
+
+  const queueScrollBackTarget = useCallback((position?: number | null) => {
+    const scrollContainer = getScrollContainer()
+    const rawPosition = position ?? scrollContainer?.scrollTop ?? null
+    if (rawPosition === null || !Number.isFinite(rawPosition)) return
+
+    pendingScrollBackTargetRef.current = Math.max(0, rawPosition)
+    if (pendingScrollBackTimeoutRef.current) {
+      clearTimeout(pendingScrollBackTimeoutRef.current)
+    }
+    pendingScrollBackTimeoutRef.current = setTimeout(() => {
+      pendingScrollBackTargetRef.current = null
+      pendingScrollBackTimeoutRef.current = null
+    }, 1200)
+  }, [getScrollContainer])
+
+  const clearPdfSelection = useCallback(() => {
+    setSelectedText('')
+    setSelectionPosition(null)
+  }, [])
+
+  const updateSelectionFromDocument = useCallback(() => {
+    const container = pdfContainerRef.current
+    if (!container) return
+
+    const selection = window.getSelection()
+    const text = cleanSelectedPdfText(selection?.toString() || '')
+    if (!text || !isSelectionInsidePdf(container, selection)) {
+      clearPdfSelection()
+      return
+    }
+
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    const rect = range?.getBoundingClientRect()
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      clearPdfSelection()
+      return
+    }
+
+    setSelectedText(text)
+    setSelectionPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top - 10
+    })
+  }, [clearPdfSelection])
 
   const handleDimmingModeChange = useCallback((mode: PdfDimmingMode) => {
     setPdfDimmingMode(mode)
@@ -418,6 +530,16 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       setPageInputValue(String(currentPage))
     }
   }, [currentPage, isEditingPageInput])
+
+  useEffect(() => {
+    setScrollBackStack(getCachedPdfScrollBackStack(paperId, pdfLang))
+    clearPendingScrollBackTarget()
+    clearPdfSelection()
+  }, [paperId, pdfLang, clearPendingScrollBackTarget, clearPdfSelection])
+
+  useEffect(() => {
+    saveCachedPdfScrollBackStack(paperId, pdfLang, scrollBackStack)
+  }, [paperId, pdfLang, scrollBackStack])
 
   const stopTranslatePoll = useCallback(() => {
     if (translatePollRef.current) {
@@ -488,9 +610,13 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
   useEffect(() => {
     return () => {
+      clearPendingScrollBackTarget()
+      if (selectionRafRef.current !== null) {
+        window.cancelAnimationFrame(selectionRafRef.current)
+      }
       persistReadingPosition(paperId, pdfLang)
     }
-  }, [paperId, pdfLang, persistReadingPosition])
+  }, [paperId, pdfLang, persistReadingPosition, clearPendingScrollBackTarget])
 
   useEffect(() => {
     (['zh', 'bilingual'] as const).forEach(lang => {
@@ -538,29 +664,44 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     const container = pdfContainerRef.current
     if (!container) return
 
-    const handleLinkClick = (e: MouseEvent) => {
+    const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement
-      if (target.closest('[data-annotation-id]') || target.closest('a[href^="#"]')) {
-        const sc = container.querySelector('.rpv-core__inner-pages') as HTMLElement
-        if (sc) {
-          setScrollBackStack(prev => [...prev, sc.scrollTop])
-        }
+      if (target.closest('[data-quote-button]')) return
+      if (isPdfNavigationTrigger(target)) {
+        queueScrollBackTarget()
       }
     }
 
-    container.addEventListener('click', handleLinkClick, true)
-    return () => container.removeEventListener('click', handleLinkClick, true)
-  }, [])
+    const handleScroll = (event: Event) => {
+      const scrollContainer = getScrollContainer()
+      if (!scrollContainer || event.target !== scrollContainer) return
+
+      const pendingTarget = pendingScrollBackTargetRef.current
+      if (pendingTarget === null) return
+      if (Math.abs(scrollContainer.scrollTop - pendingTarget) < 24) return
+
+      pushScrollBackPosition(pendingTarget)
+      clearPendingScrollBackTarget()
+    }
+
+    container.addEventListener('click', handleClick, true)
+    container.addEventListener('scroll', handleScroll, true)
+    return () => {
+      container.removeEventListener('click', handleClick, true)
+      container.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [clearPendingScrollBackTarget, getScrollContainer, pushScrollBackPosition, queueScrollBackTarget])
 
   const handleScrollBack = useCallback(() => {
+    clearPendingScrollBackTarget()
     setScrollBackStack(prev => {
       if (prev.length === 0) return prev
       const pos = prev[prev.length - 1]
-      const sc = pdfContainerRef.current?.querySelector('.rpv-core__inner-pages') as HTMLElement
+      const sc = getScrollContainer()
       if (sc) sc.scrollTop = pos
       return prev.slice(0, -1)
     })
-  }, [])
+  }, [clearPendingScrollBackTarget, getScrollContainer])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -574,55 +715,50 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   }, [])
 
   useEffect(() => {
+    const handleSelectionChange = () => {
+      if (selectionRafRef.current !== null) {
+        window.cancelAnimationFrame(selectionRafRef.current)
+      }
+      selectionRafRef.current = window.requestAnimationFrame(() => {
+        selectionRafRef.current = null
+        updateSelectionFromDocument()
+      })
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      if (selectionRafRef.current !== null) {
+        window.cancelAnimationFrame(selectionRafRef.current)
+        selectionRafRef.current = null
+      }
+    }
+  }, [updateSelectionFromDocument])
+
+  useEffect(() => {
     const container = pdfContainerRef.current
     if (!container) return
-
-    const handleMouseUp = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest('[data-quote-button]')) {
-        return
-      }
-      
-      setTimeout(() => {
-        const selection = window.getSelection()
-        const raw = selection?.toString() || ''
-        const text = raw.replace(/[^\u0020-\u007E\u00A0-\u024F\u0370-\u03FF\u2000-\u206F\u2100-\u214F\u2190-\u21FF\u2200-\u22FF\u2300-\u23FF\u2500-\u257F\u2600-\u26FF\u3000-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g, '').replace(/\s+/g, ' ').trim()
-        if (text && text.length > 0) {
-          if (!selection || selection.rangeCount === 0) return
-          const range = selection.getRangeAt(0)
-          const rect = range?.getBoundingClientRect()
-          if (rect && isSelectionInsidePdf(container, selection)) {
-            setSelectedText(text)
-            setSelectionPosition({
-              x: rect.left + rect.width / 2,
-              y: rect.top - 10
-            })
-          }
-        } else {
-          setSelectedText('')
-          setSelectionPosition(null)
-        }
-      }, 10)
-    }
 
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement
       if (target.closest('[data-quote-button]')) {
         return
       }
-      if (target.closest('.rpv-core__text-layer') || target.closest('.rpv-core__inner-pages')) {
+      if (
+        target.closest('.rpv-core__text-layer') ||
+        target.closest('.rpv-core__annotation-layer') ||
+        target.closest('.rpv-core__inner-pages')
+      ) {
         return
       }
-      setSelectedText('')
-      setSelectionPosition(null)
+      clearPdfSelection()
     }
 
-    container.addEventListener('mouseup', handleMouseUp, true)
     container.addEventListener('mousedown', handleMouseDown, true)
     return () => {
-      container.removeEventListener('mouseup', handleMouseUp, true)
       container.removeEventListener('mousedown', handleMouseDown, true)
     }
-  }, [])
+  }, [clearPdfSelection])
 
   const handleQuoteSelection = () => {
     if (selectedText) {
@@ -655,9 +791,10 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     setPageInputValue(String(targetPage))
 
     if (targetPage !== currentPage) {
+      pushScrollBackPosition()
       pageNavigationPluginInstance.jumpToPage(targetPage - 1)
     }
-  }, [currentPage, pageInputValue, pageNavigationPluginInstance, totalPages])
+  }, [currentPage, pageInputValue, pageNavigationPluginInstance, pushScrollBackPosition, totalPages])
 
   const handlePageInputBlur = useCallback(() => {
     if (cancelPageInputCommitRef.current) {
@@ -760,6 +897,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
           <SearchBox
             onClose={() => setShowSearch(false)}
             searchPluginInstance={searchPluginInstance}
+            onBeforeNavigate={pushScrollBackPosition}
           />
         )}
 
@@ -767,6 +905,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
         {selectedText && selectionPosition && (
           <button
             data-quote-button
+            onMouseDown={(e) => e.preventDefault()}
             onClick={handleQuoteSelection}
             className="fixed z-50 px-3 py-1.5 bg-blue-500 text-white text-sm rounded-lg shadow-lg hover:bg-blue-600 transition-colors"
             style={{
