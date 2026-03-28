@@ -57,11 +57,11 @@ export async function loginApi(username: string, password: string): Promise<Auth
   return response.json()
 }
 
-export async function registerApi(username: string, password: string): Promise<AuthResponse> {
+export async function registerApi(username: string, password: string, inviteCode: string): Promise<AuthResponse> {
   const response = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, invite_code: inviteCode }),
   })
   if (!response.ok) {
     const error = await response.json().catch(() => ({}))

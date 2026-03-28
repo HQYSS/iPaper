@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, HTTPException, Depends
 
+from config import settings
 from models.user import UserCreate, UserResponse, Token
 from services.auth_service import auth_service
 from middleware.auth import get_current_user
@@ -12,6 +13,11 @@ router = APIRouter()
 
 @router.post("/register", response_model=Token)
 async def register(body: UserCreate):
+    if not settings.invite_code:
+        raise HTTPException(status_code=403, detail="注册功能未开放")
+    if not body.invite_code or body.invite_code != settings.invite_code:
+        raise HTTPException(status_code=403, detail="邀请码无效")
+
     try:
         user = auth_service.register(body.username, body.password)
     except ValueError as e:

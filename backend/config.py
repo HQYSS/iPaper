@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # 幻觉翻译 Cookie（可选，仅未被翻译过的论文需要）
     hjfy_cookie: str = ""
     
+    # 注册邀请码（未设置则拒绝所有注册）
+    invite_code: str = ""
+    
     class Config:
         env_prefix = "IPAPER_"
     
@@ -68,6 +71,8 @@ class Settings(BaseSettings):
                             setattr(self.llm, key, value)
                 if "hjfy_cookie" in data:
                     self.hjfy_cookie = data["hjfy_cookie"]
+                if "invite_code" in data:
+                    self.invite_code = data["invite_code"]
 
     def load_user_config(self, user_id: str) -> dict:
         """加载用户私有配置（hjfy_cookie 等）"""

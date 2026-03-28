@@ -7,6 +7,7 @@ export function LoginPage() {
   const [tab, setTab] = useState<AuthTab>('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
   const [error, setError] = useState('')
   const { login, register, isLoading } = useAuthStore()
 
@@ -24,12 +25,16 @@ export function LoginPage() {
       if (tab === 'login') {
         await login(trimmedUsername, password)
       } else {
-        await register(trimmedUsername, password)
+        if (!inviteCode.trim()) {
+          setError('请输入邀请码')
+          return
+        }
+        await register(trimmedUsername, password, inviteCode.trim())
       }
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [tab, username, password, login, register])
+  }, [tab, username, password, inviteCode, login, register])
 
   const handleTabSwitch = useCallback((nextTab: AuthTab) => {
     setTab(nextTab)
@@ -100,6 +105,22 @@ export function LoginPage() {
                 placeholder="请输入密码"
               />
             </div>
+
+            {tab === 'register' && (
+              <div>
+                <label htmlFor="inviteCode" className="block text-sm font-medium text-foreground mb-1.5">
+                  邀请码
+                </label>
+                <input
+                  id="inviteCode"
+                  type="text"
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  placeholder="请输入邀请码"
+                />
+              </div>
+            )}
 
             {error && (
               <p className="text-sm text-destructive">{error}</p>

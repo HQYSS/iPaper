@@ -16,7 +16,7 @@ interface AuthStore {
   isLoading: boolean
 
   login: (username: string, password: string) => Promise<void>
-  register: (username: string, password: string) => Promise<void>
+  register: (username: string, password: string, inviteCode: string) => Promise<void>
   logout: () => void
   checkAuth: () => Promise<boolean>
 }
@@ -44,10 +44,10 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
   },
 
-  register: async (username, password) => {
+  register: async (username, password, inviteCode) => {
     set({ isLoading: true })
     try {
-      const res = await registerApi(username, password)
+      const res = await registerApi(username, password, inviteCode)
       setAuthToken(res.access_token)
       set({
         token: res.access_token,
