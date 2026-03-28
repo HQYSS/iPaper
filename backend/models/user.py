@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: str
     username: str
+    is_admin: bool = False
 
 
 class Token(BaseModel):
