@@ -68,16 +68,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
   checkAuth: async () => {
     const token = getAuthToken()
-    if (!token) {
-      set({ token: null, user: null, isAuthenticated: false })
-      return false
-    }
     try {
       const user = await getMe()
       set({ token, user, isAuthenticated: true })
       return true
     } catch {
-      clearAuthToken()
+      if (token) clearAuthToken()
       set({ token: null, user: null, isAuthenticated: false })
       return false
     }
