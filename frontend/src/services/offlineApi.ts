@@ -49,6 +49,10 @@ async function networkFirstJson<T>(
   cacheGet: () => Promise<T | null>,
   cacheSet: (data: T) => Promise<void>,
 ): Promise<T> {
+  const safeCacheGet = async (): Promise<T | null> => {
+    try { return await cacheGet() } catch { return null }
+  }
+
   if (isOnline()) {
     try {
       const response = await authFetch(url)
@@ -57,13 +61,13 @@ async function networkFirstJson<T>(
       cacheSet(data).catch(() => {})
       return data
     } catch (err) {
-      const cached = await cacheGet()
+      const cached = await safeCacheGet()
       if (cached !== null) return cached
       throw err
     }
   }
 
-  const cached = await cacheGet()
+  const cached = await safeCacheGet()
   if (cached !== null) return cached
   throw new Error('离线且无缓存数据')
 }
@@ -139,7 +143,13 @@ export async function fetchPapersOffline(): Promise<PaperListItem[]> {
 }
 
 export async function fetchPdfBlobOffline(paperId: string, lang: PdfLang = 'en'): Promise<Blob> {
-  const cached = await getCachedPdf(paperId, lang)
+  let cached: Blob | null = null
+  try {
+    cached = await getCachedPdf(paperId, lang)
+  } catch {
+    // IndexedDB 不可用（Safari 私密浏览等），跳过缓存
+  }
+
   if (!isOnline()) {
     if (cached) return cached
     throw new Error('离线且无缓存 PDF')

@@ -47,14 +47,24 @@ function getDB(): Promise<IDBPDatabase<IPaperDB>> {
   if (!dbPromise) {
     dbPromise = openDB<IPaperDB>(DB_NAME, DB_VERSION, {
       upgrade(db) {
-        db.createObjectStore('papers', { keyPath: 'arxiv_id' })
-        db.createObjectStore('pdfs')
-        db.createObjectStore('chats')
-        db.createObjectStore('sessions')
-        db.createObjectStore('preferences')
-        const pendingStore = db.createObjectStore('pendingOps', { autoIncrement: true })
-        pendingStore.createIndex('by-created', 'createdAt')
+        if (!db.objectStoreNames.contains('papers'))
+          db.createObjectStore('papers', { keyPath: 'arxiv_id' })
+        if (!db.objectStoreNames.contains('pdfs'))
+          db.createObjectStore('pdfs')
+        if (!db.objectStoreNames.contains('chats'))
+          db.createObjectStore('chats')
+        if (!db.objectStoreNames.contains('sessions'))
+          db.createObjectStore('sessions')
+        if (!db.objectStoreNames.contains('preferences'))
+          db.createObjectStore('preferences')
+        if (!db.objectStoreNames.contains('pendingOps')) {
+          const pendingStore = db.createObjectStore('pendingOps', { autoIncrement: true })
+          pendingStore.createIndex('by-created', 'createdAt')
+        }
       },
+    }).catch((err) => {
+      dbPromise = null
+      throw err
     })
   }
   return dbPromise
