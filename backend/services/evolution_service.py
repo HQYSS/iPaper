@@ -178,28 +178,27 @@ class EvolutionService:
     def __init__(self):
         self._profile_cache: Optional[str] = None
 
-    @property
-    def profile_path(self) -> Path:
-        return settings.user_profile_dir / "profile.md"
+    def profile_path(self, user_id: str) -> Path:
+        return settings.get_user_profile_dir(user_id) / "profile.md"
 
-    @property
-    def changelog_path(self) -> Path:
-        return settings.user_profile_dir / "changelog.md"
+    def changelog_path(self, user_id: str) -> Path:
+        return settings.get_user_profile_dir(user_id) / "changelog.md"
 
-    @property
-    def pending_updates_path(self) -> Path:
-        return settings.user_profile_dir / "pending_updates.json"
+    def pending_updates_path(self, user_id: str) -> Path:
+        return settings.get_user_profile_dir(user_id) / "pending_updates.json"
 
-    def load_profile(self) -> str:
-        if not self.profile_path.exists():
+    def load_profile(self, user_id: str) -> str:
+        path = self.profile_path(user_id)
+        if not path.exists():
             return ""
-        with open(self.profile_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def load_changelog(self) -> str:
-        if not self.changelog_path.exists():
+    def load_changelog(self, user_id: str) -> str:
+        path = self.changelog_path(user_id)
+        if not path.exists():
             return ""
-        with open(self.changelog_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return f.read()
 
     def _build_initial_user_content(
@@ -268,6 +267,7 @@ class EvolutionService:
 
     async def chat_stream(
         self,
+        user_id: str,
         evolution_messages: List[dict],
         chat_messages: List[ChatMessage],
         paper_title: str = "",
@@ -277,12 +277,13 @@ class EvolutionService:
         """
         进化 Agent 的流式对话。
 
+        user_id: 当前用户 ID
         evolution_messages: 进化面板中的对话历史（user/assistant 消息列表）
         chat_messages: 论文讨论的原始对话（提供给 Agent 作为分析素材）
         paper_title/paper_summary: 论文信息
         pdf_paths: 论文 PDF 文件路径列表
         """
-        current_profile = self.load_profile()
+        current_profile = self.load_profile(user_id)
         if not current_profile:
             logger.warning("[Evolution] 画像文件不存在")
             yield "画像文件不存在，无法进行进化分析。"
@@ -387,14 +388,14 @@ class EvolutionService:
 
         return True, ""
 
-    def save_pending(self, edit_plan: dict, paper_title: str = "") -> dict:
+    def save_pending(self, user_id: str, edit_plan: dict, paper_title: str = "") -> dict:
         """保存待确认的编辑计划"""
         edits = edit_plan.get("edits", [])
         logger.info(
             "[Evolution] Saving pending: %d edits, paper=%s",
             len(edits), paper_title,
         )
-        current_profile = self.load_profile()
+        current_profile = self.load_profile(user_id)
         new_profile = self.apply_edits(current_profile, edits)
 
         is_valid, issue = self.verify_edits(
@@ -409,16 +410,19 @@ class EvolutionService:
             "new_profile_content": new_profile,
             "validation": {"valid": is_valid, "issue": issue},
         }
-        with open(self.pending_updates_path, "w", encoding="utf-8") as f:
+        path = self.pending_updates_path(user_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(pending, f, indent=2, ensure_ascii=False)
         return pending
 
-    def apply_pending(self) -> bool:
-        if not self.pending_updates_path.exists():
+    def apply_pending(self, user_id: str) -> bool:
+        path = self.pending_updates_path(user_id)
+        if not path.exists():
             logger.warning("[Evolution] apply_pending called but no pending file")
             return False
         logger.info("[Evolution] Applying pending updates to profile")
-        with open(self.pending_updates_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             pending = json.load(f)
 
         new_content = pending["new_profile_content"]
@@ -427,7 +431,9 @@ class EvolutionService:
         paper_title = pending.get("paper_title", "未知论文")
         timestamp = pending.get("timestamp", datetime.now().isoformat())
 
-        with open(self.profile_path, "w", encoding="utf-8") as f:
+        profile_p = self.profile_path(user_id)
+        profile_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(profile_p, "w", encoding="utf-8") as f:
             f.write(new_content)
 
         date_str = timestamp[:10]
@@ -443,23 +449,26 @@ class EvolutionService:
 
 **执行的编辑**：{edits_detail}
 """
-        with open(self.changelog_path, "a", encoding="utf-8") as f:
+        changelog_p = self.changelog_path(user_id)
+        with open(changelog_p, "a", encoding="utf-8") as f:
             f.write(changelog_entry)
 
-        self.pending_updates_path.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         self._profile_cache = None
         return True
 
-    def reject_pending(self) -> bool:
-        if self.pending_updates_path.exists():
-            self.pending_updates_path.unlink()
+    def reject_pending(self, user_id: str) -> bool:
+        path = self.pending_updates_path(user_id)
+        if path.exists():
+            path.unlink()
             return True
         return False
 
-    def get_pending(self) -> Optional[dict]:
-        if not self.pending_updates_path.exists():
+    def get_pending(self, user_id: str) -> Optional[dict]:
+        path = self.pending_updates_path(user_id)
+        if not path.exists():
             return None
-        with open(self.pending_updates_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     # ==================== 编辑操作实现 ====================

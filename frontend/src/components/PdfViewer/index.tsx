@@ -11,19 +11,14 @@ import '@react-pdf-viewer/bookmark/lib/styles/index.css'
 import '@react-pdf-viewer/page-navigation/lib/styles/index.css'
 import '@react-pdf-viewer/zoom/lib/styles/index.css'
 
-import { getPdfUrl, getTranslations, triggerTranslation, getTranslateStatus, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
+import { getPdfUrl, getTranslations, triggerTranslation, getTranslateStatus, authFetch, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
+import { usePreferencesStore } from '../../stores/preferencesStore'
 
 interface PdfViewerProps {
   paperId: string
 }
 
-const PDF_SCALE_STORAGE_KEY = 'ipaper.pdfScale'
-const PDF_DIMMING_MODE_STORAGE_KEY = 'ipaper.pdfDimmingMode'
-const PDF_OVERLAY_OPACITY_STORAGE_KEY = 'ipaper.pdfOverlayOpacity'
-const PDF_BRIGHTNESS_STORAGE_KEY = 'ipaper.pdfBrightness'
-const PDF_READING_POSITIONS_STORAGE_KEY = 'ipaper.pdfReadingPositions'
-const PDF_LANG_STORAGE_KEY = 'ipaper.pdfLangs'
 const pdfScrollBackStackCache = new Map<string, number[]>()
 
 type PdfDimmingMode = 'off' | 'overlay' | 'brightness'
@@ -31,105 +26,8 @@ type PdfDimmingMode = 'off' | 'overlay' | 'brightness'
 const OVERLAY_LEVELS = [0.05, 0.08, 0.12, 0.16, 0.2]
 const BRIGHTNESS_LEVELS = [0.95, 0.9, 0.85, 0.8, 0.75]
 
-function isValidDimmingMode(value: string | null): value is PdfDimmingMode {
-  return value === 'off' || value === 'overlay' || value === 'brightness'
-}
-
-function getStoredPdfDimmingMode(): PdfDimmingMode {
-  const rawValue = window.localStorage.getItem(PDF_DIMMING_MODE_STORAGE_KEY)
-  return isValidDimmingMode(rawValue) ? rawValue : 'off'
-}
-
-function getStoredPdfValue(storageKey: string, validValues: number[], fallbackValue: number) {
-  const rawValue = window.localStorage.getItem(storageKey)
-  if (!rawValue) return fallbackValue
-
-  const value = Number(rawValue)
-  return validValues.includes(value) ? value : fallbackValue
-}
-
-function getStoredPdfScale() {
-  const rawValue = window.localStorage.getItem(PDF_SCALE_STORAGE_KEY)
-  if (!rawValue) return null
-
-  const scale = Number(rawValue)
-  if (!Number.isFinite(scale) || scale <= 0) {
-    return null
-  }
-
-  return scale
-}
-
-function getPdfReadingPositionKey(paperId: string, pdfLang: PdfLang) {
-  return `${paperId}:${pdfLang}`
-}
-
 function getPdfScrollBackStackKey(paperId: string, pdfLang: PdfLang) {
   return `${paperId}:${pdfLang}`
-}
-
-function getStoredPdfReadingPositions(): Record<string, number> {
-  try {
-    const rawValue = window.localStorage.getItem(PDF_READING_POSITIONS_STORAGE_KEY)
-    if (!rawValue) return {}
-
-    const parsed: unknown = JSON.parse(rawValue)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return {}
-    }
-
-    return Object.entries(parsed).reduce<Record<string, number>>((acc, [key, value]) => {
-      if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
-        acc[key] = value
-      }
-      return acc
-    }, {})
-  } catch {
-    return {}
-  }
-}
-
-function getStoredPdfReadingPosition(paperId: string, pdfLang: PdfLang) {
-  const positions = getStoredPdfReadingPositions()
-  const key = getPdfReadingPositionKey(paperId, pdfLang)
-  return positions[key] ?? null
-}
-
-function savePdfReadingPosition(paperId: string, pdfLang: PdfLang, ratio: number) {
-  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) return
-
-  const positions = getStoredPdfReadingPositions()
-  positions[getPdfReadingPositionKey(paperId, pdfLang)] = ratio
-  window.localStorage.setItem(PDF_READING_POSITIONS_STORAGE_KEY, JSON.stringify(positions))
-}
-
-function getStoredPdfLang(paperId: string): PdfLang {
-  try {
-    const raw = window.localStorage.getItem(PDF_LANG_STORAGE_KEY)
-    if (!raw) return 'en'
-    const map: unknown = JSON.parse(raw)
-    if (!map || typeof map !== 'object' || Array.isArray(map)) return 'en'
-    const val = (map as Record<string, string>)[paperId]
-    if (val === 'zh' || val === 'bilingual') return val
-    return 'en'
-  } catch {
-    return 'en'
-  }
-}
-
-function savePdfLang(paperId: string, lang: PdfLang) {
-  try {
-    const raw = window.localStorage.getItem(PDF_LANG_STORAGE_KEY)
-    const map: Record<string, string> = raw ? JSON.parse(raw) : {}
-    if (lang === 'en') {
-      delete map[paperId]
-    } else {
-      map[paperId] = lang
-    }
-    window.localStorage.setItem(PDF_LANG_STORAGE_KEY, JSON.stringify(map))
-  } catch {
-    // ignore
-  }
 }
 
 function getCachedPdfScrollBackStack(paperId: string, pdfLang: PdfLang) {
@@ -394,9 +292,9 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const [translateStatus, setTranslateStatus] = useState<TranslateStatus | null>(null)
   const translatePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [scrollBackStack, setScrollBackStack] = useState<number[]>(() => getCachedPdfScrollBackStack(paperId, 'en'))
-  const [pdfDimmingMode, setPdfDimmingMode] = useState<PdfDimmingMode>(() => getStoredPdfDimmingMode())
-  const [overlayOpacity, setOverlayOpacity] = useState(() => getStoredPdfValue(PDF_OVERLAY_OPACITY_STORAGE_KEY, OVERLAY_LEVELS, 0.12))
-  const [brightnessLevel, setBrightnessLevel] = useState(() => getStoredPdfValue(PDF_BRIGHTNESS_STORAGE_KEY, BRIGHTNESS_LEVELS, 0.85))
+  const [pdfDimmingMode, setPdfDimmingMode] = useState<PdfDimmingMode>(() => usePreferencesStore.getState().getPdfDimmingMode() as PdfDimmingMode)
+  const [overlayOpacity, setOverlayOpacity] = useState(() => usePreferencesStore.getState().getPdfOverlayOpacity())
+  const [brightnessLevel, setBrightnessLevel] = useState(() => usePreferencesStore.getState().getPdfBrightness())
   const scaleRef = useRef(1)
   const restoreScaleRef = useRef<number | null>(null)
   const restoreScrollRatioRef = useRef<number | null>(null)
@@ -420,7 +318,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   const blobCache = useRef<Record<string, string>>({})
 
   const persistScale = useCallback((scale: number) => {
-    window.localStorage.setItem(PDF_SCALE_STORAGE_KEY, String(scale))
+    usePreferencesStore.getState().setPdfScale(scale)
   }, [])
 
   const getScrollContainer = useCallback(() => {
@@ -433,7 +331,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
     const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
     const ratio = maxScrollTop > 0 ? scrollContainer.scrollTop / maxScrollTop : 0
-    savePdfReadingPosition(targetPaperId, targetPdfLang, ratio)
+    usePreferencesStore.getState().setPdfReadingPosition(targetPaperId, targetPdfLang, ratio)
     return ratio
   }, [getScrollContainer])
 
@@ -507,22 +405,36 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
   const handleDimmingModeChange = useCallback((mode: PdfDimmingMode) => {
     setPdfDimmingMode(mode)
-    window.localStorage.setItem(PDF_DIMMING_MODE_STORAGE_KEY, mode)
+    usePreferencesStore.getState().setPdfDimmingMode(mode)
   }, [])
 
   const handleOverlayOpacityChange = useCallback((value: number) => {
     setOverlayOpacity(value)
-    window.localStorage.setItem(PDF_OVERLAY_OPACITY_STORAGE_KEY, String(value))
+    usePreferencesStore.getState().setPdfOverlayOpacity(value)
   }, [])
 
   const handleBrightnessLevelChange = useCallback((value: number) => {
     setBrightnessLevel(value)
-    window.localStorage.setItem(PDF_BRIGHTNESS_STORAGE_KEY, String(value))
+    usePreferencesStore.getState().setPdfBrightness(value)
   }, [])
 
   useEffect(() => {
     const cached = blobCache.current[pdfLang]
-    setPdfUrl(cached || getPdfUrl(paperId, pdfLang))
+    if (cached) {
+      setPdfUrl(cached)
+      return
+    }
+    let cancelled = false
+    authFetch(getPdfUrl(paperId, pdfLang))
+      .then(r => r.blob())
+      .then(blob => {
+        if (cancelled) return
+        const url = URL.createObjectURL(blob)
+        blobCache.current[pdfLang] = url
+        setPdfUrl(url)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [paperId, pdfLang])
 
   useEffect(() => {
@@ -557,13 +469,13 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
         if (st.status === 'finished') {
           stopTranslatePoll()
           setTranslations(prev => ({ ...prev, zh: true }))
-          fetch(getPdfUrl(targetPaperId, 'zh'))
+          authFetch(getPdfUrl(targetPaperId, 'zh'))
             .then(r => r.blob())
             .then(blob => {
               blobCache.current['zh'] = URL.createObjectURL(blob)
               restoreScaleRef.current = scaleRef.current
               setPdfLang('zh')
-              savePdfLang(targetPaperId, 'zh')
+              usePreferencesStore.getState().setPdfLang(targetPaperId, 'zh')
             })
             .catch(() => {})
         } else if (st.status === 'failed' || st.status === 'error' || st.status === 'needs_login') {
@@ -598,7 +510,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
     blobCache.current = {}
     getTranslations(paperId).then(tr => {
       setTranslations(tr)
-      const saved = getStoredPdfLang(paperId)
+      const saved = usePreferencesStore.getState().getPdfLang(paperId) as PdfLang
       setPdfLang(saved !== 'en' && tr[saved] ? saved : 'en')
     })
     return () => {
@@ -621,7 +533,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   useEffect(() => {
     (['zh', 'bilingual'] as const).forEach(lang => {
       if (translations[lang] && !blobCache.current[lang]) {
-        fetch(getPdfUrl(paperId, lang))
+        authFetch(getPdfUrl(paperId, lang))
           .then(r => r.blob())
           .then(blob => { blobCache.current[lang] = URL.createObjectURL(blob) })
           .catch(() => {})
@@ -940,8 +852,9 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                 defaultScale={1}
                 onDocumentLoad={(e) => {
                   setTotalPages(e.doc.numPages)
-                  const savedScale = restoreScaleRef.current ?? getStoredPdfScale()
-                  const savedRatio = restoreScrollRatioRef.current ?? getStoredPdfReadingPosition(paperId, pdfLang)
+                  const prefs = usePreferencesStore.getState()
+                  const savedScale = restoreScaleRef.current ?? prefs.getPdfScale()
+                  const savedRatio = restoreScrollRatioRef.current ?? prefs.getPdfReadingPosition(paperId, pdfLang)
                   restoreScaleRef.current = null
                   restoreScrollRatioRef.current = null
 
@@ -1198,7 +1111,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                     restoreScrollRatioRef.current = currentRatio
                   }
                   setPdfLang('en')
-                  savePdfLang(paperId, 'en')
+                  usePreferencesStore.getState().setPdfLang(paperId, 'en')
                 }}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
                   pdfLang === 'en'
@@ -1218,7 +1131,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                       restoreScrollRatioRef.current = currentRatio
                     }
                     setPdfLang('zh')
-                    savePdfLang(paperId, 'zh')
+                    usePreferencesStore.getState().setPdfLang(paperId, 'zh')
                   } else {
                     handleTriggerTranslation(paperId)
                   }

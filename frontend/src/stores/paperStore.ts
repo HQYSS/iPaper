@@ -1,21 +1,13 @@
 import { create } from 'zustand'
 import * as api from '../services/api'
-
-const RECENT_PAPER_IDS_STORAGE_KEY = 'ipaper.recentPaperIds'
+import { usePreferencesStore } from './preferencesStore'
 
 function getStoredRecentPaperIds(): string[] {
-  try {
-    const rawValue = window.localStorage.getItem(RECENT_PAPER_IDS_STORAGE_KEY)
-    if (!rawValue) return []
-    const parsed = JSON.parse(rawValue)
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
-  } catch {
-    return []
-  }
+  return usePreferencesStore.getState().getRecentPaperIds()
 }
 
 function saveRecentPaperIds(paperIds: string[]) {
-  window.localStorage.setItem(RECENT_PAPER_IDS_STORAGE_KEY, JSON.stringify(paperIds))
+  usePreferencesStore.getState().setRecentPaperIds(paperIds)
 }
 
 function movePaperToFront(paperIds: string[], paperId: string): string[] {

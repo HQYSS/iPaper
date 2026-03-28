@@ -7,32 +7,24 @@ import { CrossPaperViewer } from './components/CrossPaperViewer'
 import { ProfilePanel } from './components/ProfilePanel'
 import { SettingsModal } from './components/SettingsModal'
 import { PaperQuickSwitcher } from './components/PaperQuickSwitcher'
+import { LoginPage } from './components/LoginPage'
 import { usePaperStore } from './stores/paperStore'
 import { useChatStore } from './stores/chatStore'
 import { useProfileStore } from './stores/profileStore'
+import { useAuthStore } from './stores/authStore'
+import { usePreferencesStore } from './stores/preferencesStore'
 import { getConfig } from './services/api'
 import type { PaperListItem } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
-const CHAT_WIDTH_STORAGE_KEY = 'ipaper.chatPanelWidthRatio'
-const THEME_MODE_STORAGE_KEY = 'ipaper.themeMode'
 const SIDEBAR_WIDTH = 256
 const SIDEBAR_HOVER_TRIGGER_WIDTH = 12
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
 const cursorMode = new URLSearchParams(window.location.search).get('cursor') === '1'
-
-function isValidThemeMode(value: string | null): value is ThemeMode {
-  return value === 'light' || value === 'dark' || value === 'system'
-}
-
-function getStoredThemeMode(): ThemeMode {
-  const rawValue = window.localStorage.getItem(THEME_MODE_STORAGE_KEY)
-  return isValidThemeMode(rawValue) ? rawValue : 'system'
-}
 
 function applyThemeMode(themeMode: ThemeMode, prefersDark: boolean) {
   const shouldUseDark = themeMode === 'dark' || (themeMode === 'system' && prefersDark)
@@ -44,22 +36,53 @@ function clampChatWidth(width: number, containerWidth: number) {
   return Math.max(CHAT_MIN_WIDTH, Math.min(maxWidth, width))
 }
 
-function getStoredChatWidthRatio() {
-  const rawValue = window.localStorage.getItem(CHAT_WIDTH_STORAGE_KEY)
-  if (!rawValue) return null
+function App() {
+  const { isAuthenticated, isLoading: authLoading, checkAuth, logout } = useAuthStore()
+  const loadPreferences = usePreferencesStore((s) => s.loadPreferences)
+  const [authChecked, setAuthChecked] = useState(false)
 
-  const ratio = Number(rawValue)
-  if (!Number.isFinite(ratio) || ratio <= 0 || ratio > CHAT_MAX_RATIO) {
-    return null
+  // Apply cached theme immediately so login page respects dark mode
+  useEffect(() => {
+    const cached = usePreferencesStore.getState().getThemeMode() as ThemeMode
+    applyThemeMode(cached || 'system', window.matchMedia('(prefers-color-scheme: dark)').matches)
+  }, [])
+
+  useEffect(() => {
+    checkAuth().finally(() => setAuthChecked(true))
+  }, [checkAuth])
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    loadPreferences()
+  }, [isAuthenticated, loadPreferences])
+
+  // Handle 401 token expiry from any API call
+  useEffect(() => {
+    const handler = () => logout()
+    window.addEventListener('ipaper:auth-expired', handler)
+    return () => window.removeEventListener('ipaper:auth-expired', handler)
+  }, [logout])
+
+  if (!authChecked || authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-muted-foreground text-sm">加载中…</div>
+      </div>
+    )
   }
 
-  return ratio
+  if (!isAuthenticated) {
+    return <LoginPage />
+  }
+
+  return <AuthenticatedApp />
 }
 
-function App() {
+function AuthenticatedApp() {
   const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper } = usePaperStore()
   const { exitCrossPaperChat } = useChatStore()
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
+  const { getThemeMode, setThemeMode: prefsSetThemeMode, getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -67,7 +90,7 @@ function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredThemeMode())
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => (getThemeMode() as ThemeMode) || 'system')
   const containerRef = useRef<HTMLDivElement>(null)
   const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
 
@@ -139,7 +162,7 @@ function App() {
       const newWidth = containerRect.right - e.clientX
       const clampedWidth = clampChatWidth(newWidth, containerRect.width)
       setChatWidth(clampedWidth)
-      window.localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(clampedWidth / containerRect.width))
+      setChatPanelWidthRatio(clampedWidth / containerRect.width)
     }
 
     const handleMouseUp = () => setIsDragging(false)
@@ -156,21 +179,21 @@ function App() {
     const updateChatWidth = () => {
       if (!containerRef.current) return
       const containerWidth = containerRef.current.getBoundingClientRect().width
-      const storedRatio = getStoredChatWidthRatio()
+      const storedRatio = getChatPanelWidthRatio()
       const targetWidth = storedRatio ? containerWidth * storedRatio : CHAT_DEFAULT_WIDTH
       const clampedWidth = clampChatWidth(targetWidth, containerWidth)
 
       setChatWidth(clampedWidth)
 
       if (containerWidth > 0) {
-        window.localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(clampedWidth / containerWidth))
+        setChatPanelWidthRatio(clampedWidth / containerWidth)
       }
     }
 
     updateChatWidth()
     window.addEventListener('resize', updateChatWidth)
     return () => window.removeEventListener('resize', updateChatWidth)
-  }, [])
+  }, [getChatPanelWidthRatio, setChatPanelWidthRatio])
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -188,9 +211,9 @@ function App() {
 
   const handleThemeModeChange = useCallback((nextThemeMode: ThemeMode) => {
     setThemeMode(nextThemeMode)
-    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, nextThemeMode)
+    prefsSetThemeMode(nextThemeMode)
     applyThemeMode(nextThemeMode, window.matchMedia('(prefers-color-scheme: dark)').matches)
-  }, [])
+  }, [prefsSetThemeMode])
 
   useEffect(() => {
     if (!selectedPaper) return

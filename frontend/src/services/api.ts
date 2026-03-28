@@ -1,8 +1,103 @@
-/**
- * API 服务封装
- */
-
 const API_BASE = (import.meta.env.BASE_URL.replace(/\/$/, '')) + '/api'
+
+const TOKEN_STORAGE_KEY = 'ipaper.auth.token'
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_STORAGE_KEY)
+}
+
+export function setAuthToken(token: string): void {
+  localStorage.setItem(TOKEN_STORAGE_KEY, token)
+}
+
+export function clearAuthToken(): void {
+  localStorage.removeItem(TOKEN_STORAGE_KEY)
+}
+
+export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
+  const token = getAuthToken()
+  const headers = new Headers(options?.headers)
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(url, { ...options, headers })
+
+  if (response.status === 401) {
+    clearAuthToken()
+    window.dispatchEvent(new CustomEvent('ipaper:auth-expired'))
+  }
+
+  return response
+}
+
+// ============ 认证 API ============
+
+export interface AuthUser {
+  id: string
+  username: string
+}
+
+export interface AuthResponse {
+  access_token: string
+  token_type: string
+  user: AuthUser
+}
+
+export async function loginApi(username: string, password: string): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.detail || '登录失败')
+  }
+  return response.json()
+}
+
+export async function registerApi(username: string, password: string): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.detail || '注册失败')
+  }
+  return response.json()
+}
+
+export async function getMe(): Promise<AuthUser> {
+  const response = await authFetch(`${API_BASE}/auth/me`)
+  if (!response.ok) {
+    throw new Error('Not authenticated')
+  }
+  return response.json()
+}
+
+// ============ 偏好设置 API ============
+
+export async function getPreferences(): Promise<Record<string, unknown>> {
+  const response = await authFetch(`${API_BASE}/preferences`)
+  if (!response.ok) {
+    throw new Error('Failed to get preferences')
+  }
+  return response.json()
+}
+
+export async function updatePreferencesApi(partial: Record<string, unknown>): Promise<void> {
+  const response = await authFetch(`${API_BASE}/preferences`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(partial),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update preferences')
+  }
+}
 
 // ============ 论文 API ============
 
@@ -29,7 +124,7 @@ export interface PaperListItem {
 }
 
 export async function fetchPapers(): Promise<PaperListItem[]> {
-  const response = await fetch(`${API_BASE}/papers`)
+  const response = await authFetch(`${API_BASE}/papers`)
   if (!response.ok) {
     throw new Error('Failed to fetch papers')
   }
@@ -37,7 +132,7 @@ export async function fetchPapers(): Promise<PaperListItem[]> {
 }
 
 export async function addPaper(arxivInput: string): Promise<Paper> {
-  const response = await fetch(`${API_BASE}/papers`, {
+  const response = await authFetch(`${API_BASE}/papers`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -52,7 +147,7 @@ export async function addPaper(arxivInput: string): Promise<Paper> {
 }
 
 export async function getPaper(paperId: string): Promise<Paper> {
-  const response = await fetch(`${API_BASE}/papers/${paperId}`)
+  const response = await authFetch(`${API_BASE}/papers/${paperId}`)
   if (!response.ok) {
     throw new Error('Failed to get paper')
   }
@@ -60,7 +155,7 @@ export async function getPaper(paperId: string): Promise<Paper> {
 }
 
 export async function deletePaper(paperId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/papers/${paperId}`, {
+  const response = await authFetch(`${API_BASE}/papers/${paperId}`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -81,7 +176,7 @@ export interface TranslationStatus {
 }
 
 export async function getTranslations(paperId: string): Promise<TranslationStatus> {
-  const response = await fetch(`${API_BASE}/papers/${paperId}/translations`)
+  const response = await authFetch(`${API_BASE}/papers/${paperId}/translations`)
   if (!response.ok) return { zh: false, bilingual: false }
   return response.json()
 }
@@ -95,7 +190,7 @@ export interface TranslateStatus {
 }
 
 export async function triggerTranslation(paperId: string): Promise<TranslateStatus> {
-  const response = await fetch(`${API_BASE}/papers/${paperId}/translate`, {
+  const response = await authFetch(`${API_BASE}/papers/${paperId}/translate`, {
     method: 'POST',
   })
   if (!response.ok) {
@@ -105,7 +200,7 @@ export async function triggerTranslation(paperId: string): Promise<TranslateStat
 }
 
 export async function getTranslateStatus(paperId: string): Promise<TranslateStatus> {
-  const response = await fetch(`${API_BASE}/papers/${paperId}/translate/status`)
+  const response = await authFetch(`${API_BASE}/papers/${paperId}/translate/status`)
   if (!response.ok) {
     throw new Error('Failed to get translation status')
   }
@@ -113,7 +208,7 @@ export async function getTranslateStatus(paperId: string): Promise<TranslateStat
 }
 
 export async function updateHjfyCookie(cookie: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/config/hjfy`, {
+  const response = await authFetch(`${API_BASE}/config/hjfy`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ cookie }),
@@ -139,7 +234,7 @@ export interface SessionList {
 }
 
 export async function listSessions(paperId: string): Promise<SessionList> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions`)
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/sessions`)
   if (!response.ok) {
     throw new Error('Failed to list sessions')
   }
@@ -147,7 +242,7 @@ export async function listSessions(paperId: string): Promise<SessionList> {
 }
 
 export async function createSession(paperId: string, title?: string): Promise<SessionMeta> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title: title ?? null }),
@@ -159,7 +254,7 @@ export async function createSession(paperId: string, title?: string): Promise<Se
 }
 
 export async function deleteSession(paperId: string, sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/sessions/${sessionId}`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/sessions/${sessionId}`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -196,7 +291,7 @@ export interface ChatHistory {
 }
 
 export async function getChatHistory(paperId: string, sessionId: string): Promise<ChatHistory> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`)
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`)
   if (!response.ok) {
     throw new Error('Failed to get chat history')
   }
@@ -209,7 +304,7 @@ export async function updateChatHistory(
   messages: ChatMessage[],
   forks?: Record<string, ForkData>
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, forks }),
@@ -224,7 +319,7 @@ export async function updateChatDraft(
   sessionId: string,
   draft: ChatDraft
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history/draft`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}/history/draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draft }),
@@ -235,7 +330,7 @@ export async function updateChatDraft(
 }
 
 export async function clearChatHistory(paperId: string, sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}/history`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -255,7 +350,7 @@ export async function* sendMessage(
   quotes?: QuoteInput[],
   signal?: AbortSignal
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
-  const response = await fetch(`${API_BASE}/chat/${paperId}/${sessionId}`, {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -334,7 +429,7 @@ export interface CrossPaperChatHistory {
 }
 
 export async function listCrossPaperSessions(): Promise<CrossPaperSessionList> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions`)
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/sessions`)
   if (!response.ok) {
     throw new Error('Failed to list cross-paper sessions')
   }
@@ -345,7 +440,7 @@ export async function createCrossPaperSession(
   paperIds: string[],
   title?: string
 ): Promise<CrossPaperSessionMeta> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper_ids: paperIds, title: title ?? null }),
@@ -358,7 +453,7 @@ export async function createCrossPaperSession(
 }
 
 export async function deleteCrossPaperSession(sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -371,7 +466,7 @@ export async function addPapersToCrossPaperSession(
   sessionId: string,
   paperIds: string[]
 ): Promise<CrossPaperSessionMeta> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}/papers`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/sessions/${sessionId}/papers`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper_ids: paperIds }),
@@ -384,7 +479,7 @@ export async function addPapersToCrossPaperSession(
 }
 
 export async function getCrossPaperChatHistory(sessionId: string): Promise<CrossPaperChatHistory> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`)
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`)
   if (!response.ok) {
     throw new Error('Failed to get cross-paper chat history')
   }
@@ -396,7 +491,7 @@ export async function updateCrossPaperChatHistory(
   messages: ChatMessage[],
   forks?: Record<string, ForkData>
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, forks }),
@@ -410,7 +505,7 @@ export async function updateCrossPaperChatDraft(
   sessionId: string,
   draft: ChatDraft
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history/draft`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}/history/draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draft }),
@@ -421,7 +516,7 @@ export async function updateCrossPaperChatDraft(
 }
 
 export async function clearCrossPaperChatHistory(sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}/history`, {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -435,7 +530,7 @@ export async function* sendCrossPaperMessage(
   quotes?: QuoteInput[],
   signal?: AbortSignal
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
-  const response = await fetch(`${API_BASE}/chat/cross-paper/${sessionId}`, {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -503,7 +598,7 @@ export interface Config {
 }
 
 export async function getConfig(): Promise<Config> {
-  const response = await fetch(`${API_BASE}/config`)
+  const response = await authFetch(`${API_BASE}/config`)
   if (!response.ok) {
     throw new Error('Failed to get config')
   }
@@ -516,7 +611,7 @@ export async function updateLLMConfig(config: {
   temperature?: number
   max_tokens?: number
 }): Promise<void> {
-  const response = await fetch(`${API_BASE}/config/llm`, {
+  const response = await authFetch(`${API_BASE}/config/llm`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -549,7 +644,7 @@ export interface PendingProfileUpdate {
 }
 
 export async function getProfile(): Promise<{ content: string }> {
-  const response = await fetch(`${API_BASE}/profile/current`)
+  const response = await authFetch(`${API_BASE}/profile/current`)
   if (!response.ok) {
     throw new Error('Failed to get profile')
   }
@@ -557,7 +652,7 @@ export async function getProfile(): Promise<{ content: string }> {
 }
 
 export async function getChangelog(): Promise<{ content: string }> {
-  const response = await fetch(`${API_BASE}/profile/changelog`)
+  const response = await authFetch(`${API_BASE}/profile/changelog`)
   if (!response.ok) {
     throw new Error('Failed to get changelog')
   }
@@ -577,7 +672,7 @@ export async function* sendEvolutionMessage(
   message?: string
   edit_plan?: { edits: ProfileEdit[]; changelog_summary: string }
 }> {
-  const response = await fetch(`${API_BASE}/profile/evolution-chat`, {
+  const response = await authFetch(`${API_BASE}/profile/evolution-chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -624,7 +719,7 @@ export async function saveEditPlan(
   editPlan: { edits: ProfileEdit[]; changelog_summary: string },
   paperTitle: string,
 ): Promise<{ validation: { valid: boolean; issue: string } }> {
-  const response = await fetch(`${API_BASE}/profile/save-edit-plan`, {
+  const response = await authFetch(`${API_BASE}/profile/save-edit-plan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ edit_plan: editPlan, paper_title: paperTitle }),
@@ -634,14 +729,14 @@ export async function saveEditPlan(
 }
 
 export async function applyProfileUpdates(): Promise<void> {
-  const response = await fetch(`${API_BASE}/profile/apply-updates`, {
+  const response = await authFetch(`${API_BASE}/profile/apply-updates`, {
     method: 'POST',
   })
   if (!response.ok) throw new Error('Failed to apply profile updates')
 }
 
 export async function rejectProfileUpdates(): Promise<void> {
-  const response = await fetch(`${API_BASE}/profile/reject-updates`, {
+  const response = await authFetch(`${API_BASE}/profile/reject-updates`, {
     method: 'POST',
   })
   if (!response.ok) throw new Error('Failed to reject profile updates')

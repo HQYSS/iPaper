@@ -1,21 +1,22 @@
 """
 翻译功能 API 路由
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from services.translation_service import translation_service
 from services.arxiv_service import arxiv_service
+from middleware.auth import get_current_user
 
 router = APIRouter()
 
 
 @router.post("/{paper_id}/translate")
-async def trigger_translation(paper_id: str):
-    """触发论文翻译（幂等）"""
-    if not arxiv_service.get_paper(paper_id):
+async def trigger_translation(paper_id: str, user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    if not arxiv_service.get_paper(uid, paper_id):
         raise HTTPException(status_code=404, detail="论文不存在")
 
-    task = await translation_service.ensure_translation(paper_id)
+    task = await translation_service.ensure_translation(uid, paper_id)
     return {
         "status": task.status,
         "info": task.info,
@@ -24,12 +25,12 @@ async def trigger_translation(paper_id: str):
 
 
 @router.get("/{paper_id}/translate/status")
-async def get_translation_status(paper_id: str):
-    """查询翻译进度"""
-    if translation_service.has_zh_pdf(paper_id):
+async def get_translation_status(paper_id: str, user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    if translation_service.has_zh_pdf(uid, paper_id):
         return {"status": "finished", "info": "翻译完成", "error": ""}
 
-    task = translation_service.get_task(paper_id)
+    task = translation_service.get_task(uid, paper_id)
     if not task:
         return {"status": "none", "info": "", "error": ""}
 

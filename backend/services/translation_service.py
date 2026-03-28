@@ -42,44 +42,49 @@ class TranslationService:
         m = re.match(r"(\d{4}\.\d{4,5})", arxiv_id)
         return m.group(1) if m else arxiv_id
 
-    def get_task(self, arxiv_id: str) -> Optional[TranslationTask]:
-        return self._tasks.get(self._strip_version(arxiv_id))
+    @staticmethod
+    def _task_key(user_id: str, arxiv_id: str) -> str:
+        return f"{user_id}:{arxiv_id}"
 
-    def _pdf_path(self, arxiv_id: str) -> Path:
+    def get_task(self, user_id: str, arxiv_id: str) -> Optional[TranslationTask]:
+        return self._tasks.get(self._task_key(user_id, self._strip_version(arxiv_id)))
+
+    def _pdf_path(self, user_id: str, arxiv_id: str) -> Path:
         base_id = self._strip_version(arxiv_id)
-        return settings.papers_dir / base_id / "paper_zh.pdf"
+        return settings.get_user_papers_dir(user_id) / base_id / "paper_zh.pdf"
 
-    def has_zh_pdf(self, arxiv_id: str) -> bool:
-        return self._pdf_path(arxiv_id).exists()
+    def has_zh_pdf(self, user_id: str, arxiv_id: str) -> bool:
+        return self._pdf_path(user_id, arxiv_id).exists()
 
-    async def ensure_translation(self, arxiv_id: str) -> TranslationTask:
+    async def ensure_translation(self, user_id: str, arxiv_id: str) -> TranslationTask:
         """
         确保翻译存在。如果本地已有 PDF 直接返回 finished，
         否则启动后台轮询任务。幂等——对同一篇论文多次调用不会重复创建任务。
         """
         base_id = self._strip_version(arxiv_id)
+        key = self._task_key(user_id, base_id)
 
-        if self.has_zh_pdf(base_id):
+        if self.has_zh_pdf(user_id, base_id):
             task = TranslationTask(base_id)
             task.status = "finished"
-            self._tasks[base_id] = task
+            self._tasks[key] = task
             return task
 
-        existing = self._tasks.get(base_id)
+        existing = self._tasks.get(key)
         if existing and existing.status == "polling":
             return existing
 
         task = TranslationTask(base_id)
         task.status = "polling"
         task.info = "正在查询翻译状态…"
-        self._tasks[base_id] = task
+        self._tasks[key] = task
 
-        asyncio.create_task(self._poll_loop(task))
+        asyncio.create_task(self._poll_loop(user_id, task))
         return task
 
-    async def _poll_loop(self, task: TranslationTask):
+    async def _poll_loop(self, user_id: str, task: TranslationTask):
         base_id = task.arxiv_id
-        cookie = self._get_cookie()
+        cookie = self._get_cookie(user_id)
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -118,7 +123,7 @@ class TranslationService:
                         task.info = info
 
                     if hjfy_status == "finished":
-                        await self._download_pdf(client, base_id, headers)
+                        await self._download_pdf(client, user_id, base_id, headers)
                         task.status = "finished"
                         task.info = "翻译完成"
                         logger.info("Translation finished for %s", base_id)
@@ -142,7 +147,7 @@ class TranslationService:
             logger.exception("Translation poll error for %s", base_id)
 
     async def _download_pdf(
-        self, client: httpx.AsyncClient, base_id: str, headers: dict
+        self, client: httpx.AsyncClient, user_id: str, base_id: str, headers: dict
     ):
         resp = await client.get(f"{HJFY_FILES_URL}/{base_id}", headers=headers)
         data = resp.json()
@@ -157,14 +162,14 @@ class TranslationService:
         pdf_resp = await client.get(zh_url, follow_redirects=True, timeout=120)
         pdf_resp.raise_for_status()
 
-        out_path = self._pdf_path(base_id)
+        out_path = self._pdf_path(user_id, base_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(pdf_resp.content)
         logger.info("Downloaded zh PDF to %s (%d bytes)", out_path, len(pdf_resp.content))
 
     @staticmethod
-    def _get_cookie() -> str:
-        return settings.hjfy_cookie
+    def _get_cookie(user_id: str) -> str:
+        return settings.get_user_hjfy_cookie(user_id)
 
 
 translation_service = TranslationService()

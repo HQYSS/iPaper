@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from routers import papers, chat, config, profile, translation
+from routers import papers, chat, config, profile, translation, auth, preferences
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -17,13 +17,15 @@ app = FastAPI(
 # CORS 配置（允许 Electron 前端访问）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Electron 本地应用
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # 注册路由
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(preferences.router, prefix="/api/preferences", tags=["preferences"])
 app.include_router(papers.router, prefix="/api/papers", tags=["papers"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])
@@ -44,6 +46,5 @@ if __name__ == "__main__":
         "main:app",
         host=settings.host,
         port=settings.port,
-        reload=True  # 开发模式
+        reload=True
     )
-
