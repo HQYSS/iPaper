@@ -11,8 +11,7 @@ import '@react-pdf-viewer/bookmark/lib/styles/index.css'
 import '@react-pdf-viewer/page-navigation/lib/styles/index.css'
 import '@react-pdf-viewer/zoom/lib/styles/index.css'
 
-import { getTranslations, triggerTranslation, getTranslateStatus, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
-import { fetchPdfBlobOffline } from '../../services/offlineApi'
+import { getTranslations, triggerTranslation, getTranslateStatus, getPdfUrl, authFetch, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 import { usePreferencesStore } from '../../stores/preferencesStore'
 
@@ -426,7 +425,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
       return
     }
     let cancelled = false
-    fetchPdfBlobOffline(paperId, pdfLang)
+    authFetch(getPdfUrl(paperId, pdfLang))
+      .then(r => r.blob())
       .then(blob => {
         if (cancelled) return
         const url = URL.createObjectURL(blob)
@@ -469,7 +469,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
         if (st.status === 'finished') {
           stopTranslatePoll()
           setTranslations(prev => ({ ...prev, zh: true }))
-          fetchPdfBlobOffline(targetPaperId, 'zh')
+          authFetch(getPdfUrl(targetPaperId, 'zh'))
+            .then(r => r.blob())
             .then(blob => {
               blobCache.current['zh'] = URL.createObjectURL(blob)
               restoreScaleRef.current = scaleRef.current
@@ -532,7 +533,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
   useEffect(() => {
     (['zh', 'bilingual'] as const).forEach(lang => {
       if (translations[lang] && !blobCache.current[lang]) {
-        fetchPdfBlobOffline(paperId, lang)
+        authFetch(getPdfUrl(paperId, lang))
+          .then(r => r.blob())
           .then(blob => { blobCache.current[lang] = URL.createObjectURL(blob) })
           .catch(() => {})
       }

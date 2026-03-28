@@ -21,6 +21,7 @@ const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
 const SIDEBAR_WIDTH = 256
 const SIDEBAR_HOVER_TRIGGER_WIDTH = 12
+const NARROW_SCREEN_BREAKPOINT = 1024
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -83,9 +84,10 @@ function AuthenticatedApp() {
   const { exitCrossPaperChat } = useChatStore()
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
   const { getThemeMode, setThemeMode: prefsSetThemeMode, getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const isNarrowScreen = useCallback(() => window.innerWidth <= NARROW_SCREEN_BREAKPOINT, [])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => isNarrowScreen())
   const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
-  const [chatCollapsed, setChatCollapsed] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(() => isNarrowScreen())
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -188,6 +190,10 @@ function AuthenticatedApp() {
       if (containerWidth > 0) {
         setChatPanelWidthRatio(clampedWidth / containerWidth)
       }
+
+      if (window.innerWidth <= NARROW_SCREEN_BREAKPOINT) {
+        setChatCollapsed(true)
+      }
     }
 
     updateChatWidth()
@@ -220,15 +226,16 @@ function AuthenticatedApp() {
 
     setSidebarCollapsed(true)
     setSidebarHoverOpen(false)
-  }, [selectedPaper])
+    if (isNarrowScreen()) setChatCollapsed(true)
+  }, [selectedPaper, isNarrowScreen])
 
   useEffect(() => {
     if (!isInCrossChat) return
 
     setSidebarCollapsed(true)
     setSidebarHoverOpen(false)
-    setChatCollapsed(false)
-  }, [isInCrossChat])
+    if (!isNarrowScreen()) setChatCollapsed(false)
+  }, [isInCrossChat, isNarrowScreen])
 
   const handleSidebarToggle = useCallback(() => {
     if (sidebarCollapsed) {
