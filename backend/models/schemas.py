@@ -58,10 +58,23 @@ class ChatMessage(BaseModel):
     reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
 
 
+class PageRange(BaseModel):
+    """用户选择保留的页码范围（1-based, inclusive）"""
+    start: int = Field(..., ge=1, description="起始页码（含）")
+    end: int = Field(..., ge=1, description="结束页码（含）")
+
+
+class PaperPageSelection(BaseModel):
+    """单篇论文的保留页码配置"""
+    paper_id: Optional[str] = Field(None, description="论文 ID；单论文聊天时可省略")
+    ranges: List[PageRange] = Field(..., min_length=1, description="保留的页码范围列表")
+
+
 class ChatRequest(BaseModel):
     """对话请求"""
     message: str = Field(..., description="用户消息")
     quotes: Optional[List[Quote]] = Field(None, description="用户引用的文本片段")
+    page_selections: Optional[List[PaperPageSelection]] = Field(None, description="用户指定保留的 PDF 页码范围")
     context: Optional[dict] = Field(None, description="上下文信息（页码、章节等）")
 
 
@@ -74,6 +87,7 @@ class ChatDraft(BaseModel):
     """未发送草稿"""
     input: str = Field("", description="输入框中尚未发送的内容")
     quotes: Optional[List[Quote]] = Field(None, description="待发送消息关联的引用片段")
+    page_selections: Optional[List[PaperPageSelection]] = Field(None, description="当前会话已选定的 PDF 页码范围")
 
 class ForkData(BaseModel):
     """分支数据"""
@@ -146,6 +160,7 @@ class CrossPaperChatRequest(BaseModel):
     """串讲对话请求"""
     message: str = Field(..., description="用户消息")
     quotes: Optional[List[Quote]] = Field(None, description="用户引用的文本片段")
+    page_selections: Optional[List[PaperPageSelection]] = Field(None, description="用户指定保留的各论文 PDF 页码范围")
 
 
 class CrossPaperChatHistory(BaseModel):

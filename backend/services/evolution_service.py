@@ -435,6 +435,8 @@ class EvolutionService:
         profile_p.parent.mkdir(parents=True, exist_ok=True)
         with open(profile_p, "w", encoding="utf-8") as f:
             f.write(new_content)
+        with open(profile_p.parent / "profile.meta.json", "w", encoding="utf-8") as f:
+            json.dump({"updated_at": datetime.now().isoformat()}, f, ensure_ascii=False, indent=2)
 
         date_str = timestamp[:10]
         edits_detail = "".join(f"\n- {e.get('reason', '')}" for e in edits)

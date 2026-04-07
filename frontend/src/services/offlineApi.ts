@@ -42,6 +42,14 @@ export function isOnline(): boolean {
   return navigator.onLine
 }
 
+function sortPapersByDownloadTime(papers: PaperListItem[]): PaperListItem[] {
+  return [...papers].sort((left, right) => {
+    const leftTime = new Date(left.download_time).getTime()
+    const rightTime = new Date(right.download_time).getTime()
+    return leftTime - rightTime
+  })
+}
+
 // ============ Network-first with cache fallback ============
 
 async function networkFirstJson<T>(
@@ -135,11 +143,12 @@ export async function replayPendingOps(): Promise<{ succeeded: number; failed: n
 // ============ Offline-aware API functions ============
 
 export async function fetchPapersOffline(): Promise<PaperListItem[]> {
-  return networkFirstJson<PaperListItem[]>(
+  const papers = await networkFirstJson<PaperListItem[]>(
     `${API_BASE}/papers`,
     getCachedPapers,
     cachePapers,
   )
+  return sortPapersByDownloadTime(papers)
 }
 
 export async function fetchPdfBlobOffline(paperId: string, lang: PdfLang = 'en'): Promise<Blob> {

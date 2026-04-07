@@ -38,7 +38,7 @@ function clampChatWidth(width: number, containerWidth: number) {
 }
 
 function App() {
-  const { isAuthenticated, isLoading: authLoading, checkAuth, logout } = useAuthStore()
+  const { isAuthenticated, checkAuth, logout } = useAuthStore()
   const loadPreferences = usePreferencesStore((s) => s.loadPreferences)
   const [authChecked, setAuthChecked] = useState(false)
 
@@ -64,7 +64,7 @@ function App() {
     return () => window.removeEventListener('ipaper:auth-expired', handler)
   }, [logout])
 
-  if (!authChecked || authLoading) {
+  if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-muted-foreground text-sm">加载中…</div>

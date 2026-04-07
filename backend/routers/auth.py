@@ -6,7 +6,14 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Depends
 
 from config import settings
-from models.user import UserCreate, UserResponse, Token
+from models.user import (
+    UserCreate,
+    UserResponse,
+    Token,
+    SyncDeviceCreate,
+    SyncDeviceResponse,
+    SyncDeviceTokenResponse,
+)
 from services.auth_service import auth_service
 from middleware.auth import get_current_user
 
@@ -102,3 +109,23 @@ async def update_invite_code(body: InviteCodeUpdate, user: dict = Depends(get_cu
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     return {"message": "邀请码已更新"}
+
+
+@router.get("/admin/sync-devices", response_model=List[SyncDeviceResponse])
+async def list_sync_devices(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    return auth_service.list_sync_devices(user["id"])
+
+
+@router.post("/admin/sync-devices", response_model=SyncDeviceTokenResponse)
+async def create_sync_device(body: SyncDeviceCreate, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    return auth_service.create_sync_token(user["id"], body.device_name or "")
+
+
+@router.delete("/admin/sync-devices/{device_id}")
+async def revoke_sync_device(device_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    if not auth_service.revoke_sync_device(user["id"], device_id):
+        raise HTTPException(status_code=404, detail="同步设备不存在")
+    return {"message": "同步设备已吊销"}

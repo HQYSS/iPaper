@@ -13,9 +13,13 @@ app.whenReady()
     │
     ├── waitForBackend()        # 轮询 http://127.0.0.1:3000/，最多 30 秒
     │
-    └── createWindow()          # 创建 BrowserWindow
-        └── loadURL('http://localhost:5173')  (dev)
-            或 loadFile('frontend/dist/index.html')  (prod)
+    ├── syncOnce('startup')     # 启动时比对本地/云端 manifest 并同步
+    │
+    ├── createWindow()          # 创建 BrowserWindow
+    │   └── loadURL('http://localhost:5173')  (dev)
+    │       或 loadFile('frontend/dist/index.html')  (prod)
+    │
+    └── startSyncLoops()        # Electron 层补同步（主同步已下沉到本地后端）
 ```
 
 ### 开发模式 vs 生产模式
@@ -54,6 +58,11 @@ webPreferences: {
 ### 进程管理
 
 - Electron 启动时自动启动后端进程
+- 后端就绪后先执行一次启动同步（若本地已配置设备同步凭证）
+- Electron 仍保留补同步逻辑，但不再是自动同步的唯一来源
+- 现在的主同步责任已下沉到本地后端：只要本地后端在跑，本地写操作就会自动推云端
+- 当前默认云端固定为 `https://www.moshang.xyz/ipaper/api`
+- 云端同步使用专用设备凭证，不再复用网页登录 JWT
 - 外部链接使用系统浏览器打开
 - `before-quit` 事件中杀死后端进程
 - macOS 上关闭所有窗口时不退出（遵循 macOS 惯例）
@@ -116,6 +125,7 @@ start_electron()    # 启动 Electron（前台运行）
   - node: `/opt/homebrew/bin/node`
 - 日志输出到 `项目根目录/logs/`
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
+- cleanup 还会主动清掉旧 Electron 主进程，并强制回收 `5173` 端口，避免出现“老 Electron 壳 + 新前后端服务”的混合运行态
 
 **注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。`start-cursor-mode.sh` 也使用相同的 PID 文件 + 端口清理机制。
 

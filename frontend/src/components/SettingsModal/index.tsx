@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key } from 'lucide-react'
-import { getConfig, updateLLMConfig, updateHjfyCookie, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, type AuthUser } from '../../services/api'
+import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key, ChevronDown, ChevronUp } from 'lucide-react'
+import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
+import { env } from '../../services/env'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 type SettingsTab = 'general' | 'account' | 'admin'
@@ -24,6 +25,9 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
+  const [syncUrl, setSyncUrl] = useState('')
+  const [syncToken, setSyncToken] = useState('')
+  const [syncConfigured, setSyncConfigured] = useState(false)
   const [hjfyCookie, setHjfyCookie] = useState('')
   const [hjfyConfigured, setHjfyConfigured] = useState(false)
   const [hjfySaving, setHjfySaving] = useState(false)
@@ -39,6 +43,9 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setModel(config.llm.model)
       setIsConfigured(config.llm.api_key_configured)
       setApiKey('')
+      setSyncUrl(config.sync.url || '')
+      setSyncToken('')
+      setSyncConfigured(config.sync.token_configured)
       setHjfyConfigured(config.hjfy_cookie_configured)
       setHjfyCookie('')
     } catch {
@@ -87,19 +94,46 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   }
 
   const handleSave = async () => {
-    if (!apiKey.trim()) return
+    const trimmedApiKey = apiKey.trim()
+    const trimmedSyncToken = syncToken.trim()
+    const syncChanged = Boolean(trimmedSyncToken)
+
+    if (!trimmedApiKey && !syncChanged) return
+
     setIsSaving(true)
     setSaveSuccess(false)
     try {
-      await updateLLMConfig({ api_key: apiKey.trim() })
-      setIsConfigured(true)
+      if (trimmedApiKey) {
+        await updateLLMConfig({ api_key: trimmedApiKey })
+        setIsConfigured(true)
+        setApiKey('')
+      }
+      if (syncChanged) {
+        await updateSyncConfig({
+          ...(trimmedSyncToken ? { sync_token: trimmedSyncToken } : {}),
+        })
+        setSyncConfigured(Boolean(trimmedSyncToken))
+        setSyncToken('')
+      }
       setSaveSuccess(true)
-      setApiKey('')
-      addToast('success', 'API Key 已保存')
+      addToast('success', '本地配置已保存')
       onConfigured?.()
-      setTimeout(() => onClose(), 800)
     } catch {
       addToast('error', '保存失败，请重试')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleClearSyncToken = async () => {
+    setIsSaving(true)
+    try {
+      await updateSyncConfig({ clear_sync_token: true })
+      setSyncConfigured(false)
+      setSyncToken('')
+      addToast('success', '同步凭证已清除')
+    } catch {
+      addToast('error', '清除同步凭证失败')
     } finally {
       setIsSaving(false)
     }
@@ -116,7 +150,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-md mx-4 animate-in zoom-in-95 fade-in duration-200">
+      <div className="relative w-full max-w-lg mx-4 animate-in zoom-in-95 fade-in duration-200">
         <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/60 dark:border-slate-700/60 overflow-hidden">
           {/* Header */}
           <div className="relative px-6 pt-6 pb-4">
@@ -126,7 +160,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
               </div>
               <div>
                 <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">设置</h2>
-                <p className="text-xs text-slate-400 mt-0.5">配置 OpenRouter API 连接</p>
+                <p className="text-xs text-slate-400 mt-0.5">本地配置、账号信息与云端同步</p>
               </div>
             </div>
             <button
@@ -173,19 +207,37 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
               {/* Body */}
               <div className="px-6 pb-2 space-y-5">
                 {/* Status indicator */}
-                <div className={cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl text-sm",
-                  isConfigured
-                    ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400"
-                    : "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
-                )}>
+                <div className={cn('grid gap-2', env.isElectron ? 'sm:grid-cols-2' : 'sm:grid-cols-1')}>
                   <div className={cn(
-                    "w-2 h-2 rounded-full",
+                    'flex items-center gap-3 px-4 py-3 rounded-xl text-sm',
                     isConfigured
-                      ? "bg-emerald-500 shadow-sm shadow-emerald-500/50"
-                      : "bg-amber-500 shadow-sm shadow-amber-500/50 animate-pulse"
-                  )} />
-                  {isConfigured ? 'API Key 已配置' : '需要配置 API Key'}
+                      ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
+                      : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'
+                  )}>
+                    <div className={cn(
+                      'w-2 h-2 rounded-full',
+                      isConfigured
+                        ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
+                        : 'bg-amber-500 shadow-sm shadow-amber-500/50 animate-pulse'
+                    )} />
+                    {isConfigured ? '本地 API Key 已配置' : '需要配置本地 API Key'}
+                  </div>
+                  {env.isElectron && (
+                    <div className={cn(
+                      'flex items-center gap-3 px-4 py-3 rounded-xl text-sm',
+                      syncConfigured
+                        ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
+                        : 'bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400'
+                    )}>
+                      <div className={cn(
+                        'w-2 h-2 rounded-full',
+                        syncConfigured
+                          ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
+                          : 'bg-slate-400'
+                      )} />
+                      {syncConfigured ? '设备同步已连接' : '设备同步未连接'}
+                    </div>
+                  )}
                 </div>
 
                 {/* API Key */}
@@ -229,6 +281,51 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                   </label>
                   <div className="flex items-center px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
                     <span className="font-mono text-xs">{model}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    云端同步
+                  </label>
+                  <div className="space-y-2">
+                    <div className="px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                      云端地址已经固定为唯一线上环境，不再需要手动填写。普通登录 token 不再用于同步；本地 Electron 只需要一枚专用的设备同步凭证。
+                    </div>
+                    <div className="flex items-center justify-between px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+                      <span className="text-slate-500 dark:text-slate-400">固定云端</span>
+                      <code className="text-xs font-mono text-slate-700 dark:text-slate-300">{syncUrl}</code>
+                    </div>
+                    {env.isElectron ? (
+                      <>
+                        <input
+                          type="password"
+                          value={syncToken}
+                          onChange={(e) => setSyncToken(e.target.value)}
+                          placeholder={syncConfigured ? '如需轮换设备同步凭证，请输入新 token' : '粘贴云端签发的设备同步凭证'}
+                          className="w-full px-4 py-3 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                        />
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs text-slate-400 leading-relaxed">
+                            设备凭证需要在云端网页的管理员页中生成；它只允许访问 `/api/sync/*`，可单独吊销。
+                          </p>
+                          {syncConfigured && (
+                            <button
+                              type="button"
+                              onClick={handleClearSyncToken}
+                              disabled={isSaving}
+                              className="px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all whitespace-nowrap"
+                            >
+                              断开同步
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        你当前在云端网页端。若要让某台本地 Electron 同步到这里，请到下方管理员页的“云端同步设备”里生成一枚设备凭证，再粘贴到那台本地 Electron。
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -340,7 +437,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={!apiKey.trim() || isSaving}
+                  disabled={(!apiKey.trim() && !syncToken.trim()) || isSaving}
                   className={cn(
                     "flex-1 px-4 py-2.5 text-sm font-medium rounded-xl flex items-center justify-center gap-2 transition-all",
                     saveSuccess
@@ -451,16 +548,21 @@ function AccountTab({ onClose }: { onClose: () => void }) {
 function AdminTab() {
   const { addToast } = useToastStore()
   const [users, setUsers] = useState<AuthUser[]>([])
+  const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([])
+  const [newDeviceName, setNewDeviceName] = useState('我的 Mac')
+  const [latestIssued, setLatestIssued] = useState<SyncDeviceTokenResponse | null>(null)
   const [inviteCode, setInviteCode] = useState('')
   const [editingCode, setEditingCode] = useState('')
   const [isEditingCode, setIsEditingCode] = useState(false)
+  const [showRevokedDevices, setShowRevokedDevices] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [userList, code] = await Promise.all([listUsers(), getInviteCode()])
+      const [userList, code, devices] = await Promise.all([listUsers(), getInviteCode(), listSyncDevices()])
       setUsers(userList)
+      setSyncDevices(devices)
       setInviteCode(code)
       setEditingCode(code)
     } catch {
@@ -498,6 +600,47 @@ function AdminTab() {
     navigator.clipboard.writeText(inviteCode).then(() => addToast('success', '已复制邀请码'))
   }
 
+  const formatDateTime = (value: string) => {
+    const date = new Date(value)
+    return date.toLocaleString('zh-CN', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  const handleCreateSyncDevice = async () => {
+    try {
+      const created = await createSyncDevice(newDeviceName.trim() || 'iPaper Electron')
+      setLatestIssued(created)
+      setSyncDevices((prev) => [created, ...prev])
+      addToast('success', '已生成新的设备同步凭证')
+    } catch {
+      addToast('error', '生成设备同步凭证失败')
+    }
+  }
+
+  const handleCopyLatestToken = () => {
+    if (!latestIssued) return
+    navigator.clipboard.writeText(latestIssued.token).then(() => addToast('success', '已复制设备同步凭证'))
+  }
+
+  const handleRevokeSyncDevice = async (deviceId: string) => {
+    if (!confirm('确定吊销这个设备的同步凭证吗？吊销后该设备需要重新绑定。')) return
+    try {
+      await revokeSyncDevice(deviceId)
+      setSyncDevices((prev) => prev.map((device) => (
+        device.device_id === deviceId
+          ? { ...device, revoked_at: new Date().toISOString() }
+          : device
+      )))
+      addToast('success', '设备同步凭证已吊销')
+    } catch {
+      addToast('error', '吊销设备同步凭证失败')
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -506,14 +649,22 @@ function AdminTab() {
     )
   }
 
+  const activeSyncDevices = syncDevices.filter((device) => !device.revoked_at)
+  const revokedSyncDevices = syncDevices.filter((device) => device.revoked_at)
+
   return (
     <div className="px-6 py-5 space-y-5">
       {/* Invite code */}
       <div>
         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
           <Key className="w-3.5 h-3.5 inline mr-1.5" />
-          邀请码
+          {env.isElectron ? '本地邀请码' : '云端邀请码'}
         </label>
+        <p className="mb-2 text-xs text-slate-400 leading-relaxed">
+          {env.isElectron
+            ? '这里只修改当前这台本地 Electron 后端的注册邀请码，不会自动同步到云端。'
+            : '这里修改的是当前云端后端的注册邀请码，会直接影响网页端注册。'}
+        </p>
         {isEditingCode ? (
           <div className="flex gap-2">
             <input
@@ -549,6 +700,117 @@ function AdminTab() {
           </div>
         )}
       </div>
+
+      {env.isWeb ? (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+            已连接的本地设备
+          </label>
+          <p className="mb-2 text-xs text-slate-400 leading-relaxed">
+            给新的本地 Electron 生成一枚专用同步凭证，再粘贴到那台设备即可完成连接。它只用于同步，不影响网页登录。
+          </p>
+          <div className="flex gap-2 mb-3">
+            <input
+              type="text"
+              value={newDeviceName}
+              onChange={(e) => setNewDeviceName(e.target.value)}
+              placeholder="设备名称，例如 办公室 MacBook"
+              className="flex-1 px-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
+            />
+            <button
+              onClick={handleCreateSyncDevice}
+              className="px-3 py-2 text-sm font-medium rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 transition-all whitespace-nowrap"
+            >
+              连接新设备
+            </button>
+          </div>
+          {latestIssued && (
+            <div className="mb-3 space-y-2 px-4 py-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50">
+              <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                新设备凭证只会展示这一次，请立即复制到对应的本地 Electron。
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono text-emerald-700 dark:text-emerald-300 break-all">{latestIssued.token}</code>
+                <button
+                  onClick={handleCopyLatestToken}
+                  className="p-1.5 rounded-lg text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-all"
+                  title="复制凭证"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="space-y-3">
+            {activeSyncDevices.length === 0 ? (
+              <div className="px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-xs text-slate-400">
+                还没有连接任何本地设备。
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {activeSyncDevices.map((device) => (
+                  <div key={device.device_id} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{device.device_name}</p>
+                        <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          已连接
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">连接于 {formatDateTime(device.created_at)}</p>
+                      <p className="text-xs text-slate-400">
+                        {device.last_used_at ? `最近同步 ${formatDateTime(device.last_used_at)}` : '尚未开始同步'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleRevokeSyncDevice(device.device_id)}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
+                      title="断开此设备"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {revokedSyncDevices.length > 0 && (
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowRevokedDevices((prev) => !prev)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/40 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <span>历史记录（{revokedSyncDevices.length}）</span>
+                  {showRevokedDevices ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+                {showRevokedDevices && (
+                  <div className="p-3 space-y-2 bg-background">
+                    {revokedSyncDevices.map((device) => (
+                      <div key={device.device_id} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-slate-50/70 dark:bg-slate-800/30 border border-slate-200 dark:border-slate-700/70">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{device.device_name}</p>
+                            <span className="inline-flex items-center rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                              已断开
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1">曾连接于 {formatDateTime(device.created_at)}</p>
+                          <p className="text-xs text-slate-400">断开于 {device.revoked_at ? formatDateTime(device.revoked_at) : '未知时间'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-xs text-slate-400 leading-relaxed">
+          设备同步凭证需要在云端网页端生成和吊销；本地 Electron 这里只负责消费那枚凭证。
+        </div>
+      )}
 
       {/* Users */}
       <div>

@@ -9,6 +9,7 @@ import katexModule from 'katex'
 import { marked } from 'marked'
 import { useChatStore } from '../../stores/chatStore'
 import { usePaperStore } from '../../stores/paperStore'
+import { PageSelectionModal } from '../PageSelectionModal'
 
 const _isTouch = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
 
@@ -317,6 +318,9 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     switchCrossPaperFork,
     saveCrossPaperDraft,
     addPaperToCrossChat,
+    pendingPageSelection,
+    submitPageSelections,
+    dismissPageSelection,
   } = useChatStore()
 
   const { papers, updateCrossPaperSessionPaperIds } = usePaperStore()
@@ -695,7 +699,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
               <textarea
                 value={addPaperNote}
                 onChange={(e) => setAddPaperNote(e.target.value)}
-                placeholder="补充说明（可选，如：重点对比新论文的 XX 方面）"
+                placeholder="想让 AI 接下来分析什么？（可选）"
                 className="w-full px-2 py-1.5 text-sm rounded border border-input bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                 rows={2}
               />
@@ -713,7 +717,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                 disabled={isStreaming}
                 className="w-full px-3 py-1.5 text-sm font-medium bg-purple-500 text-white rounded-md hover:bg-purple-600 disabled:opacity-50 transition-colors"
               >
-                添加并分析 ({addPaperSelected.length} 篇)
+                添加论文 ({addPaperSelected.length} 篇)
               </button>
             </>
           )}
@@ -766,10 +770,10 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
-            <p>{isCrossMode ? '串讲即将开始…' : '开始提问吧！'}</p>
+            <p>{isCrossMode ? '请先提问' : '开始提问吧！'}</p>
             <p className="text-xs mt-2 text-center px-4">
               {isCrossMode
-                ? 'AI 正在阅读所有论文，即将产出对比分析。'
+                ? '串讲不会自动开始，你可以先指定对比角度、问题或想关注的技术点。'
                 : '你可以询问关于这篇论文的任何问题，AI 会基于论文内容为你解答。'}
             </p>
           </div>
@@ -965,6 +969,11 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
           按 Enter 发送，Shift+Enter 换行
         </p>
       </div>
+      <PageSelectionModal
+        request={pendingPageSelection}
+        onClose={dismissPageSelection}
+        onConfirm={submitPageSelections}
+      />
     </div>
   )
 }

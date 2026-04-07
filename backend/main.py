@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import papers, chat, config, profile, translation, auth, preferences, sync
+from services.sync_service import sync_service
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -38,6 +39,16 @@ app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
 async def root():
     """健康检查"""
     return {"status": "ok", "message": "iPaper API is running"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    await sync_service.startup()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await sync_service.shutdown()
 
 
 

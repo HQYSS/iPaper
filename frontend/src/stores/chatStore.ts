@@ -16,6 +16,16 @@ export interface QuoteItem {
   source: QuoteSource
 }
 
+export interface PendingPageSelectionRequest {
+  mode: 'single' | 'cross'
+  sessionId: string
+  paperId?: string
+  message: string
+  quotes?: QuoteItem[]
+  requirements: api.PageSelectionRequirement[]
+  errorMessage: string
+}
+
 interface ChatStore {
   messages: api.ChatMessage[]
   isLoading: boolean
@@ -25,6 +35,8 @@ interface ChatStore {
   draftInput: string
   quotes: QuoteItem[]
   focusInputNonce: number
+  pendingPageSelection: PendingPageSelectionRequest | null
+  pageSelectionsByConversation: Record<string, api.PaperPageSelectionInput[]>
 
   sessions: api.SessionMeta[]
   currentSessionId: string | null
@@ -42,7 +54,13 @@ interface ChatStore {
   switchSession: (paperId: string, sessionId: string) => Promise<void>
 
   loadHistory: (paperId: string, sessionId: string) => Promise<void>
-  sendMessage: (paperId: string, sessionId: string, message: string, quotes?: QuoteItem[]) => Promise<void>
+  sendMessage: (
+    paperId: string,
+    sessionId: string,
+    message: string,
+    quotes?: QuoteItem[],
+    pageSelections?: api.PaperPageSelectionInput[]
+  ) => Promise<void>
   stopStreaming: () => void
   clearHistory: (paperId: string, sessionId: string) => Promise<void>
   clearError: () => void
@@ -61,21 +79,37 @@ interface ChatStore {
   loadCrossPaperSession: (sessionId: string) => Promise<void>
   deleteCrossPaperSession: (sessionId: string) => Promise<void>
   switchCrossPaperSession: (sessionId: string) => Promise<void>
-  sendCrossPaperMessage: (sessionId: string, message: string, quotes?: QuoteItem[]) => Promise<void>
+  sendCrossPaperMessage: (
+    sessionId: string,
+    message: string,
+    quotes?: QuoteItem[],
+    pageSelections?: api.PaperPageSelectionInput[]
+  ) => Promise<void>
   clearCrossPaperHistory: (sessionId: string) => Promise<void>
   editCrossPaperMessage: (sessionId: string, messageIndex: number, newContent: string) => Promise<void>
   switchCrossPaperFork: (sessionId: string, messageIndex: number, forkIndex: number) => Promise<void>
   saveCrossPaperDraft: (sessionId: string, input: string, quotes: QuoteItem[]) => Promise<void>
   addPaperToCrossChat: (sessionId: string, paperIds: string[], userMessage: string) => Promise<void>
+  submitPageSelections: (pageSelections: api.PaperPageSelectionInput[]) => Promise<void>
+  dismissPageSelection: () => void
   exitCrossPaperChat: () => void
 }
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
-const AUTO_CROSS_PAPER_MESSAGE = '请对这组论文进行串讲分析，深入对比它们在技术上的异同。'
-const buildDraft = (input: string, quotes: QuoteItem[]): api.ChatDraft => ({
+const buildDraft = (
+  input: string,
+  quotes: QuoteItem[],
+  pageSelections?: api.PaperPageSelectionInput[]
+): api.ChatDraft => ({
   input,
   quotes: quotes.length > 0 ? [...quotes] : undefined,
+  page_selections: pageSelections && pageSelections.length > 0 ? pageSelections : undefined,
 })
+const getConversationSelectionKey = (
+  paperId: string | undefined,
+  sessionId: string,
+  isCrossMode: boolean
+) => (isCrossMode ? `cross:${sessionId}` : `paper:${paperId}:${sessionId}`)
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
@@ -86,6 +120,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   draftInput: '',
   quotes: [],
   focusInputNonce: 0,
+  pendingPageSelection: null,
+  pageSelectionsByConversation: {},
   sessions: [],
   currentSessionId: null,
   abortController: null,
@@ -197,20 +233,38 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const history = await getChatHistoryOffline(paperId, sessionId)
-      set({
-        messages: history.messages,
-        forks: history.forks || {},
-        draftInput: history.draft?.input || '',
-        quotes: history.draft?.quotes || [],
-        isLoading: false,
+      const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+      set((state) => {
+        const nextSelections = { ...state.pageSelectionsByConversation }
+        if (history.draft?.page_selections) {
+          nextSelections[selectionKey] = history.draft.page_selections
+        } else {
+          delete nextSelections[selectionKey]
+        }
+        return {
+          messages: history.messages,
+          forks: history.forks || {},
+          draftInput: history.draft?.input || '',
+          quotes: history.draft?.quotes || [],
+          isLoading: false,
+          pageSelectionsByConversation: nextSelections,
+        }
       })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
   },
 
-  sendMessage: async (paperId: string, sessionId: string, message: string, quotes?: QuoteItem[]) => {
+  sendMessage: async (
+    paperId: string,
+    sessionId: string,
+    message: string,
+    quotes?: QuoteItem[],
+    pageSelections?: api.PaperPageSelectionInput[]
+  ) => {
     const controller = new AbortController()
+    const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+    const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
 
     const userMessage: api.ChatMessage = {
       role: 'user',
@@ -224,6 +278,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       abortController: controller,
       draftInput: '',
       quotes: [],
+      pendingPageSelection: null,
+      pageSelectionsByConversation: effectivePageSelections
+        ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
+        : state.pageSelectionsByConversation,
     }))
 
     const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
@@ -241,7 +299,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     try {
-      for await (const data of api.sendMessage(paperId, sessionId, message, quotes, controller.signal)) {
+      for await (const data of api.sendMessage(paperId, sessionId, message, quotes, effectivePageSelections, controller.signal)) {
         if (data.type === 'done') {
           clearStreamingState()
           continue
@@ -286,6 +344,36 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         return
       }
+      if (error instanceof api.PageSelectionRequiredError) {
+        clearStreamingState()
+        if (!isStillActive()) return
+        set((state) => {
+          const msgs = [...state.messages]
+          const last = msgs[msgs.length - 1]
+          if (last?.role === 'assistant' && !last.content) {
+            msgs.pop()
+          }
+          const newLast = msgs[msgs.length - 1]
+          if (newLast?.role === 'user' && newLast.content === message) {
+            msgs.pop()
+          }
+          return {
+            messages: msgs,
+            draftInput: message,
+            quotes: quotes ? [...quotes] : [],
+            pendingPageSelection: {
+              mode: 'single',
+              sessionId,
+              paperId,
+              message,
+              quotes: quotes ? [...quotes] : undefined,
+              requirements: error.requirements,
+              errorMessage: error.message,
+            },
+          }
+        })
+        return
+      }
       clearStreamingState()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
@@ -306,7 +394,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       await api.clearChatHistory(paperId, sessionId)
-      set({ messages: [], forks: {}, draftInput: '', quotes: [], isLoading: false })
+      const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+      set((state) => {
+        const nextSelections = { ...state.pageSelectionsByConversation }
+        delete nextSelections[selectionKey]
+        return {
+          messages: [],
+          forks: {},
+          draftInput: '',
+          quotes: [],
+          isLoading: false,
+          pageSelectionsByConversation: nextSelections,
+        }
+      })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -337,7 +437,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   saveDraft: async (paperId: string, sessionId: string, input: string, quotes: QuoteItem[]) => {
     try {
-      await api.updateChatDraft(paperId, sessionId, buildDraft(input, quotes))
+      const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+      await api.updateChatDraft(
+        paperId,
+        sessionId,
+        buildDraft(input, quotes, get().pageSelectionsByConversation[selectionKey])
+      )
     } catch {
       // 输入过程中的草稿保存失败不打断交互
     }
@@ -432,13 +537,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       draftInput: '',
       quotes: [],
     })
-
-    setTimeout(() => {
-      const store = get()
-      if (store.isCrossPaperMode && store.currentSessionId === session.id && store.messages.length === 0 && !store.isStreaming) {
-        store.sendCrossPaperMessage(session.id, AUTO_CROSS_PAPER_MESSAGE)
-      }
-    }, 300)
   },
 
   loadCrossPaperSessions: async () => {
@@ -490,14 +588,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const history = await getCrossPaperChatHistoryOffline(sessionId)
-      set({
-        messages: history.messages,
-        forks: history.forks || {},
-        draftInput: history.draft?.input || '',
-        quotes: history.draft?.quotes || [],
-        isLoading: false,
-        crossPaperIds: history.paper_ids,
-        currentSessionId: sessionId,
+      const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+      set((state) => {
+        const nextSelections = { ...state.pageSelectionsByConversation }
+        if (history.draft?.page_selections) {
+          nextSelections[selectionKey] = history.draft.page_selections
+        } else {
+          delete nextSelections[selectionKey]
+        }
+        return {
+          messages: history.messages,
+          forks: history.forks || {},
+          draftInput: history.draft?.input || '',
+          quotes: history.draft?.quotes || [],
+          isLoading: false,
+          crossPaperIds: history.paper_ids,
+          currentSessionId: sessionId,
+          pageSelectionsByConversation: nextSelections,
+        }
       })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
@@ -539,8 +647,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     await get().loadCrossPaperSession(sessionId)
   },
 
-  sendCrossPaperMessage: async (sessionId: string, message: string, quotes?: QuoteItem[]) => {
+  sendCrossPaperMessage: async (
+    sessionId: string,
+    message: string,
+    quotes?: QuoteItem[],
+    pageSelections?: api.PaperPageSelectionInput[]
+  ) => {
     const controller = new AbortController()
+    const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+    const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
 
     const userMessage: api.ChatMessage = {
       role: 'user',
@@ -554,6 +669,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       abortController: controller,
       draftInput: '',
       quotes: [],
+      pendingPageSelection: null,
+      pageSelectionsByConversation: effectivePageSelections
+        ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
+        : state.pageSelectionsByConversation,
     }))
 
     const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
@@ -571,7 +690,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     try {
-      for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, controller.signal)) {
+      for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, effectivePageSelections, controller.signal)) {
         if (data.type === 'done') {
           clearStreamingState()
           continue
@@ -615,6 +734,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         return
       }
+      if (error instanceof api.PageSelectionRequiredError) {
+        clearStreamingState()
+        if (!isStillActive()) return
+        set((state) => {
+          const msgs = [...state.messages]
+          const last = msgs[msgs.length - 1]
+          if (last?.role === 'assistant' && !last.content) {
+            msgs.pop()
+          }
+          const newLast = msgs[msgs.length - 1]
+          if (newLast?.role === 'user' && newLast.content === message) {
+            msgs.pop()
+          }
+          return {
+            messages: msgs,
+            draftInput: message,
+            quotes: quotes ? [...quotes] : [],
+            pendingPageSelection: {
+              mode: 'cross',
+              sessionId,
+              message,
+              quotes: quotes ? [...quotes] : undefined,
+              requirements: error.requirements,
+              errorMessage: error.message,
+            },
+          }
+        })
+        return
+      }
       clearStreamingState()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
@@ -628,7 +776,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       await api.clearCrossPaperChatHistory(sessionId)
-      set({ messages: [], forks: {}, draftInput: '', quotes: [], isLoading: false })
+      const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+      set((state) => {
+        const nextSelections = { ...state.pageSelectionsByConversation }
+        delete nextSelections[selectionKey]
+        return {
+          messages: [],
+          forks: {},
+          draftInput: '',
+          quotes: [],
+          isLoading: false,
+          pageSelectionsByConversation: nextSelections,
+        }
+      })
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -701,24 +861,54 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   saveCrossPaperDraft: async (sessionId: string, input: string, quotes: QuoteItem[]) => {
     try {
-      await api.updateCrossPaperChatDraft(sessionId, buildDraft(input, quotes))
+      const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+      await api.updateCrossPaperChatDraft(
+        sessionId,
+        buildDraft(input, quotes, get().pageSelectionsByConversation[selectionKey])
+      )
     } catch {
       // 输入过程中的草稿保存失败不打断交互
     }
+  },
+
+  submitPageSelections: async (pageSelections: api.PaperPageSelectionInput[]) => {
+    const pending = get().pendingPageSelection
+    if (!pending) return
+
+    set({ pendingPageSelection: null, error: null })
+
+    if (pending.mode === 'cross') {
+      await get().sendCrossPaperMessage(
+        pending.sessionId,
+        pending.message,
+        pending.quotes,
+        pageSelections
+      )
+      return
+    }
+
+    if (!pending.paperId) return
+    await get().sendMessage(
+      pending.paperId,
+      pending.sessionId,
+      pending.message,
+      pending.quotes,
+      pageSelections
+    )
+  },
+
+  dismissPageSelection: () => {
+    set({ pendingPageSelection: null })
   },
 
   addPaperToCrossChat: async (sessionId: string, newPaperIds: string[], userMessage: string) => {
     try {
       const updatedSession = await api.addPapersToCrossPaperSession(sessionId, newPaperIds)
       set({ crossPaperIds: updatedSession.paper_ids })
-
-      const titles = newPaperIds.map((id) => `[[${id}]]`).join('、')
-      const prefix = `用户将新论文 ${titles} 加入了串讲。请将这篇新论文纳入之前的对比分析框架中，分析它与已有论文在技术路线上的异同。`
-      const fullMessage = userMessage.trim()
-        ? `${prefix}\n\n用户补充说明：${userMessage.trim()}`
-        : prefix
-
-      await get().sendCrossPaperMessage(sessionId, fullMessage)
+      const trimmedMessage = userMessage.trim()
+      if (trimmedMessage) {
+        await get().sendCrossPaperMessage(sessionId, trimmedMessage)
+      }
     } catch (error) {
       set({ error: (error as Error).message })
     }
@@ -739,6 +929,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       currentPaperId: null,
       draftInput: '',
       quotes: [],
+      pendingPageSelection: null,
     })
   },
 }))

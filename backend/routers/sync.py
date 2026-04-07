@@ -4,21 +4,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File
 from fastapi.responses import JSONResponse
 
-from middleware.auth import get_current_user
+from middleware.auth import get_sync_user
 from services.sync_service import sync_service
 
 router = APIRouter()
 
 
 @router.get("/manifest")
-async def get_manifest(user: dict = Depends(get_current_user)):
+async def get_manifest(user: dict = Depends(get_sync_user)):
     """返回该用户所有论文的 {arxiv_id, updated_at} 清单 + 偏好和画像的 updated_at"""
     manifest = sync_service.get_manifest(user["id"])
     return manifest.to_dict()
 
 
 @router.get("/papers/{paper_id}/bundle")
-async def download_paper_bundle(paper_id: str, user: dict = Depends(get_current_user)):
+async def download_paper_bundle(paper_id: str, user: dict = Depends(get_sync_user)):
     """下载某篇论文的完整数据包（meta + PDF + 所有聊天 JSON，zip 格式）"""
     bundle = sync_service.create_paper_bundle(user["id"], paper_id)
     if bundle is None:
@@ -34,7 +34,7 @@ async def download_paper_bundle(paper_id: str, user: dict = Depends(get_current_
 async def upload_paper_bundle(
     paper_id: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_sync_user),
 ):
     """上传某篇论文的完整数据包"""
     content = await file.read()
@@ -46,8 +46,15 @@ async def upload_paper_bundle(
     return {"status": "ok"}
 
 
+@router.delete("/papers/{paper_id}")
+async def delete_paper_bundle(paper_id: str, user: dict = Depends(get_sync_user)):
+    """按 tombstone 删除某篇论文"""
+    sync_service.delete_paper(user["id"], paper_id)
+    return {"status": "ok"}
+
+
 @router.get("/preferences")
-async def get_preferences(user: dict = Depends(get_current_user)):
+async def get_preferences(user: dict = Depends(get_sync_user)):
     """下载偏好"""
     data = sync_service.get_preferences(user["id"])
     if data is None:
@@ -56,26 +63,30 @@ async def get_preferences(user: dict = Depends(get_current_user)):
 
 
 @router.put("/preferences")
-async def put_preferences(body: dict, user: dict = Depends(get_current_user)):
+async def put_preferences(body: dict, user: dict = Depends(get_sync_user)):
     """上传偏好"""
     sync_service.put_preferences(user["id"], body)
     return {"status": "ok"}
 
 
 @router.get("/profile")
-async def get_profile(user: dict = Depends(get_current_user)):
+async def get_profile(user: dict = Depends(get_sync_user)):
     """下载画像"""
     content = sync_service.get_profile(user["id"])
-    if content is None:
-        return JSONResponse(content={"content": ""}, status_code=200)
-    return {"content": content}
+    return {
+        "content": content or "",
+        "updated_at": sync_service.get_profile_updated_at(user["id"]),
+    }
 
 
 @router.put("/profile")
-async def put_profile(body: dict, user: dict = Depends(get_current_user)):
+async def put_profile(body: dict, user: dict = Depends(get_sync_user)):
     """上传画像"""
     content = body.get("content", "")
     if not isinstance(content, str):
         raise HTTPException(status_code=400, detail="content 必须是字符串")
-    sync_service.put_profile(user["id"], content)
+    updated_at = body.get("updated_at")
+    if updated_at is not None and not isinstance(updated_at, str):
+        raise HTTPException(status_code=400, detail="updated_at 必须是字符串")
+    sync_service.put_profile(user["id"], content, updated_at)
     return {"status": "ok"}

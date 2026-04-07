@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 BACKEND_PORT=3000
+FRONTEND_PORT=5173
 PID_FILE="$SCRIPT_DIR/logs/backend.pid"
 mkdir -p "$SCRIPT_DIR/logs"
 
@@ -50,7 +51,7 @@ for i in $(seq 1 30); do
 done
 
 # 先清理残留的 Vite 进程，避免端口冲突
-EXISTING_VITE_PID=$(lsof -ti :5173 2>/dev/null)
+EXISTING_VITE_PID=$(lsof -ti :$FRONTEND_PORT 2>/dev/null)
 if [ -n "$EXISTING_VITE_PID" ]; then
     echo "清理残留前端进程 (PID: $EXISTING_VITE_PID)..."
     kill $EXISTING_VITE_PID 2>/dev/null
@@ -59,7 +60,7 @@ fi
 
 echo "启动前端..."
 cd frontend
-npm run dev &
+npm run dev -- --host 127.0.0.1 --port $FRONTEND_PORT &
 FRONTEND_PID=$!
 cd "$SCRIPT_DIR"
 
@@ -67,7 +68,7 @@ cd "$SCRIPT_DIR"
 FRONTEND_PORT=""
 for i in $(seq 1 15); do
     sleep 1
-    for port in 5173 5174 5175; do
+    for port in $FRONTEND_PORT 5174 5175; do
         if curl -s http://127.0.0.1:$port/ > /dev/null 2>&1; then
             FRONTEND_PORT=$port
             break 2

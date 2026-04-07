@@ -13,6 +13,7 @@ from models import EvolutionChatRequest, SaveEditPlanRequest, ChatMessage
 from services.evolution_service import evolution_service
 from services.storage_service import storage_service
 from services.arxiv_service import arxiv_service
+from services.sync_service import sync_service
 from middleware.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ async def apply_updates(user: dict = Depends(get_current_user)):
     success = evolution_service.apply_pending(uid)
     if not success:
         raise HTTPException(status_code=404, detail="没有待确认的更新")
+    sync_service.request_sync("profile-updated")
     return {"message": "画像已更新"}
 
 

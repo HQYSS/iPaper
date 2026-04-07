@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Plus, Trash2, FileText, Loader2, Clock, User, Settings, GitCompareArrows, Check, X } from 'lucide-react'
 import { usePaperStore } from '../../stores/paperStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -9,6 +9,16 @@ import * as api from '../../services/api'
 interface PaperLibraryProps {
   onOpenSettings?: () => void
 }
+
+interface PaperContextMenuState {
+  paperId: string
+  paperTitle: string
+  x: number
+  y: number
+}
+
+const CONTEXT_MENU_WIDTH = 160
+const CONTEXT_MENU_HEIGHT = 104
 
 export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
   const {
@@ -22,6 +32,8 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
   const [isAdding, setIsAdding] = useState(false)
   const [showInput, setShowInput] = useState(false)
   const [crossPaperSessions, setCrossPaperSessions] = useState<api.CrossPaperSessionMeta[]>([])
+  const [contextMenu, setContextMenu] = useState<PaperContextMenuState | null>(null)
+  const paperListRef = useRef<HTMLDivElement>(null)
 
   const isSelectingMode = crossPaper.isSelecting
   const isInCrossChat = !!crossPaper.activeCrossPaperSession
@@ -33,6 +45,30 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
       }).catch(() => {})
     }
   }, [isSelectingMode])
+
+  useEffect(() => {
+    if (!contextMenu) return
+
+    const handleClose = () => setContextMenu(null)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setContextMenu(null)
+      }
+    }
+    const paperListElement = paperListRef.current
+
+    document.addEventListener('click', handleClose)
+    window.addEventListener('resize', handleClose)
+    window.addEventListener('keydown', handleKeyDown)
+    paperListElement?.addEventListener('scroll', handleClose)
+
+    return () => {
+      document.removeEventListener('click', handleClose)
+      window.removeEventListener('resize', handleClose)
+      window.removeEventListener('keydown', handleKeyDown)
+      paperListElement?.removeEventListener('scroll', handleClose)
+    }
+  }, [contextMenu])
 
   const handleAddPaper = async () => {
     if (!arxivInput.trim()) return
@@ -108,8 +144,51 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
     return paper.title.length > 30 ? paper.title.slice(0, 30) + '…' : paper.title
   }
 
+  const handlePaperContextMenu = (event: React.MouseEvent, paperId: string, paperTitle: string) => {
+    if (isSelectingMode) return
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    const x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - 8)
+    const y = Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT - 8)
+
+    setContextMenu({
+      paperId,
+      paperTitle,
+      x: Math.max(8, x),
+      y: Math.max(8, y),
+    })
+  }
+
+  const handleCopyPaperTitle = async () => {
+    if (!contextMenu) return
+
+    try {
+      await navigator.clipboard.writeText(contextMenu.paperTitle)
+      addToast('success', '已复制文章名')
+    } catch {
+      addToast('error', '复制失败，请检查剪贴板权限')
+    } finally {
+      setContextMenu(null)
+    }
+  }
+
+  const handleCopyPaperId = async () => {
+    if (!contextMenu) return
+
+    try {
+      await navigator.clipboard.writeText(contextMenu.paperId)
+      addToast('success', '已复制 arXiv ID')
+    } catch {
+      addToast('error', '复制失败，请检查剪贴板权限')
+    } finally {
+      setContextMenu(null)
+    }
+  }
+
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative">
       {/* 标题栏 */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
         <div>
@@ -245,7 +324,7 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
       )}
 
       {/* 论文列表 */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={paperListRef} className="flex-1 overflow-y-auto">
         {isLoading && papers.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-slate-400">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
@@ -271,6 +350,7 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
                     !isSelectingMode && selectedPaper?.arxiv_id === paper.arxiv_id && 'bg-indigo-50 dark:bg-indigo-950/30',
                     isSelectingMode && isChecked && 'bg-purple-50 dark:bg-purple-950/20'
                   )}
+                  onContextMenu={(event) => handlePaperContextMenu(event, paper.arxiv_id, paper.title)}
                 >
                   <button
                     className="w-full text-left p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex items-start gap-3"
@@ -371,6 +451,33 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
             <Settings className="w-4 h-4" />
             设置
           </button>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[140px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg py-1"
+          style={{
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="w-full px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            onClick={handleCopyPaperTitle}
+          >
+            复制文章名
+          </button>
+          <button
+            className="w-full px-3 py-2 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            onClick={handleCopyPaperId}
+          >
+            复制 arXiv ID
+          </button>
+          <div className="px-3 pb-1 text-[11px] text-slate-400 truncate">
+            {contextMenu.paperId}
+          </div>
         </div>
       )}
     </div>

@@ -12,6 +12,7 @@ NPM="/opt/homebrew/bin/npm"
 export PATH="/opt/homebrew/bin:/Users/admin/miniconda3/bin:$PATH"
 
 BACKEND_PORT=3000
+FRONTEND_PORT=5173
 PID_FILE="$LOG_DIR/backend.pid"
 
 cleanup() {
@@ -21,10 +22,11 @@ cleanup() {
         rm -f "$PID_FILE"
     fi
     pkill -f "uvicorn main:app" 2>/dev/null
-    pkill -f "vite.*iPaper" 2>/dev/null
+    pkill -f "/Users/admin/workspace/iPaper/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron . --dev --skip-backend" 2>/dev/null
     sleep 1
     # 2. 端口兜底：不管什么进程，确保端口腾出来
     lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null
+    lsof -ti :$FRONTEND_PORT | xargs kill 2>/dev/null
 }
 
 start_backend() {
@@ -35,7 +37,7 @@ start_backend() {
 
 start_frontend() {
     cd "$PROJECT_DIR/frontend"
-    nohup "$NPM" run dev > "$LOG_DIR/frontend.log" 2>&1 &
+    nohup "$NPM" run dev -- --host 127.0.0.1 --port $FRONTEND_PORT > "$LOG_DIR/frontend.log" 2>&1 &
 }
 
 wait_for_services() {
@@ -49,7 +51,7 @@ wait_for_services() {
 
     # 等待前端
     for i in {1..30}; do
-        if curl -s http://localhost:5173 > /dev/null 2>&1; then
+        if curl -s "http://127.0.0.1:$FRONTEND_PORT" > /dev/null 2>&1; then
             break
         fi
         sleep 1

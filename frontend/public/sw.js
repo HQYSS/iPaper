@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ipaper-static-v1'
+const CACHE_NAME = 'ipaper-static-v2'
 
 const STATIC_EXTENSIONS = ['.js', '.css', '.woff2', '.woff', '.ttf', '.png', '.svg', '.ico']
 

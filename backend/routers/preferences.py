@@ -2,12 +2,14 @@
 用户偏好设置 API 路由
 """
 import json
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
 from config import settings
 from middleware.auth import get_current_user
+from services.sync_service import sync_service
 
 router = APIRouter()
 
@@ -36,8 +38,10 @@ async def update_preferences(body: dict, user: dict = Depends(get_current_user))
             existing = json.load(f)
 
     existing.update(body)
+    existing["updated_at"] = datetime.now().isoformat()
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2, ensure_ascii=False)
 
+    sync_service.request_sync("preferences-updated")
     return {"message": "ok"}

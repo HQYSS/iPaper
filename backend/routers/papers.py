@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 
 from models import PaperCreate, PaperMeta, PaperListItem
 from services.arxiv_service import arxiv_service
+from services.sync_service import sync_service
 from services.translation_service import translation_service
 from middleware.auth import get_current_user
 
@@ -39,7 +40,9 @@ async def add_paper(request: PaperCreate, user: dict = Depends(get_current_user)
     if not success:
         raise HTTPException(status_code=400, detail=message)
 
+    sync_service.clear_paper_tombstone(uid, meta.arxiv_id)
     await translation_service.ensure_translation(uid, meta.arxiv_id)
+    sync_service.request_sync("paper-added", meta.arxiv_id)
 
     return meta
 
@@ -58,11 +61,12 @@ async def get_paper(paper_id: str, user: dict = Depends(get_current_user)):
 @router.delete("/{paper_id}")
 async def delete_paper(paper_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
-    success = arxiv_service.delete_paper(uid, paper_id)
+    success = sync_service.delete_paper(uid, paper_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="论文不存在")
 
+    sync_service.request_sync("paper-deleted", paper_id)
     return {"message": "删除成功"}
 
 

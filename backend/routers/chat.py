@@ -15,7 +15,7 @@ from models import (
     CrossPaperSessionCreate, CrossPaperSessionMeta, CrossPaperSessionList,
     CrossPaperAddPapersRequest, CrossPaperChatRequest, CrossPaperChatHistory,
 )
-from services.llm_service import llm_service
+from services.llm_service import llm_service, PageSelectionRequiredError
 from services.storage_service import storage_service
 from services.arxiv_service import arxiv_service
 from middleware.auth import get_current_user
@@ -35,6 +35,17 @@ def _check_cross_paper_session(uid: str, session_id: str) -> CrossPaperSessionMe
     if not session:
         raise HTTPException(status_code=404, detail="串讲会话不存在")
     return session
+
+
+def _page_selection_http_exception(exc: PageSelectionRequiredError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "page_selection_required",
+            "message": str(exc),
+            "requirements": exc.requirements,
+        },
+    )
 
 
 # ==================== Cross-Paper (串讲) — 必须在 {paper_id} 路由前 ====================
@@ -94,6 +105,19 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
 
     messages, forks_raw, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
 
+    try:
+        prepared_api_messages = llm_service.prepare_cross_paper_api_messages(
+            messages=messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)],
+            user_id=uid,
+            paper_ids=session.paper_ids,
+            quotes=request.quotes,
+            page_selections=request.page_selections,
+        )
+    except PageSelectionRequiredError as exc:
+        raise _page_selection_http_exception(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     user_message = ChatMessage(
         role="user",
         content=request.message,
@@ -107,7 +131,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         session.paper_ids,
         messages,
         forks_raw,
-        {"input": "", "quotes": None},
+        {"input": "", "quotes": None, "page_selections": request.page_selections},
     )
     storage_service.set_last_active_cross_paper_session(uid, session_id)
 
@@ -121,6 +145,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
                 paper_ids=session.paper_ids,
                 quotes=request.quotes,
                 reasoning_collector=reasoning_parts,
+                prepared_api_messages=prepared_api_messages,
             ):
                 full_response += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
@@ -138,7 +163,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
                 session.paper_ids,
                 messages,
                 forks_raw,
-                {"input": "", "quotes": None},
+                {"input": "", "quotes": None, "page_selections": request.page_selections},
             )
 
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
@@ -266,12 +291,27 @@ async def delete_session(paper_id: str, session_id: str, user: dict = Depends(ge
 @router.post("/{paper_id}/{session_id}")
 async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict = Depends(get_current_user)):
     uid = user["id"]
-    _check_paper(uid, paper_id)
+    paper = _check_paper(uid, paper_id)
 
     if not llm_service.is_configured():
         raise HTTPException(status_code=400, detail="LLM API Key 未配置")
 
     messages, forks_raw, _ = storage_service.get_chat_history(uid, paper_id, session_id)
+    pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
+
+    try:
+        prepared_api_messages = llm_service.prepare_chat_api_messages(
+            messages=messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)],
+            pdf_path=pdf_path,
+            quotes=request.quotes,
+            page_selections=request.page_selections,
+            paper_id=paper_id,
+            paper_title=paper.title,
+        )
+    except PageSelectionRequiredError as exc:
+        raise _page_selection_http_exception(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     user_message = ChatMessage(
         role="user",
@@ -280,15 +320,13 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
     )
     messages.append(user_message)
 
-    pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
-
     storage_service.save_chat_history(
         uid,
         paper_id,
         session_id,
         messages,
         forks_raw,
-        {"input": "", "quotes": None},
+        {"input": "", "quotes": None, "page_selections": request.page_selections},
     )
     storage_service.set_last_active_session(uid, paper_id, session_id)
 
@@ -301,7 +339,8 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
                 messages=messages,
                 pdf_path=pdf_path,
                 quotes=request.quotes,
-                reasoning_collector=reasoning_parts
+                reasoning_collector=reasoning_parts,
+                prepared_api_messages=prepared_api_messages,
             ):
                 full_response += chunk
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
@@ -319,7 +358,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
                 session_id,
                 messages,
                 forks_raw,
-                {"input": "", "quotes": None},
+                {"input": "", "quotes": None, "page_selections": request.page_selections},
             )
 
             yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"

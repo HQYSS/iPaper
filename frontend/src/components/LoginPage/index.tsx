@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { AlertCircle } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 
 type AuthTab = 'login' | 'register'
@@ -83,7 +84,10 @@ export function LoginPage() {
                 id="username"
                 type="text"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value)
+                  if (error) setError('')
+                }}
                 autoComplete="username"
                 autoFocus
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -99,7 +103,10 @@ export function LoginPage() {
                 id="password"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value)
+                  if (error) setError('')
+                }}
                 autoComplete={tab === 'login' ? 'current-password' : 'new-password'}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 placeholder="请输入密码"
@@ -115,7 +122,10 @@ export function LoginPage() {
                   id="inviteCode"
                   type="text"
                   value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value)}
+                  onChange={(e) => {
+                    setInviteCode(e.target.value)
+                    if (error) setError('')
+                  }}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                   placeholder="请输入邀请码"
                 />
@@ -123,7 +133,16 @@ export function LoginPage() {
             )}
 
             {error && (
-              <p className="text-sm text-destructive">{error}</p>
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <div className="space-y-0.5">
+                  <p className="font-medium">{tab === 'login' ? '登录失败' : '注册失败'}</p>
+                  <p>{error}</p>
+                </div>
+              </div>
             )}
 
             <button

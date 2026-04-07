@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN_EXPIRE_DAYS = 30
 JWT_ALGORITHM = "HS256"
+SYNC_TOKEN_TYPE = "sync_device"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -27,6 +28,7 @@ class AuthService:
     def __init__(self):
         self._users_file = settings.data_dir / "users.json"
         self._secret_file = settings.data_dir / "jwt_secret.key"
+        self._sync_devices_file = settings.data_dir / "sync_devices.json"
 
     @property
     def _jwt_secret(self) -> str:
@@ -48,6 +50,17 @@ class AuthService:
         with open(self._users_file, "w", encoding="utf-8") as f:
             json.dump(users, f, indent=2, ensure_ascii=False)
 
+    def _load_sync_devices(self) -> List[dict]:
+        if not self._sync_devices_file.exists():
+            return []
+        with open(self._sync_devices_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _save_sync_devices(self, devices: List[dict]) -> None:
+        self._sync_devices_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._sync_devices_file, "w", encoding="utf-8") as f:
+            json.dump(devices, f, indent=2, ensure_ascii=False)
+
     def _find_user(self, username: str) -> Optional[dict]:
         for u in self._load_users():
             if u["username"] == username:
@@ -59,6 +72,32 @@ class AuthService:
             if u["id"] == user_id:
                 return u
         return None
+
+    def ensure_local_user(self, user_id: str, username: str) -> dict:
+        users = self._load_users()
+        now = datetime.now().isoformat()
+
+        for user in users:
+            if user["id"] == user_id:
+                user["username"] = username
+                user["is_admin"] = True
+                user.setdefault("created_at", now)
+                if not user.get("password_hash"):
+                    user["password_hash"] = pwd_context.hash(secrets.token_hex(16))
+                self._save_users(users)
+                return user
+
+        user = {
+            "id": user_id,
+            "username": username,
+            "password_hash": pwd_context.hash(secrets.token_hex(16)),
+            "is_admin": True,
+            "created_at": now,
+        }
+        users.append(user)
+        self._save_users(users)
+        logger.info("Created local admin user: %s (%s)", username, user_id)
+        return user
 
     def register(self, username: str, password: str, is_admin: bool = False) -> dict:
         if self._find_user(username):
@@ -116,10 +155,101 @@ class AuthService:
         payload = {"sub": user_id, "exp": expire}
         return jwt.encode(payload, self._jwt_secret, algorithm=JWT_ALGORITHM)
 
+    def create_sync_token(self, user_id: str, device_name: str = "") -> dict:
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("用户不存在")
+
+        now_dt = datetime.utcnow()
+        now = now_dt.isoformat()
+        device_id = uuid.uuid4().hex
+        normalized_name = (device_name or "iPaper Electron").strip() or "iPaper Electron"
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "sid": device_id,
+                "typ": SYNC_TOKEN_TYPE,
+                "iat": int(now_dt.timestamp()),
+            },
+            self._jwt_secret,
+            algorithm=JWT_ALGORITHM,
+        )
+        devices = self._load_sync_devices()
+        devices.append({
+            "device_id": device_id,
+            "user_id": user_id,
+            "device_name": normalized_name,
+            "created_at": now,
+            "last_used_at": None,
+            "revoked_at": None,
+        })
+        self._save_sync_devices(devices)
+        return {
+            "device_id": device_id,
+            "device_name": normalized_name,
+            "created_at": now,
+            "token": token,
+        }
+
+    def list_sync_devices(self, user_id: str) -> List[dict]:
+        return [
+            {
+                "device_id": device["device_id"],
+                "device_name": device.get("device_name", ""),
+                "created_at": device.get("created_at"),
+                "last_used_at": device.get("last_used_at"),
+                "revoked_at": device.get("revoked_at"),
+            }
+            for device in self._load_sync_devices()
+            if device.get("user_id") == user_id
+        ]
+
+    def revoke_sync_device(self, user_id: str, device_id: str) -> bool:
+        devices = self._load_sync_devices()
+        changed = False
+        for device in devices:
+            if device.get("user_id") == user_id and device.get("device_id") == device_id and not device.get("revoked_at"):
+                device["revoked_at"] = datetime.utcnow().isoformat()
+                changed = True
+                break
+        if changed:
+            self._save_sync_devices(devices)
+        return changed
+
+    def get_user_by_sync_token(self, token: str) -> Optional[dict]:
+        try:
+            payload = jwt.decode(token, self._jwt_secret, algorithms=[JWT_ALGORITHM])
+        except JWTError:
+            return None
+
+        if payload.get("typ") != SYNC_TOKEN_TYPE:
+            return None
+
+        user_id = payload.get("sub")
+        device_id = payload.get("sid")
+        if not user_id or not device_id:
+            return None
+
+        devices = self._load_sync_devices()
+        matched_device = None
+        for device in devices:
+            if device.get("user_id") == user_id and device.get("device_id") == device_id:
+                matched_device = device
+                break
+        if not matched_device or matched_device.get("revoked_at"):
+            return None
+
+        matched_device["last_used_at"] = datetime.utcnow().isoformat()
+        self._save_sync_devices(devices)
+        return self.get_user_by_id(user_id)
+
     def get_current_user(self, token: str) -> Optional[dict]:
         try:
             payload = jwt.decode(token, self._jwt_secret, algorithms=[JWT_ALGORITHM])
         except JWTError:
+            return None
+
+        if payload.get("typ") == SYNC_TOKEN_TYPE:
             return None
 
         user_id = payload.get("sub")

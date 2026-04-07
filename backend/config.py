@@ -24,6 +24,7 @@ class ProfileAnalysisConfig(BaseSettings):
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_SYNC_URL = "https://www.moshang.xyz/ipaper/api"
 
 
 class Settings(BaseSettings):
@@ -48,8 +49,8 @@ class Settings(BaseSettings):
     invite_code: str = ""
     
     # Electron 双向同步配置
-    sync_url: str = ""      # 云端 API 地址，如 https://www.moshang.xyz/ipaper/api
-    sync_token: str = ""    # 用于同步的 JWT token
+    sync_url: str = DEFAULT_SYNC_URL   # 固定云端 API 地址
+    sync_token: str = ""               # 本机设备级同步 token
     
     class Config:
         env_prefix = "IPAPER_"
@@ -77,6 +78,10 @@ class Settings(BaseSettings):
                     self.hjfy_cookie = data["hjfy_cookie"]
                 if "invite_code" in data:
                     self.invite_code = data["invite_code"]
+                if "sync_url" in data:
+                    self.sync_url = data["sync_url"]
+                if "sync_token" in data:
+                    self.sync_token = data["sync_token"]
 
     def load_user_config(self, user_id: str) -> dict:
         """加载用户私有配置（hjfy_cookie 等）"""
@@ -97,7 +102,11 @@ class Settings(BaseSettings):
     def save_config(self):
         """保存全局配置到文件"""
         config_file = self.data_dir / "config.json"
-        data = {
+        data = {}
+        if config_file.exists():
+            with open(config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data.update({
             "llm": {
                 "api_base": self.llm.api_base,
                 "api_key": self.llm.api_key,
@@ -106,7 +115,10 @@ class Settings(BaseSettings):
                 "max_tokens": self.llm.max_tokens,
             },
             "hjfy_cookie": self.hjfy_cookie,
-        }
+            "invite_code": self.invite_code,
+            "sync_url": self.sync_url,
+            "sync_token": self.sync_token,
+        })
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 

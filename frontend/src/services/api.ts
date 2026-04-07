@@ -39,6 +39,18 @@ export interface AuthUser {
   is_admin?: boolean
 }
 
+export interface SyncDevice {
+  device_id: string
+  device_name: string
+  created_at: string
+  last_used_at?: string | null
+  revoked_at?: string | null
+}
+
+export interface SyncDeviceTokenResponse extends SyncDevice {
+  token: string
+}
+
 export interface AuthResponse {
   access_token: string
   token_type: string
@@ -276,6 +288,7 @@ export interface ChatMessage {
 export interface ChatDraft {
   input: string
   quotes?: QuoteInput[]
+  page_selections?: PaperPageSelectionInput[]
 }
 
 export interface ForkData {
@@ -344,11 +357,39 @@ export interface QuoteInput {
   source: 'pdf' | 'chat'
 }
 
+export interface PageRangeInput {
+  start: number
+  end: number
+}
+
+export interface PaperPageSelectionInput {
+  paper_id: string
+  ranges: PageRangeInput[]
+}
+
+export interface PageSelectionRequirement {
+  paper_id: string
+  title: string
+  total_pages: number
+  selected_ranges?: PageRangeInput[]
+}
+
+export class PageSelectionRequiredError extends Error {
+  requirements: PageSelectionRequirement[]
+
+  constructor(message: string, requirements: PageSelectionRequirement[]) {
+    super(message)
+    this.name = 'PageSelectionRequiredError'
+    this.requirements = requirements
+  }
+}
+
 export async function* sendMessage(
   paperId: string,
   sessionId: string,
   message: string,
   quotes?: QuoteInput[],
+  pageSelections?: PaperPageSelectionInput[],
   signal?: AbortSignal
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
   const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}`, {
@@ -359,12 +400,19 @@ export async function* sendMessage(
     body: JSON.stringify({
       message,
       quotes: quotes && quotes.length > 0 ? quotes : undefined,
+      page_selections: pageSelections && pageSelections.length > 0 ? pageSelections : undefined,
     }),
     signal,
   })
 
   if (!response.ok) {
-    const error = await response.json()
+    const error = await response.json().catch(() => ({}))
+    if (response.status === 409 && error?.detail?.code === 'page_selection_required') {
+      throw new PageSelectionRequiredError(
+        error.detail.message || '需要选择保留页码',
+        error.detail.requirements || []
+      )
+    }
     throw new Error(error.detail || 'Failed to send message')
   }
 
@@ -529,6 +577,7 @@ export async function* sendCrossPaperMessage(
   sessionId: string,
   message: string,
   quotes?: QuoteInput[],
+  pageSelections?: PaperPageSelectionInput[],
   signal?: AbortSignal
 ): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
   const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}`, {
@@ -537,12 +586,19 @@ export async function* sendCrossPaperMessage(
     body: JSON.stringify({
       message,
       quotes: quotes && quotes.length > 0 ? quotes : undefined,
+      page_selections: pageSelections && pageSelections.length > 0 ? pageSelections : undefined,
     }),
     signal,
   })
 
   if (!response.ok) {
-    const error = await response.json()
+    const error = await response.json().catch(() => ({}))
+    if (response.status === 409 && error?.detail?.code === 'page_selection_required') {
+      throw new PageSelectionRequiredError(
+        error.detail.message || '需要选择保留页码',
+        error.detail.requirements || []
+      )
+    }
     throw new Error(error.detail || 'Failed to send cross-paper message')
   }
 
@@ -596,6 +652,10 @@ export interface Config {
   }
   data_dir: string
   hjfy_cookie_configured: boolean
+  sync: {
+    url: string
+    token_configured: boolean
+  }
 }
 
 export async function getConfig(): Promise<Config> {
@@ -621,6 +681,23 @@ export async function updateLLMConfig(config: {
   })
   if (!response.ok) {
     throw new Error('Failed to update config')
+  }
+}
+
+export async function updateSyncConfig(config: {
+  sync_url?: string
+  sync_token?: string
+  clear_sync_token?: boolean
+}): Promise<void> {
+  const response = await authFetch(`${API_BASE}/config/sync`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update sync config')
   }
 }
 
@@ -773,6 +850,33 @@ export async function updateInviteCode(code: string): Promise<void> {
     body: JSON.stringify({ invite_code: code }),
   })
   if (!response.ok) throw new Error('Failed to update invite code')
+}
+
+export async function listSyncDevices(): Promise<SyncDevice[]> {
+  const response = await authFetch(`${API_BASE}/auth/admin/sync-devices`)
+  if (!response.ok) throw new Error('Failed to list sync devices')
+  return response.json()
+}
+
+export async function createSyncDevice(deviceName: string): Promise<SyncDeviceTokenResponse> {
+  const response = await authFetch(`${API_BASE}/auth/admin/sync-devices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_name: deviceName }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to create sync device')
+  }
+  return response.json()
+}
+
+export async function revokeSyncDevice(deviceId: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/auth/admin/sync-devices/${deviceId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to revoke sync device')
+  }
 }
 
 export async function changePassword(newPassword: string): Promise<void> {

@@ -114,7 +114,9 @@ class ArxivService:
             meta_file = paper_dir / "meta.json"
             if meta_file.exists():
                 papers.append(self._load_meta(meta_file))
-        
+
+        # Keep the library aligned with add order even if index.json was rebuilt.
+        papers.sort(key=lambda paper: paper.download_time)
         return papers
     
     def delete_paper(self, user_id: str, arxiv_id: str) -> bool:
