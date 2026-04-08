@@ -97,6 +97,7 @@ interface ChatStore {
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
 const STREAM_HISTORY_PERSIST_DELAY_MS = 300
+const initialSessionBootstrapPromises = new Map<string, Promise<api.SessionMeta>>()
 const buildDraft = (
   input: string,
   quotes: QuoteItem[],
@@ -154,6 +155,78 @@ function sanitizeLoadedMessages(messages: api.ChatMessage[]): {
   return {
     messages: sanitizedMessages,
     removedTrailingEmptyAssistant: sanitizedMessages.length !== messages.length,
+  }
+}
+
+async function ensureInitialSession(paperId: string): Promise<api.SessionMeta> {
+  const existingPromise = initialSessionBootstrapPromises.get(paperId)
+  if (existingPromise) return existingPromise
+
+  const promise = api.createSession(paperId, '自动讲解').finally(() => {
+    initialSessionBootstrapPromises.delete(paperId)
+  })
+  initialSessionBootstrapPromises.set(paperId, promise)
+  return promise
+}
+
+async function removeEmptyAutoSessions(
+  paperId: string,
+  sessions: api.SessionMeta[],
+  lastActiveSessionId: string | null
+): Promise<{ sessions: api.SessionMeta[]; lastActiveSessionId: string | null }> {
+  if (sessions.length <= 1) {
+    return { sessions, lastActiveSessionId }
+  }
+
+  const sessionStates = await Promise.all(
+    sessions.map(async (session) => {
+      if (session.title !== '自动讲解') {
+        return { session, shouldDelete: false }
+      }
+      try {
+        const history = await getChatHistoryOffline(paperId, session.id)
+        const { messages } = sanitizeLoadedMessages(history.messages)
+        const hasMeaningfulMessages = messages.some((message) =>
+          message.role === 'user' || (message.role === 'assistant' && Boolean(message.content?.trim()))
+        )
+        return { session, shouldDelete: !hasMeaningfulMessages }
+      } catch {
+        return { session, shouldDelete: false }
+      }
+    })
+  )
+
+  const hasMeaningfulSession = sessionStates.some(({ session, shouldDelete }) => session.title !== '自动讲解' || !shouldDelete)
+  if (!hasMeaningfulSession) {
+    return { sessions, lastActiveSessionId }
+  }
+
+  const deletableIds = sessionStates
+    .filter(({ shouldDelete }) => shouldDelete)
+    .map(({ session }) => session.id)
+
+  if (deletableIds.length === 0 || deletableIds.length === sessions.length) {
+    return { sessions, lastActiveSessionId }
+  }
+
+  await Promise.all(
+    deletableIds.map(async (sessionId) => {
+      try {
+        await api.deleteSession(paperId, sessionId)
+      } catch {
+        // best effort cleanup; keep session locally if deletion fails
+      }
+    })
+  )
+
+  const filteredSessions = sessions.filter((session) => !deletableIds.includes(session.id))
+  const nextActiveSessionId = lastActiveSessionId && !deletableIds.includes(lastActiveSessionId)
+    ? lastActiveSessionId
+    : (filteredSessions[0]?.id ?? null)
+
+  return {
+    sessions: filteredSessions,
+    lastActiveSessionId: nextActiveSessionId,
   }
 }
 
@@ -237,10 +310,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     try {
       const sessionList = await listSessionsOffline(paperId)
-      const sessions = sessionList.sessions
+      const cleanedSessionState = await removeEmptyAutoSessions(
+        paperId,
+        sessionList.sessions,
+        sessionList.last_active_session_id
+      )
+      const sessions = cleanedSessionState.sessions
 
       if (sessions.length === 0) {
-        const newSession = await api.createSession(paperId, '自动讲解')
+        const newSession = await ensureInitialSession(paperId)
         set({ sessions: [newSession], currentSessionId: newSession.id })
         setTimeout(() => {
           const store = get()
@@ -251,7 +329,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         return
       }
 
-      const activeId = sessionList.last_active_session_id || sessions[0].id
+      const activeId = cleanedSessionState.lastActiveSessionId || sessions[0].id
       set({ sessions, currentSessionId: activeId, isLoading: true })
 
       const store = get()
