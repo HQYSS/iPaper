@@ -36,7 +36,7 @@ lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null && sleep 1
 
 echo "启动后端..."
 cd backend
-python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
+IPAPER_SYNC_ROLE=client python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
 BACKEND_PID=$!
 echo $BACKEND_PID > "$PID_FILE"
 cd "$SCRIPT_DIR"

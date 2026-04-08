@@ -657,6 +657,7 @@ export interface Config {
   data_dir: string
   hjfy_cookie_configured: boolean
   sync: {
+    role: 'server' | 'client' | 'off'
     url: string
     token_configured: boolean
   }

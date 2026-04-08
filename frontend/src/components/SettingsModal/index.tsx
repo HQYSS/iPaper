@@ -25,6 +25,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
+  const [syncRole, setSyncRole] = useState<'server' | 'client' | 'off'>('server')
   const [syncUrl, setSyncUrl] = useState('')
   const [syncToken, setSyncToken] = useState('')
   const [syncConfigured, setSyncConfigured] = useState(false)
@@ -43,6 +44,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setModel(config.llm.model)
       setIsConfigured(config.llm.api_key_configured)
       setApiKey('')
+      setSyncRole(config.sync.role)
       setSyncUrl(config.sync.url || '')
       setSyncToken('')
       setSyncConfigured(config.sync.token_configured)
@@ -96,7 +98,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const handleSave = async () => {
     const trimmedApiKey = apiKey.trim()
     const trimmedSyncToken = syncToken.trim()
-    const syncChanged = Boolean(trimmedSyncToken)
+    const syncChanged = syncRole === 'client' && Boolean(trimmedSyncToken)
 
     if (!trimmedApiKey && !syncChanged) return
 
@@ -126,6 +128,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   }
 
   const handleClearSyncToken = async () => {
+    if (syncRole !== 'client') return
     setIsSaving(true)
     try {
       await updateSyncConfig({ clear_sync_token: true })
@@ -140,6 +143,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   }
 
   if (!open) return null
+
+  const syncRoleLabel = syncRole === 'client' ? '同步客户端' : syncRole === 'server' ? '被动同步服务端' : '同步已禁用'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -225,17 +230,19 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                   {env.isElectron && (
                     <div className={cn(
                       'flex items-center gap-3 px-4 py-3 rounded-xl text-sm',
-                      syncConfigured
+                      syncRole === 'client' && syncConfigured
                         ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
                         : 'bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400'
                     )}>
                       <div className={cn(
                         'w-2 h-2 rounded-full',
-                        syncConfigured
+                        syncRole === 'client' && syncConfigured
                           ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
                           : 'bg-slate-400'
                       )} />
-                      {syncConfigured ? '设备同步已连接' : '设备同步未连接'}
+                      {syncRole === 'client'
+                        ? (syncConfigured ? '设备同步已连接' : '设备同步未连接')
+                        : `当前角色：${syncRoleLabel}`}
                     </div>
                   )}
                 </div>
@@ -290,13 +297,17 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                   </label>
                   <div className="space-y-2">
                     <div className="px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                      云端地址已经固定为唯一线上环境，不再需要手动填写。普通登录 token 不再用于同步；本地 Electron 只需要一枚专用的设备同步凭证。
+                      {syncRole === 'client'
+                        ? '当前这台本地 Electron 后端会主动把本地数据同步到固定云端。普通登录 token 不用于同步；这里只需要一枚专用的设备同步凭证。'
+                        : syncRole === 'server'
+                          ? '当前后端角色是被动同步服务端：它只响应 `/api/sync/*` 请求，不会主动轮询、也不会自动推送任何本地改动。'
+                          : '当前后端已禁用主动同步能力。'}
                     </div>
                     <div className="flex items-center justify-between px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-                      <span className="text-slate-500 dark:text-slate-400">固定云端</span>
+                      <span className="text-slate-500 dark:text-slate-400">{`同步角色：${syncRoleLabel}`}</span>
                       <code className="text-xs font-mono text-slate-700 dark:text-slate-300">{syncUrl}</code>
                     </div>
-                    {env.isElectron ? (
+                    {env.isElectron && syncRole === 'client' ? (
                       <>
                         <input
                           type="password"
@@ -323,7 +334,9 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                       </>
                     ) : (
                       <p className="text-xs text-slate-400 leading-relaxed">
-                        你当前在云端网页端。若要让某台本地 Electron 同步到这里，请到下方管理员页的“云端同步设备”里生成一枚设备凭证，再粘贴到那台本地 Electron。
+                        {syncRole === 'server'
+                          ? '你当前在云端服务端。若要让某台本地 Electron 同步到这里，请到下方管理员页的“云端同步设备”里生成一枚设备凭证，再粘贴到那台本地 Electron。'
+                          : '当前页面不提供主动同步客户端配置。'}
                       </p>
                     )}
                   </div>
@@ -437,13 +450,13 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={(!apiKey.trim() && !syncToken.trim()) || isSaving}
+                  disabled={(!apiKey.trim() && !(syncRole === 'client' && syncToken.trim())) || isSaving}
                   className={cn(
                     "flex-1 px-4 py-2.5 text-sm font-medium rounded-xl flex items-center justify-center gap-2 transition-all",
                     saveSuccess
                       ? "bg-emerald-500 text-white"
                       : "bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 shadow-sm shadow-indigo-500/20",
-                    (!apiKey.trim() || isSaving) && "opacity-50 cursor-not-allowed"
+                    (!apiKey.trim() && !(syncRole === 'client' && syncToken.trim()) || isSaving) && "opacity-50 cursor-not-allowed"
                   )}
                 >
                   {isSaving ? (

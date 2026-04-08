@@ -81,6 +81,10 @@ class SyncService:
         self._last_local_fingerprint = ""
         self._last_remote_fingerprint = ""
 
+    @staticmethod
+    def _client_role_required() -> bool:
+        return settings.is_sync_client
+
     def get_manifest(self, user_id: str) -> SyncManifest:
         papers_dir = settings.get_user_papers_dir(user_id)
         items: List[SyncManifestItem] = []
@@ -351,7 +355,7 @@ class SyncService:
         self._write_json(index_file, {"papers": papers})
 
     def request_sync(self, reason: str = "local-change", paper_id: Optional[str] = None) -> None:
-        if settings.host != "127.0.0.1":
+        if not self._client_role_required():
             return
         if paper_id:
             self._priority_paper_ids.add(paper_id)
@@ -366,7 +370,7 @@ class SyncService:
         logger.warning("Scheduled local sync: %s paper=%s", reason, paper_id)
 
     async def startup(self) -> None:
-        if settings.host != "127.0.0.1":
+        if not self._client_role_required():
             return
         if self._task and not self._task.done():
             return
@@ -376,6 +380,8 @@ class SyncService:
         logger.info("Local background sync worker started")
 
     async def shutdown(self) -> None:
+        if not self._client_role_required():
+            return
         if self._debounced_task and not self._debounced_task.done():
             self._debounced_task.cancel()
         if not self._task:
@@ -427,6 +433,8 @@ class SyncService:
         return f"{sync_url}/api/sync"
 
     async def _sync_once(self, user_id: str, reason: str) -> None:
+        if not self._client_role_required():
+            return
         sync_token = settings.sync_token.strip()
         sync_base = self._normalize_sync_base()
         if not sync_token or not sync_base:

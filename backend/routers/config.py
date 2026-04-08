@@ -31,6 +31,7 @@ async def get_config(user: dict = Depends(get_current_user)):
         "data_dir": str(settings.data_dir),
         "hjfy_cookie_configured": bool(user_cfg.get("hjfy_cookie", "") or settings.hjfy_cookie),
         "sync": {
+            "role": settings.sync_role,
             "url": settings.sync_url,
             "token_configured": bool(settings.sync_token),
         },
@@ -86,6 +87,8 @@ async def update_hjfy_cookie(update: HjfyCookieUpdate, user: dict = Depends(get_
 
 @router.put("/sync")
 async def update_sync_config(update: SyncConfigUpdate, user: dict = Depends(get_current_user)):
+    if not settings.is_sync_client:
+        raise HTTPException(status_code=400, detail="当前后端不是同步客户端，不能修改本机同步配置")
     if update.sync_url is not None:
         settings.sync_url = update.sync_url.strip()
     if update.clear_sync_token:

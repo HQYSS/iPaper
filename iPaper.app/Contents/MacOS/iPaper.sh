@@ -31,7 +31,7 @@ cleanup() {
 
 start_backend() {
     cd "$PROJECT_DIR/backend"
-    nohup "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT > "$LOG_DIR/backend.log" 2>&1 &
+    nohup env IPAPER_SYNC_ROLE=client "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT > "$LOG_DIR/backend.log" 2>&1 &
     echo $! > "$PID_FILE"
 }
 

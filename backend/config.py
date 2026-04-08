@@ -6,6 +6,8 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
+VALID_SYNC_ROLES = {"server", "client", "off"}
+
 
 class LLMConfig(BaseSettings):
     """LLM 配置"""
@@ -49,6 +51,7 @@ class Settings(BaseSettings):
     invite_code: str = ""
     
     # Electron 双向同步配置
+    sync_role: str = ""                 # server | client | off
     sync_url: str = DEFAULT_SYNC_URL   # 固定云端 API 地址
     sync_token: str = ""               # 本机设备级同步 token
     
@@ -59,6 +62,7 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
         self._ensure_dirs()
         self._load_config_file()
+        self.sync_role = self._resolve_sync_role()
     
     def _ensure_dirs(self):
         """确保必要的目录存在"""
@@ -78,10 +82,33 @@ class Settings(BaseSettings):
                     self.hjfy_cookie = data["hjfy_cookie"]
                 if "invite_code" in data:
                     self.invite_code = data["invite_code"]
+                if not self.sync_role and "sync_role" in data:
+                    self.sync_role = data["sync_role"]
                 if "sync_url" in data:
                     self.sync_url = data["sync_url"]
                 if "sync_token" in data:
                     self.sync_token = data["sync_token"]
+
+    @staticmethod
+    def _normalize_sync_role(value: str) -> str:
+        normalized = (value or "").strip().lower()
+        return normalized if normalized in VALID_SYNC_ROLES else ""
+
+    def _resolve_sync_role(self) -> str:
+        normalized = self._normalize_sync_role(self.sync_role)
+        return normalized or "server"
+
+    @property
+    def is_sync_client(self) -> bool:
+        return self.sync_role == "client"
+
+    @property
+    def is_sync_server(self) -> bool:
+        return self.sync_role == "server"
+
+    @property
+    def is_sync_disabled(self) -> bool:
+        return self.sync_role == "off"
 
     def load_user_config(self, user_id: str) -> dict:
         """加载用户私有配置（hjfy_cookie 等）"""
@@ -116,6 +143,7 @@ class Settings(BaseSettings):
             },
             "hjfy_cookie": self.hjfy_cookie,
             "invite_code": self.invite_code,
+            "sync_role": self.sync_role,
             "sync_url": self.sync_url,
             "sync_token": self.sync_token,
         })
