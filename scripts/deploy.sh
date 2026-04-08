@@ -20,14 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 check_remote_worktree_clean() {
     local status_output
-    status_output=$(ssh aws "cd ~/iPaper && python3 -c \"from pathlib import Path; import subprocess; repo = Path.home() / 'iPaper'; [p.unlink() for p in repo.rglob('._*') if p.is_file()]; lines = subprocess.run(['git', 'status', '--short', '--untracked-files=all'], capture_output=True, text=True).stdout.splitlines(); allowed = ('backend/venv', 'frontend/dist'); kept = []; \
-for line in lines: \
-    path = line[3:].strip(); \
-    path = path[1:-1] if path.startswith(chr(34)) and path.endswith(chr(34)) else path; \
-    if path in allowed or any(path.startswith(prefix + '/') for prefix in allowed): \
-        continue; \
-    kept.append(line); \
-print('\\n'.join(kept))\"")
+    status_output=$(ssh aws 'cd ~/iPaper && python3 -c "from pathlib import Path; repo = Path.home() / \"iPaper\"; [p.unlink() for p in repo.rglob(\"._*\") if p.is_file()]" >/dev/null 2>&1 && git status --short --untracked-files=all | while IFS= read -r line; do path=${line:3}; path=${path#\"}; path=${path%\"}; case "$path" in backend/venv|backend/venv/*|frontend/dist|frontend/dist/*) ;; *) printf "%s\n" "$line" ;; esac; done')
     if [[ -n "$status_output" ]]; then
         echo "$status_output"
         error "服务器工作树不干净，请先备份并清理远端改动后再部署"
