@@ -67,7 +67,16 @@ if [[ "$HAS_FRONTEND" -gt 0 ]]; then
     cd frontend && npm run build && cd ..
 
     info "上传到服务器..."
-    COPYFILE_DISABLE=1 tar czf /tmp/dist.tar.gz -C frontend dist/
+    python - <<'PY'
+import tarfile
+from pathlib import Path
+
+source_dir = Path("frontend/dist")
+target_path = Path("/tmp/dist.tar.gz")
+
+with tarfile.open(target_path, "w:gz") as archive:
+    archive.add(source_dir, arcname="dist")
+PY
     scp /tmp/dist.tar.gz aws:/tmp/
     ssh aws "cd ~/iPaper/frontend && rm -rf dist && tar xzf /tmp/dist.tar.gz && rm /tmp/dist.tar.gz"
     rm -f /tmp/dist.tar.gz
