@@ -4,9 +4,14 @@ const { spawn } = require('child_process')
 
 const isDev = process.argv.includes('--dev') || process.env.NODE_ENV === 'development'
 const BACKEND_URL = 'http://127.0.0.1:3000/'
+const SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock()
 
 let mainWindow
 let backendProcess
+
+if (!SINGLE_INSTANCE_LOCK) {
+  app.quit()
+}
 
 function startBackend() {
   const backendPath = path.join(__dirname, '..', 'backend')
@@ -97,6 +102,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (!SINGLE_INSTANCE_LOCK) return
   startBackend()
 
   try {
@@ -112,6 +118,14 @@ app.whenReady().then(async () => {
       createWindow()
     }
   })
+})
+
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.focus()
 })
 
 app.on('window-all-closed', () => {

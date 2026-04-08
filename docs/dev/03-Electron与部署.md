@@ -57,6 +57,7 @@ webPreferences: {
 - Electron 启动时自动启动后端进程
 - Electron 通过环境变量显式将本地后端标记为 `sync_role=client`
 - 主动同步职责完全下沉到本地后端；Electron 主进程不再保留第二套 `syncOnce()/startSyncLoops()` 逻辑
+- Electron 通过 `app.requestSingleInstanceLock()` 强制单实例运行；再次启动会聚焦已有窗口，而不是并行跑第二只旧主进程
 - 只要本地后端在跑，本地写操作就会自动推云端；关闭 Electron 时会一并结束本地后端
 - 当前默认云端固定为 `https://www.moshang.xyz/ipaper/api`
 - 云端同步使用专用设备凭证，不再复用网页登录 JWT
@@ -123,7 +124,7 @@ start_electron()    # 启动 Electron（前台运行）
 - 日志输出到 `项目根目录/logs/`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
-- cleanup 还会主动清掉旧 Electron 主进程，并强制回收 `5173` 端口，避免出现“老 Electron 壳 + 新前后端服务”的混合运行态
+- cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁，避免出现“老 Electron 壳 + 新前后端服务”的混合运行态
 
 **注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。`start-cursor-mode.sh` 也使用相同的 PID 文件 + 端口清理机制。
 

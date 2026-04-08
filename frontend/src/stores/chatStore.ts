@@ -146,6 +146,17 @@ function removeTrailingEmptyAssistant(messages: api.ChatMessage[]): api.ChatMess
   return nextMessages
 }
 
+function sanitizeLoadedMessages(messages: api.ChatMessage[]): {
+  messages: api.ChatMessage[]
+  removedTrailingEmptyAssistant: boolean
+} {
+  const sanitizedMessages = removeTrailingEmptyAssistant(messages)
+  return {
+    messages: sanitizedMessages,
+    removedTrailingEmptyAssistant: sanitizedMessages.length !== messages.length,
+  }
+}
+
 function createHistoryPersistController(persist: () => Promise<void>) {
   let timer: number | null = null
 
@@ -306,6 +317,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     try {
       const history = await getChatHistoryOffline(paperId, sessionId)
       const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+      const { messages: sanitizedMessages, removedTrailingEmptyAssistant } = sanitizeLoadedMessages(history.messages)
+      if (removedTrailingEmptyAssistant) {
+        void updateChatHistoryOffline(paperId, sessionId, sanitizedMessages, history.forks)
+      }
       set((state) => {
         const nextSelections = { ...state.pageSelectionsByConversation }
         if (history.draft?.page_selections) {
@@ -314,7 +329,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           delete nextSelections[selectionKey]
         }
         return {
-          messages: history.messages,
+          messages: sanitizedMessages,
           forks: history.forks || {},
           draftInput: history.draft?.input || '',
           quotes: history.draft?.quotes || [],
@@ -690,6 +705,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     try {
       const history = await getCrossPaperChatHistoryOffline(sessionId)
       const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+      const { messages: sanitizedMessages, removedTrailingEmptyAssistant } = sanitizeLoadedMessages(history.messages)
+      if (removedTrailingEmptyAssistant) {
+        void updateCrossPaperChatHistoryOffline(sessionId, sanitizedMessages, history.forks)
+      }
       set((state) => {
         const nextSelections = { ...state.pageSelectionsByConversation }
         if (history.draft?.page_selections) {
@@ -698,7 +717,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           delete nextSelections[selectionKey]
         }
         return {
-          messages: history.messages,
+          messages: sanitizedMessages,
           forks: history.forks || {},
           draftInput: history.draft?.input || '',
           quotes: history.draft?.quotes || [],

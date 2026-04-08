@@ -18,6 +18,15 @@ info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
+check_remote_worktree_clean() {
+    local status_output
+    status_output=$(ssh aws "cd ~/iPaper && git status --short")
+    if [[ -n "$status_output" ]]; then
+        echo "$status_output"
+        error "服务器工作树不干净，请先备份并清理远端改动后再部署"
+    fi
+}
+
 HAS_FRONTEND=0
 HAS_BACKEND=0
 
@@ -46,8 +55,11 @@ fi
 info "推送到远程..."
 git push
 
+info "检查服务器工作树..."
+check_remote_worktree_clean
+
 info "服务器拉取代码..."
-ssh aws "cd ~/iPaper && git pull"
+ssh aws "cd ~/iPaper && git pull --ff-only"
 
 if [[ "$HAS_FRONTEND" -gt 0 ]]; then
     info "=== 部署前端 ==="
@@ -55,7 +67,7 @@ if [[ "$HAS_FRONTEND" -gt 0 ]]; then
     cd frontend && npm run build && cd ..
 
     info "上传到服务器..."
-    tar czf /tmp/dist.tar.gz -C frontend dist/
+    COPYFILE_DISABLE=1 tar czf /tmp/dist.tar.gz -C frontend dist/
     scp /tmp/dist.tar.gz aws:/tmp/
     ssh aws "cd ~/iPaper/frontend && rm -rf dist && tar xzf /tmp/dist.tar.gz && rm /tmp/dist.tar.gz"
     rm -f /tmp/dist.tar.gz

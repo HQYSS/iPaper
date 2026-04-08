@@ -15,14 +15,19 @@ BACKEND_PORT=3000
 FRONTEND_PORT=5173
 PID_FILE="$LOG_DIR/backend.pid"
 
+kill_pattern_if_running() {
+    local pattern="$1"
+    pgrep -f "$pattern" >/dev/null 2>&1 && pkill -f "$pattern" 2>/dev/null || true
+}
+
 cleanup() {
     # 1. PID 文件精准清理
     if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null
         rm -f "$PID_FILE"
     fi
-    pkill -f "uvicorn main:app" 2>/dev/null
-    pkill -f "/Users/admin/workspace/iPaper/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron . --dev --skip-backend" 2>/dev/null
+    kill_pattern_if_running "uvicorn main:app"
+    kill_pattern_if_running "Electron \\. --dev --skip-backend"
     sleep 1
     # 2. 端口兜底：不管什么进程，确保端口腾出来
     lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null

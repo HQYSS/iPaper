@@ -10,6 +10,11 @@ FRONTEND_PORT=5173
 PID_FILE="$SCRIPT_DIR/logs/backend.pid"
 mkdir -p "$SCRIPT_DIR/logs"
 
+kill_pattern_if_running() {
+    local pattern="$1"
+    pgrep -f "$pattern" >/dev/null 2>&1 && pkill -f "$pattern" 2>/dev/null || true
+}
+
 cleanup() {
     echo "正在关闭服务..."
     if [ -f "$PID_FILE" ]; then
@@ -32,6 +37,7 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 # 端口兜底
+kill_pattern_if_running "uvicorn main:app"
 lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null && sleep 1
 
 echo "启动后端..."
