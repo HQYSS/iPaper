@@ -20,7 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 check_remote_worktree_clean() {
     local status_output
-    status_output=$(ssh aws "cd ~/iPaper && python3 -c \"from pathlib import Path; repo = Path.home() / 'iPaper'; [p.unlink() for p in repo.rglob('._*') if p.is_file()]\" >/dev/null 2>&1 && git status --short --untracked-files=all | grep -vE '^\?\? backend/venv/?$|^\?\? frontend/dist/?$' || true")
+    status_output=$(ssh aws "cd ~/iPaper && python3 -c \"from pathlib import Path; repo = Path.home() / 'iPaper'; [p.unlink() for p in repo.rglob('._*') if p.is_file()]\" >/dev/null 2>&1 && git status --short --untracked-files=all | grep -vE '^\?\? backend/venv(/.*)?$|^\?\? frontend/dist(/.*)?$' || true")
     if [[ -n "$status_output" ]]; then
         echo "$status_output"
         error "服务器工作树不干净，请先备份并清理远端改动后再部署"
