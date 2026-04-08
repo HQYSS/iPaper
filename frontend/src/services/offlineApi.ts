@@ -10,8 +10,10 @@ import {
   authFetch,
   getAuthToken,
   type PaperListItem,
+  type ChatMessage,
   type ChatHistory,
   type CrossPaperChatHistory,
+  type ForkData,
   type SessionList,
   type CrossPaperSessionList,
   type PdfLang,
@@ -240,6 +242,18 @@ export async function updateChatHistoryOffline(
   if (resp.status !== 202 && !resp.ok) {
     throw new Error('Failed to update chat history')
   }
+  try {
+    const cached = await getCachedChatHistory(paperId, sessionId)
+    await cacheChatHistory(paperId, sessionId, {
+      paper_id: cached?.paper_id ?? paperId,
+      session_id: cached?.session_id ?? sessionId,
+      messages: messages as ChatMessage[],
+      forks: forks as Record<string, ForkData> | undefined,
+      draft: cached?.draft,
+    })
+  } catch {
+    // IndexedDB 写缓存失败不影响主流程
+  }
 }
 
 export async function updateCrossPaperChatHistoryOffline(
@@ -254,6 +268,18 @@ export async function updateCrossPaperChatHistoryOffline(
   )
   if (resp.status !== 202 && !resp.ok) {
     throw new Error('Failed to update cross-paper chat history')
+  }
+  try {
+    const cached = await getCachedCrossPaperChatHistory(sessionId)
+    await cacheCrossPaperChatHistory(sessionId, {
+      session_id: cached?.session_id ?? sessionId,
+      paper_ids: cached?.paper_ids ?? [],
+      messages: messages as ChatMessage[],
+      forks: forks as Record<string, ForkData> | undefined,
+      draft: cached?.draft,
+    })
+  } catch {
+    // IndexedDB 写缓存失败不影响主流程
   }
 }
 

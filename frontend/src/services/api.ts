@@ -421,6 +421,8 @@ export async function* sendMessage(
     throw new Error('No response body')
   }
 
+  yield { type: 'open' }
+
   const decoder = new TextDecoder()
   let buffer = ''
   const flushBuffer = function* (rawBuffer: string) {
@@ -606,6 +608,8 @@ export async function* sendCrossPaperMessage(
   if (!reader) {
     throw new Error('No response body')
   }
+
+  yield { type: 'open' }
 
   const decoder = new TextDecoder()
   let buffer = ''

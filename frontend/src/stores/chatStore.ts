@@ -96,6 +96,7 @@ interface ChatStore {
 }
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
+const STREAM_HISTORY_PERSIST_DELAY_MS = 300
 const buildDraft = (
   input: string,
   quotes: QuoteItem[],
@@ -110,6 +111,77 @@ const getConversationSelectionKey = (
   sessionId: string,
   isCrossMode: boolean
 ) => (isCrossMode ? `cross:${sessionId}` : `paper:${paperId}:${sessionId}`)
+
+function cloneChatMessage(message: api.ChatMessage): api.ChatMessage {
+  return {
+    ...message,
+    quotes: message.quotes ? message.quotes.map((quote) => ({ ...quote })) : undefined,
+  }
+}
+
+function cloneChatMessages(messages: api.ChatMessage[]): api.ChatMessage[] {
+  return messages.map(cloneChatMessage)
+}
+
+function cloneForkData(forks: Record<string, api.ForkData>): Record<string, api.ForkData> | undefined {
+  const entries = Object.entries(forks)
+  if (entries.length === 0) return undefined
+  return Object.fromEntries(
+    entries.map(([key, fork]) => [
+      key,
+      {
+        active: fork.active,
+        alternatives: fork.alternatives.map((branch) => cloneChatMessages(branch)),
+      },
+    ])
+  )
+}
+
+function removeTrailingEmptyAssistant(messages: api.ChatMessage[]): api.ChatMessage[] {
+  const nextMessages = cloneChatMessages(messages)
+  const lastMessage = nextMessages[nextMessages.length - 1]
+  if (lastMessage?.role === 'assistant' && !lastMessage.content) {
+    nextMessages.pop()
+  }
+  return nextMessages
+}
+
+function createHistoryPersistController(persist: () => Promise<void>) {
+  let timer: number | null = null
+
+  const runPersist = async () => {
+    try {
+      await persist()
+    } catch {
+      // 历史快照同步失败不打断当前流式会话
+    }
+  }
+
+  return {
+    schedule() {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+      timer = window.setTimeout(() => {
+        timer = null
+        void runPersist()
+      }, STREAM_HISTORY_PERSIST_DELAY_MS)
+    },
+    async flush() {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+      await runPersist()
+    },
+    cancel() {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    },
+  }
+}
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
@@ -265,12 +337,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
+    const persistedForks = cloneForkData(get().forks)
 
     const userMessage: api.ChatMessage = {
       role: 'user',
       content: message,
       quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
     }
+    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
+    let persistedMessages = [
+      ...cloneChatMessages(get().messages),
+      cloneChatMessage(userMessage),
+      cloneChatMessage(assistantMessage),
+    ]
+    const historyPersister = createHistoryPersistController(() =>
+      updateChatHistoryOffline(paperId, sessionId, persistedMessages, persistedForks)
+    )
     set((state) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
@@ -283,8 +365,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
         : state.pageSelectionsByConversation,
     }))
-
-    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
     set((state) => ({ messages: [...state.messages, assistantMessage] }))
 
     const isStillActive = () =>
@@ -300,6 +380,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     try {
       for await (const data of api.sendMessage(paperId, sessionId, message, quotes, effectivePageSelections, controller.signal)) {
+        if (data.type === 'open') {
+          await historyPersister.flush()
+          continue
+        }
+
         if (data.type === 'done') {
           clearStreamingState()
           continue
@@ -307,12 +392,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
         if (data.type === 'error') {
           clearStreamingState()
+          persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+          await historyPersister.flush()
           if (!isStillActive()) continue
           set((state) => ({
             error: data.message || 'Unknown error',
             messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
           }))
           continue
+        }
+
+        if (data.type === 'chunk' && data.content) {
+          const lastPersistedMessage = persistedMessages[persistedMessages.length - 1]
+          if (lastPersistedMessage?.role === 'assistant') {
+            lastPersistedMessage.content += data.content
+            historyPersister.schedule()
+          }
         }
 
         if (!isStillActive()) continue
@@ -328,11 +423,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           })
         }
       }
+      await historyPersister.flush()
       clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         // Stopped by user — keep partial content if any, remove empty assistant message
         clearStreamingState()
+        persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+        await historyPersister.flush()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -346,6 +444,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
       if (error instanceof api.PageSelectionRequiredError) {
         clearStreamingState()
+        historyPersister.cancel()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -375,6 +474,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         return
       }
       clearStreamingState()
+      persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+      await historyPersister.flush()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
       set((state) => ({
@@ -656,12 +757,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
+    const persistedForks = cloneForkData(get().forks)
 
     const userMessage: api.ChatMessage = {
       role: 'user',
       content: message,
       quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
     }
+    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
+    let persistedMessages = [
+      ...cloneChatMessages(get().messages),
+      cloneChatMessage(userMessage),
+      cloneChatMessage(assistantMessage),
+    ]
+    const historyPersister = createHistoryPersistController(() =>
+      updateCrossPaperChatHistoryOffline(sessionId, persistedMessages, persistedForks)
+    )
     set((state) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
@@ -674,8 +785,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
         : state.pageSelectionsByConversation,
     }))
-
-    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
     set((state) => ({ messages: [...state.messages, assistantMessage] }))
 
     const isStillActive = () =>
@@ -691,6 +800,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     try {
       for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, effectivePageSelections, controller.signal)) {
+        if (data.type === 'open') {
+          await historyPersister.flush()
+          continue
+        }
+
         if (data.type === 'done') {
           clearStreamingState()
           continue
@@ -698,12 +812,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
         if (data.type === 'error') {
           clearStreamingState()
+          persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+          await historyPersister.flush()
           if (!isStillActive()) continue
           set((state) => ({
             error: data.message || 'Unknown error',
             messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
           }))
           continue
+        }
+
+        if (data.type === 'chunk' && data.content) {
+          const lastPersistedMessage = persistedMessages[persistedMessages.length - 1]
+          if (lastPersistedMessage?.role === 'assistant') {
+            lastPersistedMessage.content += data.content
+            historyPersister.schedule()
+          }
         }
 
         if (!isStillActive()) continue
@@ -719,10 +843,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           })
         }
       }
+      await historyPersister.flush()
       clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         clearStreamingState()
+        persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+        await historyPersister.flush()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -736,6 +863,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
       if (error instanceof api.PageSelectionRequiredError) {
         clearStreamingState()
+        historyPersister.cancel()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -764,6 +892,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         return
       }
       clearStreamingState()
+      persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
+      await historyPersister.flush()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
       set((state) => ({
