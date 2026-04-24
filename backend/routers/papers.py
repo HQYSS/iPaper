@@ -26,7 +26,9 @@ async def list_papers(user: dict = Depends(get_current_user)):
             title_zh=p.title_zh,
             summary=p.summary[:200] + "..." if len(p.summary) > 200 else p.summary,
             authors=p.authors,
-            download_time=p.download_time
+            download_time=p.download_time,
+            download_status=getattr(p, "download_status", "ready") or "ready",
+            download_error=getattr(p, "download_error", None),
         )
         for p in papers
     ]

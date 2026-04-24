@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, Loader2, AlertTriangle, RotateCw } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
@@ -80,7 +80,7 @@ function App() {
 }
 
 function AuthenticatedApp() {
-  const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper } = usePaperStore()
+  const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper, addPaper } = usePaperStore()
   const { exitCrossPaperChat } = useChatStore()
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
   const { getThemeMode, setThemeMode: prefsSetThemeMode, getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
@@ -287,7 +287,10 @@ function AuthenticatedApp() {
     setQuickSwitcherOpen(false)
   }, [settingsOpen, isEvolutionOpen])
 
-  const showChat = (showSinglePaper || isInCrossChat) && !cursorMode
+  // 下载中 / 下载失败的论文不渲染对话面板：LLM 调用依赖 PDF，必须等 ready
+  const singlePaperDownloadStatus = selectedPaper?.download_status ?? 'ready'
+  const singlePaperReady = !selectedPaper || singlePaperDownloadStatus === 'ready'
+  const showChat = ((showSinglePaper && singlePaperReady) || isInCrossChat) && !cursorMode
 
   return (
     <div ref={containerRef} className="relative h-screen flex bg-background">
@@ -331,13 +334,53 @@ function AuthenticatedApp() {
       )}
 
       {/* 中间：PDF 阅读器 / 串讲多 PDF 视图 / 进化面板 */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {isEvolutionOpen ? (
           <ProfilePanel onClose={handleCloseEvolution} />
         ) : isInCrossChat ? (
           <CrossPaperViewer />
         ) : selectedPaper ? (
-          <PdfViewer paperId={selectedPaper.arxiv_id} />
+          (() => {
+            const status = selectedPaper.download_status ?? 'ready'
+            if (status === 'downloading') {
+              return (
+                <div className="flex-1 flex items-center justify-center text-muted-foreground px-6">
+                  <div className="text-center max-w-md">
+                    <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-indigo-500" />
+                    <h2 className="text-lg font-medium mb-1">正在下载英文 PDF…</h2>
+                    <p className="text-sm text-muted-foreground">
+                      下载完成后这里会自动进入阅读界面。你可以继续浏览或添加其他论文。
+                    </p>
+                  </div>
+                </div>
+              )
+            }
+            if (status === 'failed') {
+              return (
+                <div className="flex-1 flex items-center justify-center px-6">
+                  <div className="text-center max-w-md">
+                    <AlertTriangle className="w-10 h-10 mx-auto mb-4 text-red-500" />
+                    <h2 className="text-lg font-semibold mb-1 text-red-600 dark:text-red-400">英文 PDF 下载失败</h2>
+                    <p className="text-sm text-muted-foreground mb-2 break-words">
+                      已重试 3 次仍未成功
+                      {selectedPaper.download_error ? `：${selectedPaper.download_error}` : '。'}
+                    </p>
+                    <p className="text-xs text-muted-foreground mb-4">
+                      多数是 arXiv 速率限制或网络抖动，稍后重试通常可恢复。
+                    </p>
+                    <button
+                      onClick={() => addPaper(selectedPaper.arxiv_id)}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-red-500 hover:bg-red-600 text-white rounded-lg transition-all shadow-sm"
+                    >
+                      <RotateCw className="w-4 h-4" />
+                      重新下载
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+            return <PdfViewer paperId={selectedPaper.arxiv_id} />
+          })()
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">

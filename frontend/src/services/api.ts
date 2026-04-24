@@ -125,7 +125,11 @@ export interface Paper {
   translation_status?: string
   translation_progress?: number
   pdf_path?: string
+  download_status?: PaperDownloadStatus
+  download_error?: string | null
 }
+
+export type PaperDownloadStatus = 'downloading' | 'ready' | 'failed'
 
 export interface PaperListItem {
   arxiv_id: string
@@ -134,6 +138,8 @@ export interface PaperListItem {
   summary: string
   authors: string[]
   download_time: string
+  download_status?: PaperDownloadStatus
+  download_error?: string | null
 }
 
 export async function fetchPapers(): Promise<PaperListItem[]> {
@@ -283,6 +289,21 @@ export interface ChatMessage {
   content: string
   quotes?: QuoteInput[]
   reasoning?: string
+  truncated?: boolean
+}
+
+export interface ChatStreamEvent {
+  // open: 前端侧在拿到响应后本地生成的"连接就绪"事件
+  // chunk: 服务端推送的内容片段
+  // truncated: 服务端告知因 max_tokens 被截断（在 done 之前）
+  // done: 流正常结束（无论是否截断都会收到）
+  // error: 服务端错误事件
+  type: 'open' | 'chunk' | 'truncated' | 'done' | 'error'
+  content?: string
+  full_response?: string
+  message?: string
+  reason?: string
+  finish_reason?: string
 }
 
 export interface ChatDraft {
@@ -391,7 +412,7 @@ export async function* sendMessage(
   quotes?: QuoteInput[],
   pageSelections?: PaperPageSelectionInput[],
   signal?: AbortSignal
-): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
+): AsyncGenerator<ChatStreamEvent> {
   const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}`, {
     method: 'POST',
     headers: {
@@ -581,7 +602,7 @@ export async function* sendCrossPaperMessage(
   quotes?: QuoteInput[],
   pageSelections?: PaperPageSelectionInput[],
   signal?: AbortSignal
-): AsyncGenerator<{ type: string; content?: string; full_response?: string; message?: string }> {
+): AsyncGenerator<ChatStreamEvent> {
   const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -97,6 +97,9 @@ class SyncService:
                 meta_file = paper_dir / "meta.json"
                 if not meta_file.exists():
                     continue
+                # 只把下载完成的论文放进 manifest，避免把"下载中/失败"的空架子同步到云端
+                if not self._paper_ready_for_sync(paper_dir, meta_file):
+                    continue
                 updated_at = self._get_paper_bundle_updated_at(paper_dir)
                 items.append(SyncManifestItem(
                     arxiv_id=paper_dir.name,
@@ -121,9 +124,29 @@ class SyncService:
 
     # ==================== Paper bundle ====================
 
+    @staticmethod
+    def _paper_ready_for_sync(paper_dir: Path, meta_file: Path) -> bool:
+        """判断一篇论文是否适合进入 sync manifest / bundle。
+
+        仅 download_status == "ready" 且 paper.pdf 存在才算 ready；旧 meta 没这个
+        字段时按 ready 处理。
+        """
+        if not (paper_dir / "paper.pdf").exists():
+            return False
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return False
+        status = data.get("download_status", "ready") or "ready"
+        return status == "ready"
+
     def create_paper_bundle(self, user_id: str, paper_id: str) -> Optional[bytes]:
         paper_dir = settings.get_user_papers_dir(user_id) / paper_id
         if not paper_dir.exists():
+            return None
+        meta_file = paper_dir / "meta.json"
+        if meta_file.exists() and not self._paper_ready_for_sync(paper_dir, meta_file):
             return None
 
         buf = io.BytesIO()
@@ -157,6 +180,13 @@ class SyncService:
         return True
 
     def delete_paper(self, user_id: str, paper_id: str, deleted_at: Optional[str] = None) -> bool:
+        # 先取消可能还在跑的后台下载，避免它回写 meta.json
+        try:
+            from services.arxiv_service import arxiv_service
+            arxiv_service.cancel_download(user_id, paper_id)
+        except Exception:
+            logger.exception("cancel_download failed for %s:%s", user_id, paper_id)
+
         paper_dir = settings.get_user_papers_dir(user_id) / paper_id
         existed = paper_dir.exists()
         if existed:

@@ -25,6 +25,10 @@ class PaperMeta(BaseModel):
     translation_status: str = "pending"  # pending | translating | completed | failed
     translation_progress: int = 0
     pdf_path: Optional[str] = None
+    # 英文 PDF 下载状态：downloading | ready | failed
+    # 默认 ready 保证旧 meta.json 无需迁移
+    download_status: str = "ready"
+    download_error: Optional[str] = None
 
 
 class PaperListItem(BaseModel):
@@ -35,6 +39,8 @@ class PaperListItem(BaseModel):
     summary: str
     authors: List[str]
     download_time: datetime
+    download_status: str = "ready"
+    download_error: Optional[str] = None
 
 
 class PaperDetail(PaperMeta):
@@ -56,6 +62,7 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="消息内容")
     quotes: Optional[List[Quote]] = Field(None, description="消息关联的引用片段")
     reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
+    truncated: Optional[bool] = Field(None, description="是否因 max_tokens 被截断（仅 assistant 消息）")
 
 
 class PageRange(BaseModel):

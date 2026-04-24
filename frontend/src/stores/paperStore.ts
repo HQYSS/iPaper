@@ -3,6 +3,14 @@ import * as api from '../services/api'
 import { fetchPapersOffline } from '../services/offlineApi'
 import { usePreferencesStore } from './preferencesStore'
 
+const DOWNLOAD_POLL_INTERVAL_MS = 2000
+let downloadPollTimer: ReturnType<typeof setInterval> | null = null
+let pollerAttached = false
+
+function hasDownloadingPaper(papers: api.PaperListItem[]): boolean {
+  return papers.some((p) => (p.download_status ?? 'ready') === 'downloading')
+}
+
 function getStoredRecentPaperIds(): string[] {
   return usePreferencesStore.getState().getRecentPaperIds()
 }
@@ -41,6 +49,7 @@ interface PaperStore {
   deletePaper: (paperId: string) => Promise<void>
   selectPaper: (paper: api.PaperListItem | null) => void
   clearError: () => void
+  ensureDownloadPolling: () => void
 
   enterCrossPaperMode: () => void
   exitCrossPaperMode: () => void
@@ -72,6 +81,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
       const recentPaperIds = syncRecentPaperIds(get().recentPaperIds, papers)
       saveRecentPaperIds(recentPaperIds)
       set({ papers, recentPaperIds, isLoading: false })
+      get().ensureDownloadPolling()
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
     }
@@ -98,6 +108,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
       } else {
         set({ papers, recentPaperIds, isLoading: false })
       }
+      get().ensureDownloadPolling()
     } catch (error) {
       set({ error: (error as Error).message, isLoading: false })
       throw error
@@ -147,6 +158,46 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
 
   clearError: () => {
     set({ error: null })
+  },
+
+  /**
+   * 存在 download_status === 'downloading' 的论文时，启动 2s 周期性刷新；
+   * 全部 ready/failed 后自动停止。幂等——重复调用只启动一个 timer。
+   * 同时驱动 selectedPaper 随新列表更新（让 PdfViewer 感知状态变化）。
+   */
+  ensureDownloadPolling: () => {
+    const { papers } = get()
+    if (!hasDownloadingPaper(papers)) {
+      if (downloadPollTimer) {
+        clearInterval(downloadPollTimer)
+        downloadPollTimer = null
+      }
+      return
+    }
+    if (pollerAttached && downloadPollTimer) return
+    pollerAttached = true
+    const tick = async () => {
+      try {
+        const fresh = await fetchPapersOffline()
+        const { selectedPaper, recentPaperIds } = get()
+        const syncedRecent = syncRecentPaperIds(recentPaperIds, fresh)
+        const nextSelected = selectedPaper
+          ? fresh.find((p) => p.arxiv_id === selectedPaper.arxiv_id) ?? selectedPaper
+          : null
+        set({ papers: fresh, recentPaperIds: syncedRecent, selectedPaper: nextSelected })
+        if (!hasDownloadingPaper(fresh)) {
+          if (downloadPollTimer) {
+            clearInterval(downloadPollTimer)
+            downloadPollTimer = null
+          }
+          pollerAttached = false
+        }
+      } catch {
+        // 瞬时错误不终止轮询
+      }
+    }
+    tick()
+    downloadPollTimer = setInterval(tick, DOWNLOAD_POLL_INTERVAL_MS)
   },
 
   enterCrossPaperMode: () => {

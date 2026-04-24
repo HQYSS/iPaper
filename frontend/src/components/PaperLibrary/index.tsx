@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, FileText, Loader2, Clock, User, Settings, GitCompareArrows, Check, X } from 'lucide-react'
+import { Plus, Trash2, FileText, Loader2, Clock, User, Settings, GitCompareArrows, Check, X, AlertTriangle, RotateCw } from 'lucide-react'
 import { usePaperStore } from '../../stores/paperStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useToastStore } from '../../stores/toastStore'
@@ -78,7 +78,7 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
       await addPaper(arxivInput.trim())
       setArxivInput('')
       setShowInput(false)
-      addToast('success', '论文添加成功！')
+      addToast('success', '已加入论文库，英文 PDF 正在后台下载…')
     } catch (error) {
       addToast('error', (error as Error).message || '添加论文失败')
     } finally {
@@ -342,13 +342,18 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
           <ul>
             {papers.map((paper) => {
               const isChecked = crossPaper.selectedPaperIds.includes(paper.arxiv_id)
+              const downloadStatus = paper.download_status ?? 'ready'
+              const isDownloading = downloadStatus === 'downloading'
+              const isFailed = downloadStatus === 'failed'
+              const notReady = isDownloading || isFailed
               return (
                 <li
                   key={paper.arxiv_id}
                   className={cn(
                     'group relative cursor-pointer border-b border-slate-100 dark:border-slate-800 last:border-0',
                     !isSelectingMode && selectedPaper?.arxiv_id === paper.arxiv_id && 'bg-indigo-50 dark:bg-indigo-950/30',
-                    isSelectingMode && isChecked && 'bg-purple-50 dark:bg-purple-950/20'
+                    isSelectingMode && isChecked && 'bg-purple-50 dark:bg-purple-950/20',
+                    isFailed && 'bg-red-50/40 dark:bg-red-950/10'
                   )}
                   onContextMenu={(event) => handlePaperContextMenu(event, paper.arxiv_id, paper.title)}
                 >
@@ -356,6 +361,10 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
                     className="w-full text-left p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex items-start gap-3"
                     onClick={() => {
                       if (isSelectingMode) {
+                        if (notReady) {
+                          addToast('error', isDownloading ? '论文还在下载中，下好才能加入串讲' : '论文下载失败，请先重试')
+                          return
+                        }
                         toggleCrossPaperSelection(paper.arxiv_id)
                       } else {
                         selectPaper(paper)
@@ -366,6 +375,7 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
                     {isSelectingMode && (
                       <div className={cn(
                         'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all',
+                        notReady && 'opacity-40',
                         isChecked
                           ? 'bg-purple-500 border-purple-500 text-white'
                           : 'border-slate-300 dark:border-slate-600'
@@ -375,9 +385,32 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
                     )}
 
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-sm text-slate-800 dark:text-slate-100 line-clamp-2 pr-8 leading-relaxed">
+                      <h3 className={cn(
+                        'font-medium text-sm line-clamp-2 pr-8 leading-relaxed',
+                        isFailed
+                          ? 'text-slate-500 dark:text-slate-400'
+                          : 'text-slate-800 dark:text-slate-100'
+                      )}>
                         {paper.title}
                       </h3>
+
+                      {/* 下载状态标识 */}
+                      {isDownloading && (
+                        <div className="flex items-center gap-1.5 mt-1.5 text-xs text-indigo-600 dark:text-indigo-400">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span>正在下载英文 PDF…</span>
+                        </div>
+                      )}
+                      {isFailed && (
+                        <div
+                          className="flex items-center gap-1.5 mt-1.5 text-xs text-red-600 dark:text-red-400"
+                          title={paper.download_error || undefined}
+                        >
+                          <AlertTriangle className="w-3 h-3" />
+                          <span className="truncate">下载失败{paper.download_error ? `：${paper.download_error}` : ''}</span>
+                        </div>
+                      )}
+
                       <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
                         <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
                           {paper.arxiv_id}
@@ -395,6 +428,26 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
                       </div>
                     </div>
                   </button>
+
+                  {/* 失败状态下的重试按钮 */}
+                  {!isSelectingMode && isFailed && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        try {
+                          await addPaper(paper.arxiv_id)
+                          addToast('success', '已重新开始下载')
+                        } catch (err) {
+                          addToast('error', (err as Error).message || '重试失败')
+                        }
+                      }}
+                      className="absolute right-11 top-4 p-1.5 rounded-md text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40 transition-all"
+                      title="重新下载"
+                    >
+                      <RotateCw className="w-4 h-4" />
+                    </button>
+                  )}
+
                   {!isSelectingMode && (
                     <button
                       onClick={(e) => {
