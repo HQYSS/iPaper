@@ -82,12 +82,13 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground"
+      className="flex flex-col bg-background text-foreground overflow-hidden"
       style={{
-        // visualViewport 兜底：键盘弹起时 --visual-vh 会自动缩小，input 永远不被遮挡。
-        // 链式 fallback：visualViewport > dvh (iOS17+) > vh
-        height: 'var(--visual-vh, 100dvh)',
-        minHeight: '100vh',
+        // 关键：用 100svh（small viewport height）= Safari 工具栏完全展开时的最小可视高度，
+        // 永远不会被工具栏盖到。dvh 在 iOS Safari 浏览器模式下随工具栏动画变化，时机不准，
+        // 会出现底部 Tab 一会儿露一会儿被遮的问题。
+        // 键盘弹起的视口适配靠 ChatPanel 内部用 --visual-vh 自适应高度，不在容器层处理。
+        height: '100svh',
         paddingTop: 'env(safe-area-inset-top)',
       }}
     >
@@ -111,7 +112,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
         <div className={cn('absolute inset-0', activeTab === 'reading' ? 'block' : 'hidden')}>
           {selectedPaper ? (
             paperReady ? (
-              <PdfViewer paperId={selectedPaper.arxiv_id} />
+              <PdfViewer paperId={selectedPaper.arxiv_id} mobileMode />
             ) : (
               <PaperNotReadyHint status={downloadStatus} />
             )

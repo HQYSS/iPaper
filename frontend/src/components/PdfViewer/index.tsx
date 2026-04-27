@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Worker, Viewer } from '@react-pdf-viewer/core'
+import { Worker, Viewer, SpecialZoomLevel } from '@react-pdf-viewer/core'
 import { searchPlugin } from '@react-pdf-viewer/search'
 import { bookmarkPlugin } from '@react-pdf-viewer/bookmark'
 import { pageNavigationPlugin } from '@react-pdf-viewer/page-navigation'
@@ -17,6 +17,14 @@ import { usePreferencesStore } from '../../stores/preferencesStore'
 
 interface PdfViewerProps {
   paperId: string
+  /**
+   * 移动端模式：
+   * - 隐藏桌面端底部浮动工具栏（缩放/页码/调光/目录/引用返回）
+   * - 顶部渲染极简工具栏：搜索 + EN/中文 + 翻译状态
+   * - PDF 默认 fit-width，忽略桌面记忆的 scale；用户通过手势 pinch-zoom 自由放大
+   * - 不恢复滚动位置，每次进入论文从顶部开始（移动端阅读习惯）
+   */
+  mobileMode?: boolean
 }
 
 const pdfScrollBackStackCache = new Map<string, number[]>()
@@ -72,11 +80,13 @@ function isPdfNavigationTrigger(target: HTMLElement | null): boolean {
 function SearchBox({
   onClose,
   searchPluginInstance,
-  onBeforeNavigate
+  onBeforeNavigate,
+  mobile = false
 }: {
   onClose: () => void
   searchPluginInstance: ReturnType<typeof searchPlugin>
   onBeforeNavigate?: () => void
+  mobile?: boolean
 }) {
   const [keyword, setKeyword] = useState('')
   const [lastKeyword, setLastKeyword] = useState('')
@@ -230,7 +240,13 @@ function SearchBox({
   }
 
   return (
-    <div className="absolute top-4 right-4 z-50 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+    <div
+      className={
+        mobile
+          ? 'absolute top-2 left-2 right-2 z-50 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900'
+          : 'absolute top-4 right-4 z-50 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-900'
+      }
+    >
       <input
         ref={inputRef}
         type="text"
@@ -238,7 +254,11 @@ function SearchBox({
         onChange={(e) => setKeyword(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="搜索..."
-        className="w-48 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        className={
+          mobile
+            ? 'flex-1 min-w-0 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
+            : 'w-48 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
+        }
       />
       {matchCount > 0 && (
         <span className="min-w-[60px] text-xs text-slate-500 dark:text-slate-400">
@@ -276,7 +296,7 @@ function SearchBox({
   )
 }
 
-export function PdfViewer({ paperId }: PdfViewerProps) {
+export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
   const [pdfUrl, setPdfUrl] = useState<string>('')
   const [showSearch, setShowSearch] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
@@ -782,8 +802,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
 
   return (
     <div ref={pdfContainerRef} className="flex-1 flex h-full overflow-hidden relative">
-      {/* 书签侧边栏 */}
-      {showBookmarks && (
+      {/* 书签侧边栏（仅桌面端） */}
+      {!mobileMode && showBookmarks && (
         <div className="w-64 overflow-auto border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950/60">
           <div className="flex items-center justify-between border-b border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
             <span className="text-sm font-medium text-slate-800 dark:text-slate-100">目录</span>
@@ -810,7 +830,93 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             onClose={() => setShowSearch(false)}
             searchPluginInstance={searchPluginInstance}
             onBeforeNavigate={pushScrollBackPosition}
+            mobile={mobileMode}
           />
+        )}
+
+        {/* 移动端极简顶部工具栏：只保留搜索 + EN/中文切换 + 翻译进度。
+            缩放/翻页全部去掉，靠手指 pinch-zoom 自由控制 PDF 大小（已在 index.html viewport 放开）。*/}
+        {mobileMode && (
+          <div className="flex-shrink-0 h-10 px-2 flex items-center justify-between gap-2 border-b border-border bg-background">
+            <button
+              type="button"
+              onClick={() => setShowSearch(true)}
+              className="rounded-md p-2 text-foreground active:bg-accent transition-colors"
+              aria-label="搜索 PDF"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
+
+            <div className="flex items-center gap-1.5 min-w-0">
+              {translateStatus && translateStatus.status !== 'finished' && translateStatus.status !== 'none' && (
+                <div className="flex items-center gap-1 text-xs max-w-[140px] min-w-0">
+                  {translateStatus.status === 'polling' && (
+                    <>
+                      <svg className="h-3 w-3 animate-spin text-blue-500 shrink-0" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="text-blue-600 dark:text-blue-400 truncate">{translateStatus.info || '翻译中…'}</span>
+                    </>
+                  )}
+                  {translateStatus.status === 'pending' && (
+                    <span className="text-slate-500 dark:text-slate-400 truncate">等待翻译…</span>
+                  )}
+                  {(translateStatus.status === 'failed' || translateStatus.status === 'error') && (
+                    <span className="text-red-500 dark:text-red-400 truncate" title={translateStatus.error}>
+                      {translateStatus.error || '翻译失败'}
+                    </span>
+                  )}
+                  {translateStatus.status === 'needs_login' && (
+                    <span className="text-amber-600 dark:text-amber-400 truncate">需配 Cookie</span>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-0.5 rounded-full bg-muted p-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (pdfLang === 'en') return
+                    restoreScaleRef.current = null
+                    restoreScrollRatioRef.current = null
+                    setPdfLang('en')
+                    usePreferencesStore.getState().setPdfLang(paperId, 'en')
+                  }}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    pdfLang === 'en'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground active:text-foreground'
+                  }`}
+                >
+                  EN
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (translations.zh) {
+                      if (pdfLang === 'zh') return
+                      restoreScaleRef.current = null
+                      restoreScrollRatioRef.current = null
+                      setPdfLang('zh')
+                      usePreferencesStore.getState().setPdfLang(paperId, 'zh')
+                    } else {
+                      handleTriggerTranslation(paperId)
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    pdfLang === 'zh'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground active:text-foreground'
+                  }`}
+                >
+                  中文
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* 选中文字引用按钮 */}
@@ -852,6 +958,18 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
                 defaultScale={1}
                 onDocumentLoad={(e) => {
                   setTotalPages(e.doc.numPages)
+
+                  if (mobileMode) {
+                    // 移动端：默认 fit-width，忽略桌面端记忆的 scale 和滚动位置（每次从顶部开始更直观）；
+                    // 用户用手指 pinch-zoom 自由放大，不需要 +/- 按钮。
+                    restoreScaleRef.current = null
+                    restoreScrollRatioRef.current = null
+                    setTimeout(() => {
+                      zoomPluginInstance.zoomTo(SpecialZoomLevel.PageWidth)
+                    }, 100)
+                    return
+                  }
+
                   const prefs = usePreferencesStore.getState()
                   const savedScale = restoreScaleRef.current ?? prefs.getPdfScale()
                   const savedRatio = restoreScrollRatioRef.current ?? prefs.getPdfReadingPosition(paperId, pdfLang)
@@ -886,7 +1004,8 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
           )}
         </div>
 
-        {/* 底部浮动工具栏 */}
+        {/* 底部浮动工具栏（仅桌面端） */}
+        {!mobileMode && (
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-40">
           {showDimmingControls && (
             <div className="absolute bottom-full left-1/2 mb-3 w-[360px] -translate-x-1/2 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-xl backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
@@ -1174,6 +1293,7 @@ export function PdfViewer({ paperId }: PdfViewerProps) {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   )
