@@ -1,6 +1,16 @@
-const CACHE_NAME = 'ipaper-static-v2'
+const CACHE_NAME = 'ipaper-static-v3'
 
-const STATIC_EXTENSIONS = ['.js', '.css', '.woff2', '.woff', '.ttf', '.png', '.svg', '.ico']
+const STATIC_EXTENSIONS = [
+  '.js',
+  '.css',
+  '.woff2',
+  '.woff',
+  '.ttf',
+  '.png',
+  '.svg',
+  '.ico',
+  '.webmanifest',
+]
 
 self.addEventListener('install', (event) => {
   self.skipWaiting()

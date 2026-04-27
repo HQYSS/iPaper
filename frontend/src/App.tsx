@@ -9,12 +9,16 @@ import { SettingsModal } from './components/SettingsModal'
 import { PaperQuickSwitcher } from './components/PaperQuickSwitcher'
 import { AddPaperModal } from './components/AddPaperModal'
 import { LoginPage } from './components/LoginPage'
+import { MobileLayout } from './components/MobileLayout'
 import { usePaperStore } from './stores/paperStore'
 import { useChatStore } from './stores/chatStore'
 import { useProfileStore } from './stores/profileStore'
 import { useAuthStore } from './stores/authStore'
 import { usePreferencesStore } from './stores/preferencesStore'
 import { getConfig } from './services/api'
+import { useDeviceLayout } from './hooks/useDeviceLayout'
+import { useThemeMode, applyThemeMode } from './hooks/useThemeMode'
+import type { ThemeMode } from './hooks/useThemeMode'
 import type { PaperListItem } from './services/api'
 
 const CHAT_MIN_WIDTH = 320
@@ -24,14 +28,7 @@ const SIDEBAR_WIDTH = 256
 const SIDEBAR_HOVER_TRIGGER_WIDTH = 12
 const NARROW_SCREEN_BREAKPOINT = 1024
 
-type ThemeMode = 'light' | 'dark' | 'system'
-
 const cursorMode = new URLSearchParams(window.location.search).get('cursor') === '1'
-
-function applyThemeMode(themeMode: ThemeMode, prefersDark: boolean) {
-  const shouldUseDark = themeMode === 'dark' || (themeMode === 'system' && prefersDark)
-  document.documentElement.classList.toggle('dark', shouldUseDark)
-}
 
 function clampChatWidth(width: number, containerWidth: number) {
   const maxWidth = containerWidth * CHAT_MAX_RATIO
@@ -77,14 +74,32 @@ function App() {
     return <LoginPage />
   }
 
-  return <AuthenticatedApp />
+  return <AuthenticatedRouter />
 }
 
-function AuthenticatedApp() {
+function AuthenticatedRouter() {
+  const layout = useDeviceLayout()
+  const { themeMode, setThemeMode } = useThemeMode()
+
+  if (layout === 'mobile') {
+    return <MobileLayout themeMode={themeMode} onThemeModeChange={setThemeMode} />
+  }
+
+  // 平板（768-1023）暂时复用桌面三栏布局：iPad 横屏完全够用，
+  // 竖屏会退化成"窄桌面"，后续 task 8 再做平板专属抽屉式布局。
+  return <AuthenticatedApp themeMode={themeMode} onThemeModeChange={setThemeMode} />
+}
+
+interface AuthenticatedAppProps {
+  themeMode: ThemeMode
+  onThemeModeChange: (mode: ThemeMode) => void
+}
+
+function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProps) {
   const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper, addPaper } = usePaperStore()
   const { exitCrossPaperChat } = useChatStore()
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
-  const { getThemeMode, setThemeMode: prefsSetThemeMode, getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
+  const { getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
   const isNarrowScreen = useCallback(() => window.innerWidth <= NARROW_SCREEN_BREAKPOINT, [])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => isNarrowScreen())
   const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
@@ -94,7 +109,6 @@ function AuthenticatedApp() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [addPaperOpen, setAddPaperOpen] = useState(false)
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => (getThemeMode() as ThemeMode) || 'system')
   const containerRef = useRef<HTMLDivElement>(null)
   const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
 
@@ -207,26 +221,6 @@ function AuthenticatedApp() {
     window.addEventListener('resize', updateChatWidth)
     return () => window.removeEventListener('resize', updateChatWidth)
   }, [getChatPanelWidthRatio, setChatPanelWidthRatio])
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    const updateTheme = () => applyThemeMode(themeMode, mediaQuery.matches)
-
-    updateTheme()
-
-    if (themeMode !== 'system') {
-      return
-    }
-
-    mediaQuery.addEventListener('change', updateTheme)
-    return () => mediaQuery.removeEventListener('change', updateTheme)
-  }, [themeMode])
-
-  const handleThemeModeChange = useCallback((nextThemeMode: ThemeMode) => {
-    setThemeMode(nextThemeMode)
-    prefsSetThemeMode(nextThemeMode)
-    applyThemeMode(nextThemeMode, window.matchMedia('(prefers-color-scheme: dark)').matches)
-  }, [prefsSetThemeMode])
 
   useEffect(() => {
     if (!selectedPaper) return
@@ -468,7 +462,7 @@ function AuthenticatedApp() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         themeMode={themeMode}
-        onThemeModeChange={handleThemeModeChange}
+        onThemeModeChange={onThemeModeChange}
       />
       <PaperQuickSwitcher
         open={quickSwitcherOpen}

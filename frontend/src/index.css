@@ -53,9 +53,24 @@
   * {
     @apply border-border;
   }
+  html, body, #root {
+    height: 100%;
+  }
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* iOS：禁止 body 弹性回弹（避免拖动整页跟手），让 PDF/聊天滚动容器自管 */
+    overscroll-behavior-y: contain;
+    /* iOS Safari：避免长按弹"拷贝/查找/翻译"系统菜单遮挡 UI */
+    -webkit-touch-callout: none;
+  }
+  /* 输入框 / 富文本不能被禁 callout，否则无法选/复制 */
+  input, textarea, [contenteditable="true"], .prose, .katex {
+    -webkit-touch-callout: default;
+  }
+  /* iOS：input/textarea 字号 < 16px 时 focus 会自动放大整页，强制 16px 兜底 */
+  input, textarea, select {
+    font-size: 16px;
   }
 }
 

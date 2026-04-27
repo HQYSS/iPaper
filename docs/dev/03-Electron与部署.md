@@ -172,3 +172,30 @@ start_electron()    # 启动 Electron（前台运行）
 | FastAPI → OpenRouter API | `https://openrouter.ai/api/v1` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。
+
+---
+
+## PWA / 移动 Web (`https://www.moshang.xyz/ipaper/`)
+
+云端的 `/ipaper/` 同时是 Web 端 + PWA。iPhone Safari 打开后可"分享 → 添加到主屏幕"，独立窗口启动并应用 `MobileLayout`。
+
+### 关键资产
+
+| 文件 | 说明 |
+|------|------|
+| `frontend/index.html` | iOS 全套 meta：`viewport-fit=cover`、`apple-mobile-web-app-capable`、`apple-mobile-web-app-status-bar-style=black-translucent`、`apple-mobile-web-app-title=iPaper`、亮/暗 `theme-color` |
+| `frontend/public/manifest.webmanifest` | PWA manifest：`name` / `short_name` / `start_url=.` / `scope=./` / `display=standalone` / `orientation=portrait`（iPhone 强制竖屏）+ icons 数组（192/512/maskable-512） |
+| `frontend/public/icons/` | 全套尺寸：`favicon-16/32`、`apple-touch-icon-180`、`icon-192/512/1024`、`icon-maskable-512`。源图 `assets/m1-letter-i.png`，生成脚本 `/tmp/ipaper-icon-design/generate_icons.py`（PIL，做了像素级 whiteness 提取 + 重建紫色渐变背景，去掉 AI 源图自带的 squircle 描边/阴影/光晕） |
+| `frontend/public/sw.js` | Service Worker，缓存静态资源 + `.webmanifest`。**改完任意 PWA 资产必须把 `CACHE_NAME` 加版（如 `v3 → v4`），否则旧客户端不会刷新缓存** |
+
+### 改图标 / PWA 资产的标准动作
+
+```bash
+cd /tmp/ipaper-icon-design && python3 generate_icons.py   # 重生成全套图标
+# 改 sw.js 里的 CACHE_NAME，加一档版本号
+./scripts/deploy.sh                                       # 自动 build + 推 dist
+```
+
+部署后用 iPhone Safari 强制刷新（关掉 PWA 进程后重开），验证图标和 manifest 已更新。
+
+---

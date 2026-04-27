@@ -9,6 +9,11 @@ import * as api from '../../services/api'
 interface PaperLibraryProps {
   onOpenSettings?: () => void
   onOpenAddPaper?: () => void
+  /**
+   * 移动端布局会把"串讲模式 / 设置"等次要入口收纳到顶栏菜单 / 进度禁用，
+   * 此时让 PaperLibrary 不渲染自己的底部按钮区，避免与底部 Tab Bar 重叠。
+   */
+  hideBottomActions?: boolean
 }
 
 interface PaperContextMenuState {
@@ -21,7 +26,7 @@ interface PaperContextMenuState {
 const CONTEXT_MENU_WIDTH = 160
 const CONTEXT_MENU_HEIGHT = 104
 
-export function PaperLibrary({ onOpenSettings, onOpenAddPaper }: PaperLibraryProps) {
+export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions = false }: PaperLibraryProps) {
   const {
     papers, selectedPaper, isLoading, addPaper, deletePaper, selectPaper,
     crossPaper, enterCrossPaperMode, exitCrossPaperMode, toggleCrossPaperSelection,
@@ -414,7 +419,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper }: PaperLibraryPro
       )}
 
       {/* 底部按钮（正常模式） */}
-      {!isSelectingMode && (
+      {!isSelectingMode && !hideBottomActions && (
         <div className="border-t border-slate-200 dark:border-slate-700 p-3 space-y-1">
           <button
             onClick={enterCrossPaperMode}
