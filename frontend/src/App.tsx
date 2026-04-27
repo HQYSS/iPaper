@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, Loader2, AlertTriangle, RotateCw } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, Loader2, AlertTriangle, RotateCw, Plus } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
@@ -7,6 +7,7 @@ import { CrossPaperViewer } from './components/CrossPaperViewer'
 import { ProfilePanel } from './components/ProfilePanel'
 import { SettingsModal } from './components/SettingsModal'
 import { PaperQuickSwitcher } from './components/PaperQuickSwitcher'
+import { AddPaperModal } from './components/AddPaperModal'
 import { LoginPage } from './components/LoginPage'
 import { usePaperStore } from './stores/paperStore'
 import { useChatStore } from './stores/chatStore'
@@ -92,6 +93,7 @@ function AuthenticatedApp() {
   const [isDragging, setIsDragging] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
+  const [addPaperOpen, setAddPaperOpen] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => (getThemeMode() as ThemeMode) || 'system')
   const containerRef = useRef<HTMLDivElement>(null)
   const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
@@ -130,8 +132,9 @@ function AuthenticatedApp() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (quickSwitcherOpen) return
+      if (quickSwitcherOpen || addPaperOpen) return
       if (!(e.metaKey || e.ctrlKey)) return
+      if (e.shiftKey || e.altKey) return
       const key = e.key.toLowerCase()
       if (key === 'p') {
         if (quickSwitcherPapers.length === 0) return
@@ -144,11 +147,15 @@ function AuthenticatedApp() {
       } else if (key === 'l') {
         e.preventDefault()
         setChatCollapsed(prev => !prev)
+      } else if (key === 'n') {
+        if (settingsOpen || isEvolutionOpen) return
+        e.preventDefault()
+        setAddPaperOpen(true)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [quickSwitcherOpen, quickSwitcherPapers.length])
+  }, [quickSwitcherOpen, addPaperOpen, settingsOpen, isEvolutionOpen, quickSwitcherPapers.length])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -285,6 +292,7 @@ function AuthenticatedApp() {
   useEffect(() => {
     if (!settingsOpen && !isEvolutionOpen) return
     setQuickSwitcherOpen(false)
+    setAddPaperOpen(false)
   }, [settingsOpen, isEvolutionOpen])
 
   // 下载中 / 下载失败的论文不渲染对话面板：LLM 调用依赖 PDF，必须等 ready
@@ -313,7 +321,10 @@ function AuthenticatedApp() {
         }}
       >
         <div className="h-full" style={{ width: SIDEBAR_WIDTH }}>
-          <PaperLibrary onOpenSettings={() => setSettingsOpen(true)} />
+          <PaperLibrary
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenAddPaper={() => setAddPaperOpen(true)}
+          />
         </div>
       </aside>
 
@@ -385,7 +396,15 @@ function AuthenticatedApp() {
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
               <h2 className="text-xl font-medium mb-2">欢迎使用 iPaper</h2>
-              <p>从左侧添加论文开始阅读</p>
+              <p className="mb-5">从左侧添加论文开始阅读</p>
+              <button
+                onClick={() => setAddPaperOpen(true)}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 shadow-sm shadow-indigo-500/20 transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                添加论文
+                <span className="ml-1 text-[11px] opacity-80 font-mono">⌘N</span>
+              </button>
             </div>
           </div>
         )}
@@ -457,6 +476,10 @@ function AuthenticatedApp() {
         title={isInCrossChat ? '切换当前串讲中的论文' : '切换论文'}
         onClose={handleQuickSwitcherClose}
         onSelect={handleQuickSwitcherSelect}
+      />
+      <AddPaperModal
+        open={addPaperOpen}
+        onClose={() => setAddPaperOpen(false)}
       />
     </div>
   )

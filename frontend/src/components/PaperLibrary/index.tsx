@@ -8,6 +8,7 @@ import * as api from '../../services/api'
 
 interface PaperLibraryProps {
   onOpenSettings?: () => void
+  onOpenAddPaper?: () => void
 }
 
 interface PaperContextMenuState {
@@ -20,7 +21,7 @@ interface PaperContextMenuState {
 const CONTEXT_MENU_WIDTH = 160
 const CONTEXT_MENU_HEIGHT = 104
 
-export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
+export function PaperLibrary({ onOpenSettings, onOpenAddPaper }: PaperLibraryProps) {
   const {
     papers, selectedPaper, isLoading, addPaper, deletePaper, selectPaper,
     crossPaper, enterCrossPaperMode, exitCrossPaperMode, toggleCrossPaperSelection,
@@ -28,9 +29,6 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
   } = usePaperStore()
   const { initCrossPaperSession, loadCrossPaperSessions, exitCrossPaperChat } = useChatStore()
   const { addToast } = useToastStore()
-  const [arxivInput, setArxivInput] = useState('')
-  const [isAdding, setIsAdding] = useState(false)
-  const [showInput, setShowInput] = useState(false)
   const [crossPaperSessions, setCrossPaperSessions] = useState<api.CrossPaperSessionMeta[]>([])
   const [contextMenu, setContextMenu] = useState<PaperContextMenuState | null>(null)
   const paperListRef = useRef<HTMLDivElement>(null)
@@ -70,37 +68,12 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
     }
   }, [contextMenu])
 
-  const handleAddPaper = async () => {
-    if (!arxivInput.trim()) return
-
-    setIsAdding(true)
-    try {
-      await addPaper(arxivInput.trim())
-      setArxivInput('')
-      setShowInput(false)
-      addToast('success', '已加入论文库，英文 PDF 正在后台下载…')
-    } catch (error) {
-      addToast('error', (error as Error).message || '添加论文失败')
-    } finally {
-      setIsAdding(false)
-    }
-  }
-
   const handleDeletePaper = async (paperId: string) => {
     try {
       await deletePaper(paperId)
       addToast('success', '论文已删除')
     } catch (error) {
       addToast('error', (error as Error).message || '删除论文失败')
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleAddPaper()
-    } else if (e.key === 'Escape') {
-      setShowInput(false)
-      setArxivInput('')
     }
   }
 
@@ -220,61 +193,14 @@ export function PaperLibrary({ onOpenSettings }: PaperLibraryProps) {
           </button>
         ) : (
           <button
-            onClick={() => setShowInput(!showInput)}
-            className={cn(
-              "p-2 rounded-lg transition-all",
-              showInput
-                ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/50 dark:text-indigo-400"
-                : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
-            )}
-            title="添加论文"
+            onClick={() => onOpenAddPaper?.()}
+            className="p-2 rounded-lg transition-all hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
+            title="添加论文 (⌘N)"
           >
             <Plus className="w-5 h-5" />
           </button>
         )}
       </div>
-
-      {/* 添加论文输入框 */}
-      {showInput && !isSelectingMode && (
-        <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-          <input
-            type="text"
-            value={arxivInput}
-            onChange={(e) => setArxivInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入 arXiv ID，如 1706.03762"
-            className="w-full px-3 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-            autoFocus
-            disabled={isAdding}
-          />
-          <p className="text-xs text-slate-400 mt-2">支持 arXiv ID 或完整 URL</p>
-          <div className="flex gap-2 mt-3">
-            <button
-              onClick={handleAddPaper}
-              disabled={isAdding || !arxivInput.trim()}
-              className="flex-1 px-4 py-2 text-sm font-medium bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-lg hover:from-indigo-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all shadow-sm"
-            >
-              {isAdding ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  下载中...
-                </>
-              ) : (
-                '添加论文'
-              )}
-            </button>
-            <button
-              onClick={() => {
-                setShowInput(false)
-                setArxivInput('')
-              }}
-              className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* 历史串讲会话（串讲模式下显示） */}
       {isSelectingMode && crossPaperSessions.length > 0 && (
