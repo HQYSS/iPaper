@@ -147,18 +147,29 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const syncRoleLabel = syncRole === 'client' ? '同步客户端' : syncRole === 'server' ? '被动同步服务端' : '同步已禁用'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{
+        // 移动端 safe area 兜底：刘海/灵动岛和 home indicator 区域不能被弹窗占用，否则 X
+        // 按钮和底部按钮按不到。1rem 是普通屏的最小留白。
+        paddingTop: 'max(1rem, env(safe-area-inset-top))',
+        paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}
+    >
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in duration-200"
         onClick={onClose}
       />
 
-      {/* Modal */}
-      <div className="relative w-full max-w-lg mx-4 animate-in zoom-in-95 fade-in duration-200">
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/60 dark:border-slate-700/60 overflow-hidden">
-          {/* Header */}
-          <div className="relative px-6 pt-6 pb-4">
+      {/* Modal —— 合并外层和卡片为一层，max-h-full + overflow-hidden + flex column
+          让弹窗高度严格被父容器（屏幕 - safe area）限制，超出部分由内部 scroll 容器消化。
+          原先两层嵌套会让内层卡片按内容撑大、绕过外层 max-h-full 溢出到屏幕外。 */}
+      <div className="relative w-full max-w-lg mx-4 max-h-full bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/60 dark:border-slate-700/60 overflow-hidden flex flex-col animate-in zoom-in-95 fade-in duration-200">
+          {/* Header（钉顶） */}
+          <div className="relative px-6 pt-6 pb-4 flex-shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
                 <Settings className="w-5 h-5 text-white" />
@@ -176,8 +187,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
             </button>
           </div>
 
-          {/* Tab bar */}
-          <div className="flex border-b border-slate-200 dark:border-slate-700 px-6 gap-1">
+          {/* Tab bar（钉顶） */}
+          <div className="flex border-b border-slate-200 dark:border-slate-700 px-6 gap-1 flex-shrink-0">
             {([
               { key: 'general' as const, label: '通用', icon: Settings },
               { key: 'account' as const, label: '账号', icon: User },
@@ -199,6 +210,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
             ))}
           </div>
 
+          {/* 可滚动区：内容超过屏幕时这里出滚动条，Header / Tab bar 永远固定 */}
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           {isLoading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
@@ -470,7 +483,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
               </div>
             </>
           )}
-        </div>
+          </div>
       </div>
     </div>
   )
