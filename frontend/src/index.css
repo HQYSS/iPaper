@@ -74,6 +74,19 @@
   }
 }
 
+/* iOS Safari/PWA 移动端：Tailwind 的 text-sm/text-xs (14px/12px) utility 类
+   优先级高于 @layer base，会覆盖上面的 16px 兜底；focus 时 iOS 检测到
+   计算字号 < 16px 就触发"自动放大整页"。在移动端用 !important 把所有
+   input/textarea/select 强制提到 16px，宁可视觉字号统一也不能放大整页。
+   桌面端不受影响（视觉密度保持）。*/
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /*
  * 移动端 App 外壳的全屏高度。
  *
