@@ -296,9 +296,10 @@ export interface ChatStreamEvent {
   // open: 前端侧在拿到响应后本地生成的"连接就绪"事件
   // chunk: 服务端推送的内容片段
   // truncated: 服务端告知因 max_tokens 被截断（在 done 之前）
-  // done: 流正常结束（无论是否截断都会收到）
+  // done: 流正常结束（finish_reason: stop / length）
+  // stopped: 用户主动停止（POST /stop 或 fetch abort 触发的 cancel）
   // error: 服务端错误事件
-  type: 'open' | 'chunk' | 'truncated' | 'done' | 'error'
+  type: 'open' | 'chunk' | 'truncated' | 'done' | 'stopped' | 'error'
   content?: string
   full_response?: string
   message?: string
@@ -371,6 +372,16 @@ export async function clearChatHistory(paperId: string, sessionId: string): Prom
   if (!response.ok) {
     throw new Error('Failed to clear chat history')
   }
+}
+
+export async function stopChat(paperId: string, sessionId: string): Promise<{ stopped: boolean }> {
+  const response = await authFetch(`${API_BASE}/chat/${paperId}/${sessionId}/stop`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    return { stopped: false }
+  }
+  return response.json()
 }
 
 export interface QuoteInput {
@@ -594,6 +605,16 @@ export async function clearCrossPaperChatHistory(sessionId: string): Promise<voi
   if (!response.ok) {
     throw new Error('Failed to clear cross-paper chat history')
   }
+}
+
+export async function stopCrossPaperChat(sessionId: string): Promise<{ stopped: boolean }> {
+  const response = await authFetch(`${API_BASE}/chat/cross-paper/${sessionId}/stop`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    return { stopped: false }
+  }
+  return response.json()
 }
 
 export async function* sendCrossPaperMessage(

@@ -905,6 +905,12 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                       </ReactMarkdown>
                     )}
                   </div>
+                  {message.truncated && !(isStreaming && index === messages.length - 1) && (
+                    <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-100/70 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 text-xs">
+                      <AlertCircle className="w-3 h-3" />
+                      <span>{message.content ? '回复未完成' : '生成中…'}</span>
+                    </div>
+                  )}
                 </div>
               )
             )}

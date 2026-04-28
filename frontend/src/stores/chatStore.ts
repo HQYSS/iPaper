@@ -96,7 +96,6 @@ interface ChatStore {
 }
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
-const STREAM_HISTORY_PERSIST_DELAY_MS = 300
 const initialSessionBootstrapPromises = new Map<string, Promise<api.SessionMeta>>()
 const buildDraft = (
   input: string,
@@ -124,24 +123,12 @@ function cloneChatMessages(messages: api.ChatMessage[]): api.ChatMessage[] {
   return messages.map(cloneChatMessage)
 }
 
-function cloneForkData(forks: Record<string, api.ForkData>): Record<string, api.ForkData> | undefined {
-  const entries = Object.entries(forks)
-  if (entries.length === 0) return undefined
-  return Object.fromEntries(
-    entries.map(([key, fork]) => [
-      key,
-      {
-        active: fork.active,
-        alternatives: fork.alternatives.map((branch) => cloneChatMessages(branch)),
-      },
-    ])
-  )
-}
-
 function removeTrailingEmptyAssistant(messages: api.ChatMessage[]): api.ChatMessage[] {
   const nextMessages = cloneChatMessages(messages)
   const lastMessage = nextMessages[nextMessages.length - 1]
-  if (lastMessage?.role === 'assistant' && !lastMessage.content) {
+  // truncated=true 的空 assistant 占位代表 "后端 task 仍在跑、首个 chunk 还没到"
+  // （如果 task 已死，后端 GET /history 会清掉它），保留这个占位以便 UI 显示"生成中"
+  if (lastMessage?.role === 'assistant' && !lastMessage.content && !lastMessage.truncated) {
     nextMessages.pop()
   }
   return nextMessages
@@ -227,43 +214,6 @@ async function removeEmptyAutoSessions(
   return {
     sessions: filteredSessions,
     lastActiveSessionId: nextActiveSessionId,
-  }
-}
-
-function createHistoryPersistController(persist: () => Promise<void>) {
-  let timer: number | null = null
-
-  const runPersist = async () => {
-    try {
-      await persist()
-    } catch {
-      // 历史快照同步失败不打断当前流式会话
-    }
-  }
-
-  return {
-    schedule() {
-      if (timer !== null) {
-        window.clearTimeout(timer)
-      }
-      timer = window.setTimeout(() => {
-        timer = null
-        void runPersist()
-      }, STREAM_HISTORY_PERSIST_DELAY_MS)
-    },
-    async flush() {
-      if (timer !== null) {
-        window.clearTimeout(timer)
-        timer = null
-      }
-      await runPersist()
-    },
-    cancel() {
-      if (timer !== null) {
-        window.clearTimeout(timer)
-        timer = null
-      }
-    },
   }
 }
 
@@ -427,27 +377,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     quotes?: QuoteItem[],
     pageSelections?: api.PaperPageSelectionInput[]
   ) => {
+    // 后端 ChatTaskService 已接管"独立任务 + 增量落盘"，前端只负责：
+    // 1. 乐观地把 user / assistant 占位塞进 UI
+    // 2. 订阅 SSE 流式更新 UI
+    // 3. 任何异常都不再删除占位消息——后端是真相源；切后台/网络断 → 后端继续写盘，
+    //    用户重新打开/切回会话时由 loadChatHistory 拉到最新内容
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
-    const persistedForks = cloneForkData(get().forks)
 
     const userMessage: api.ChatMessage = {
       role: 'user',
       content: message,
       quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
     }
-    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
-    let persistedMessages = [
-      ...cloneChatMessages(get().messages),
-      cloneChatMessage(userMessage),
-      cloneChatMessage(assistantMessage),
-    ]
-    const historyPersister = createHistoryPersistController(() =>
-      updateChatHistoryOffline(paperId, sessionId, persistedMessages, persistedForks)
-    )
+    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '', truncated: true }
     set((state) => ({
-      messages: [...state.messages, userMessage],
+      messages: [...state.messages, userMessage, assistantMessage],
       isStreaming: true,
       error: null,
       abortController: controller,
@@ -458,7 +404,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
         : state.pageSelectionsByConversation,
     }))
-    set((state) => ({ messages: [...state.messages, assistantMessage] }))
 
     const isStillActive = () =>
       get().currentPaperId === paperId && get().currentSessionId === sessionId
@@ -471,73 +416,71 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ))
     }
 
+    const finalizeAssistantMessage = () => {
+      // 把 UI 中最后一条 assistant 的 truncated 标记移除（正常完成）
+      if (!isStillActive()) return
+      set((state) => {
+        const newMessages = [...state.messages]
+        const last = newMessages[newMessages.length - 1]
+        if (last?.role === 'assistant' && last.truncated) {
+          newMessages[newMessages.length - 1] = { ...last, truncated: undefined }
+        }
+        return { messages: newMessages }
+      })
+    }
+
     try {
       for await (const data of api.sendMessage(paperId, sessionId, message, quotes, effectivePageSelections, controller.signal)) {
         if (data.type === 'open') {
-          await historyPersister.flush()
           continue
         }
 
         if (data.type === 'done') {
+          finalizeAssistantMessage()
+          clearStreamingState()
+          continue
+        }
+
+        if (data.type === 'stopped') {
+          // 后端确认已停止；保留 UI 中已有 partial + truncated 标记
           clearStreamingState()
           continue
         }
 
         if (data.type === 'error') {
           clearStreamingState()
-          persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-          await historyPersister.flush()
           if (!isStillActive()) continue
-          set((state) => ({
-            error: data.message || 'Unknown error',
-            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-          }))
+          set({ error: data.message || 'Unknown error' })
           continue
         }
 
-        if (data.type === 'chunk' && data.content) {
-          const lastPersistedMessage = persistedMessages[persistedMessages.length - 1]
-          if (lastPersistedMessage?.role === 'assistant') {
-            lastPersistedMessage.content += data.content
-            historyPersister.schedule()
-          }
-        }
-
-        if (!isStillActive()) continue
-
-        if (data.type === 'chunk' && data.content) {
+        if (data.type === 'chunk' && data.content && isStillActive()) {
           set((state) => {
             const newMessages = [...state.messages]
             const lastMessage = newMessages[newMessages.length - 1]
             if (lastMessage.role === 'assistant') {
-              lastMessage.content += data.content
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                content: lastMessage.content + data.content,
+              }
             }
             return { messages: newMessages }
           })
         }
       }
-      await historyPersister.flush()
+      finalizeAssistantMessage()
       clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
-        // Stopped by user — keep partial content if any, remove empty assistant message
+        // 用户点了"停止生成"或网络连接被强制断开。后端可能：
+        // - 已经收到 POST /stop（stopStreaming() 中触发）→ task 已 cancel
+        // - 没收到（纯网络断）→ task 在后端继续跑、继续写盘
+        // 不论哪种，都不删除 UI 中的 partial。已显示的内容保留，等下次切回会话时拉最新。
         clearStreamingState()
-        persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-        await historyPersister.flush()
-        if (!isStillActive()) return
-        set((state) => {
-          const msgs = [...state.messages]
-          const last = msgs[msgs.length - 1]
-          if (last?.role === 'assistant' && !last.content) {
-            msgs.pop()
-          }
-          return { messages: msgs }
-        })
         return
       }
       if (error instanceof api.PageSelectionRequiredError) {
         clearStreamingState()
-        historyPersister.cancel()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -566,19 +509,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         return
       }
+      // 其它异常（HTTP 5xx / 网络错误）：保留 UI 状态，提示连接异常即可。
+      // 后端 task 若仍存活会继续写盘；用户切走再切回会话由 loadChatHistory 拉最新。
       clearStreamingState()
-      persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-      await historyPersister.flush()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
-      set((state) => ({
-        messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-      }))
     }
   },
 
   stopStreaming: () => {
-    const { abortController } = get()
+    const { abortController, currentPaperId, currentSessionId, isCrossPaperMode } = get()
+    if (currentSessionId) {
+      // 显式告诉后端停止 task；后端会触发 cancel + persist truncated 状态
+      if (isCrossPaperMode) {
+        api.stopCrossPaperChat(currentSessionId).catch(() => {})
+      } else if (currentPaperId) {
+        api.stopChat(currentPaperId, currentSessionId).catch(() => {})
+      }
+    }
     if (abortController) {
       abortController.abort()
     }
@@ -851,27 +799,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     quotes?: QuoteItem[],
     pageSelections?: api.PaperPageSelectionInput[]
   ) => {
+    // 与 sendMessage 同样的策略：后端 ChatTaskService 接管增量落盘，前端不再做兜底持久化，
+    // 网络断/abort 都不删除 partial。详细说明见 sendMessage 注释。
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
-    const persistedForks = cloneForkData(get().forks)
 
     const userMessage: api.ChatMessage = {
       role: 'user',
       content: message,
       quotes: quotes && quotes.length > 0 ? [...quotes] : undefined,
     }
-    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '' }
-    let persistedMessages = [
-      ...cloneChatMessages(get().messages),
-      cloneChatMessage(userMessage),
-      cloneChatMessage(assistantMessage),
-    ]
-    const historyPersister = createHistoryPersistController(() =>
-      updateCrossPaperChatHistoryOffline(sessionId, persistedMessages, persistedForks)
-    )
+    const assistantMessage: api.ChatMessage = { role: 'assistant', content: '', truncated: true }
     set((state) => ({
-      messages: [...state.messages, userMessage],
+      messages: [...state.messages, userMessage, assistantMessage],
       isStreaming: true,
       error: null,
       abortController: controller,
@@ -882,7 +823,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ? { ...state.pageSelectionsByConversation, [selectionKey]: effectivePageSelections }
         : state.pageSelectionsByConversation,
     }))
-    set((state) => ({ messages: [...state.messages, assistantMessage] }))
 
     const isStillActive = () =>
       get().isCrossPaperMode && get().currentSessionId === sessionId
@@ -895,72 +835,65 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ))
     }
 
+    const finalizeAssistantMessage = () => {
+      if (!isStillActive()) return
+      set((state) => {
+        const newMessages = [...state.messages]
+        const last = newMessages[newMessages.length - 1]
+        if (last?.role === 'assistant' && last.truncated) {
+          newMessages[newMessages.length - 1] = { ...last, truncated: undefined }
+        }
+        return { messages: newMessages }
+      })
+    }
+
     try {
       for await (const data of api.sendCrossPaperMessage(sessionId, message, quotes, effectivePageSelections, controller.signal)) {
         if (data.type === 'open') {
-          await historyPersister.flush()
           continue
         }
 
         if (data.type === 'done') {
+          finalizeAssistantMessage()
+          clearStreamingState()
+          continue
+        }
+
+        if (data.type === 'stopped') {
           clearStreamingState()
           continue
         }
 
         if (data.type === 'error') {
           clearStreamingState()
-          persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-          await historyPersister.flush()
           if (!isStillActive()) continue
-          set((state) => ({
-            error: data.message || 'Unknown error',
-            messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-          }))
+          set({ error: data.message || 'Unknown error' })
           continue
         }
 
-        if (data.type === 'chunk' && data.content) {
-          const lastPersistedMessage = persistedMessages[persistedMessages.length - 1]
-          if (lastPersistedMessage?.role === 'assistant') {
-            lastPersistedMessage.content += data.content
-            historyPersister.schedule()
-          }
-        }
-
-        if (!isStillActive()) continue
-
-        if (data.type === 'chunk' && data.content) {
+        if (data.type === 'chunk' && data.content && isStillActive()) {
           set((state) => {
             const newMessages = [...state.messages]
             const lastMessage = newMessages[newMessages.length - 1]
             if (lastMessage.role === 'assistant') {
-              lastMessage.content += data.content
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                content: lastMessage.content + data.content,
+              }
             }
             return { messages: newMessages }
           })
         }
       }
-      await historyPersister.flush()
+      finalizeAssistantMessage()
       clearStreamingState()
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         clearStreamingState()
-        persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-        await historyPersister.flush()
-        if (!isStillActive()) return
-        set((state) => {
-          const msgs = [...state.messages]
-          const last = msgs[msgs.length - 1]
-          if (last?.role === 'assistant' && !last.content) {
-            msgs.pop()
-          }
-          return { messages: msgs }
-        })
         return
       }
       if (error instanceof api.PageSelectionRequiredError) {
         clearStreamingState()
-        historyPersister.cancel()
         if (!isStillActive()) return
         set((state) => {
           const msgs = [...state.messages]
@@ -989,13 +922,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         return
       }
       clearStreamingState()
-      persistedMessages = removeTrailingEmptyAssistant(persistedMessages)
-      await historyPersister.flush()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
-      set((state) => ({
-        messages: state.messages.filter((_, i) => i !== state.messages.length - 1),
-      }))
     }
   },
 
