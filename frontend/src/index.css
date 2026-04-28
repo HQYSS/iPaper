@@ -74,6 +74,28 @@
   }
 }
 
+/*
+ * 移动端 App 外壳的全屏高度。
+ *
+ * - Safari 浏览器模式：`100svh` = Safari 工具栏完全展开时的最小可视高度，
+ *   永远不会被工具栏盖到底部 Tab；dvh 会随工具栏动画跳变，弃用。
+ *
+ * - PWA standalone 模式：`100svh` 在 iOS WebKit 当前实现下会**减去** home indicator
+ *   的 safe-area-bottom（≈34px），导致容器底部空出一段（用户实测）。PWA 没有可
+ *   收/展的 UA UI，dvh = lvh = vh = 屏幕高度，且 dvh 不扣 safe-area，最稳。
+ *   底部 Tab 通过自身的 `padding-bottom: env(safe-area-inset-bottom)` 让出
+ *   home indicator 区域，不会被遮。
+ */
+.mobile-app-shell {
+  height: 100svh;
+}
+
+@media (display-mode: standalone) {
+  .mobile-app-shell {
+    height: 100dvh;
+  }
+}
+
 /* PDF Viewer 样式调整 */
 .rpv-core__viewer {
   height: 100% !important;

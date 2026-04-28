@@ -82,13 +82,12 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
 
   return (
     <div
-      className="flex flex-col bg-background text-foreground overflow-hidden"
+      className="mobile-app-shell flex flex-col bg-background text-foreground overflow-hidden"
       style={{
-        // 关键：用 100svh（small viewport height）= Safari 工具栏完全展开时的最小可视高度，
-        // 永远不会被工具栏盖到。dvh 在 iOS Safari 浏览器模式下随工具栏动画变化，时机不准，
-        // 会出现底部 Tab 一会儿露一会儿被遮的问题。
-        // 键盘弹起的视口适配靠 ChatPanel 内部用 --visual-vh 自适应高度，不在容器层处理。
-        height: '100svh',
+        // 高度由 .mobile-app-shell 在 index.css 里按 display-mode 切换：
+        // - 浏览器：100svh（避开 Safari 工具栏动画）
+        // - PWA standalone：100dvh（iOS svh 在 PWA 下会扣 safe-area-bottom，dvh 不会）
+        // 键盘弹起的视口适配靠 ChatPanel 内部按需消费 --visual-vh，不在外壳层处理。
         paddingTop: 'env(safe-area-inset-top)',
       }}
     >
