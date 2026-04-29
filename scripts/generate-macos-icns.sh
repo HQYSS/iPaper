@@ -65,13 +65,19 @@ mkdir -p "$ICONSET"
 # Step 1: 给源图套 macOS squircle mask + 100px 透明边距
 # macOS Big Sur+ 应用图标设计模板：1024 画布内 824x824 圆角方块，圆角半径 ≈ 22.37% × 824
 # 我们用 PIL 的 rounded_rectangle 近似（普通圆角矩形跟 superellipse squircle 视觉差极小）
+#
+# CONTENT_ZOOM：把源图先放大 + 居中裁剪再套 squircle，让 i 字母在画面里更饱满。
+# 源图（icon-1024.png）四周都是紫色背景，裁掉外圈不损失内容。
+# 1.0 = 原图直接缩到 squircle；1.25 = 源图放大 25%、裁中心，i 看起来明显更大。
 MASKED="$WORK/icon-macos-1024.png"
-echo "[INFO] 给 $SRC 加 macOS squircle mask → $MASKED"
-"$PYTHON_BIN" - "$SRC" "$MASKED" <<'PY'
+CONTENT_ZOOM="${CONTENT_ZOOM:-1.25}"
+echo "[INFO] 给 $SRC 加 macOS squircle mask（content zoom = $CONTENT_ZOOM）→ $MASKED"
+"$PYTHON_BIN" - "$SRC" "$MASKED" "$CONTENT_ZOOM" <<'PY'
 import sys
 from PIL import Image, ImageDraw
 
-src_path, out_path = sys.argv[1], sys.argv[2]
+src_path, out_path, zoom_str = sys.argv[1], sys.argv[2], sys.argv[3]
+zoom = float(zoom_str)
 
 CANVAS = 1024
 ICON = 824                           # macOS Big Sur+ 模板：1024 内 824 实心
@@ -79,6 +85,16 @@ PAD = (CANVAS - ICON) // 2           # 100
 RADIUS = round(ICON * 0.2237)        # ≈ 184
 
 src = Image.open(src_path).convert("RGBA")
+W, H = src.size
+
+if zoom != 1.0:
+    # 先放大整张源图，再居中裁剪回原始尺寸 —— 等价于"放大主体，丢掉边缘留白"
+    zw, zh = round(W * zoom), round(H * zoom)
+    zoomed = src.resize((zw, zh), Image.LANCZOS)
+    left = (zw - W) // 2
+    top = (zh - H) // 2
+    src = zoomed.crop((left, top, left + W, top + H))
+
 if src.size != (ICON, ICON):
     src = src.resize((ICON, ICON), Image.LANCZOS)
 
@@ -86,7 +102,7 @@ mask = Image.new("L", (ICON, ICON), 0)
 draw = ImageDraw.Draw(mask)
 draw.rounded_rectangle((0, 0, ICON, ICON), radius=RADIUS, fill=255)
 
-# 用 mask 替换原 alpha（注意：原图 alpha 全 255，所以这里直接覆盖即可）
+# 用 mask 替换原 alpha
 src.putalpha(mask)
 
 canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
