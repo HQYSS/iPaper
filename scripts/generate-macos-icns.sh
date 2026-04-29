@@ -130,6 +130,14 @@ iconutil -c icns "$ICONSET" -o "$OUT_ICNS"
 
 echo "[INFO] 写到 Electron：$OUT_ICNS"
 
+# 同步一份 squircle 后的 1024 PNG 给 Electron app.dock.setIcon 使用。
+# 之前踩过坑：Electron 28 在 macOS 上对 .icns 解析偶尔抛 "Failed to load image"，
+# 导致 main.js 的 whenReady 回调链 abort、createWindow 永远不调、用户看不到窗口。
+# PNG 是 Electron NativeImage 最稳的输入，作为 dock.setIcon 的首选。
+DOCK_PNG="$ROOT/electron/iPaper-dock.png"
+cp "$MASKED" "$DOCK_PNG"
+echo "[INFO] 同步 squircle PNG 给 Electron Dock：$DOCK_PNG"
+
 if [ -f "$APPLET_ICNS" ]; then
   cp "$OUT_ICNS" "$APPLET_ICNS"
   echo "[INFO] 同步到 applet：$APPLET_ICNS"

@@ -49,5 +49,10 @@
 	<string>This script needs access to administer this system to run.</string>
 	<key>OSAAppletShowStartupScreen</key>
 	<false/>
+	<!-- LSUIElement = YES：让 AppleScript applet 不在 Dock 显示自己的图标。
+	     iPaper.app 只是个 launcher 包装，真正的 GUI 是 Electron 进程。两者都显图标会让
+	     Dock 里出现"iPaper + Electron"两个图标，用户困惑。设 UIElement 让 applet 静默。 -->
+	<key>LSUIElement</key>
+	<true/>
 </dict>
 </plist>
