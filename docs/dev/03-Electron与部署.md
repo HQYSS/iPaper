@@ -67,6 +67,43 @@ webPreferences: {
 
 ---
 
+## 启动事故排查 — `app.whenReady` 副作用必须 try/catch
+
+**铁律**：`app.whenReady().then(async () => { ... })` 回调里 `createWindow()`
+之前的所有"装饰性"副作用（`dock.setIcon` / `setBadge` / 任意可能失败的 IO）
+**必须 try/catch 兜底**，绝不能让装饰性失败阻断主流程。
+
+### 历史事故（2026-04-29）
+
+**症状**：双击 iPaper.app 没响应。`ps` 看 Electron 主进程 + GPU helper +
+network helper 都活着，**唯独缺 Renderer helper（=BrowserWindow 没创建）**。
+applet 在 Dock 上显示"应用程序没有响应"。
+
+**根因**：`app.dock.setIcon('iPaper.icns')` 在 Electron 28 的 macOS 实现里偶
+然抛 `Failed to load image from path`。这个错变成 unhandled promise rejection，
+把外层 async 回调链直接 abort —— 后续 `startBackend()` / `waitForBackend()`
+/ `createWindow()` **全都没执行**。主进程卡在 whenReady 死循环：不退也没窗口。
+
+**怎么定位**：`iPaper.app/Contents/MacOS/iPaper.sh` 已经把 Electron 的
+stdout/stderr 重定向到 `logs/electron.log`。下次"窗口不出来"，**第一件事就
+是看这个文件**，根因往往一行就在那。
+
+### 配套加固
+
+- `app.dock.setIcon` 优先用 PNG，fallback icns —— Electron 28 的 NativeImage
+  对 `.icns` 不稳，对 PNG 稳。`scripts/generate-macos-icns.sh` 会同时输出
+  `electron/iPaper-dock.png` 给 `setIcon` 用
+- `iPaper.sh` cleanup 改用 `kill -9` —— 之前 SIGTERM 杀不掉孤儿 Electron 主
+  进程，那只孤儿持有 `singleInstanceLock` 让下次启动的 Electron 拿不到锁
+  立即 `app.quit()`，用户看到主进程在跑但永远没窗口
+- `iPaper.app/Contents/Info.plist` 加 `LSUIElement=YES` —— applet 不在 Dock
+  显示自己的图标，避免"iPaper 图标 + Electron 图标"两个图标并排
+- `iPaper.sh` 启动 Electron 前 patch `node_modules/electron/dist/Electron.app`
+  的 `CFBundleName/DisplayName/IconFile` 为 iPaper（图标能换成功；名字 label
+  受 Launch Services 缓存顽固限制，可能仍显示 Electron —— 工程妥协可接受）
+
+---
+
 ## 预加载脚本 (`electron/preload.js`)
 
 通过 `contextBridge` 暴露 `electronAPI` 给渲染进程：
@@ -127,7 +164,10 @@ start_electron()    # 启动 Electron（前台运行）
 - 日志输出到 `项目根目录/logs/`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
-- cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁，避免出现“老 Electron 壳 + 新前后端服务”的混合运行态
+- cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁，避免出现"老 Electron 壳 + 新前后端服务"的混合运行态
+- **cleanup 用 `kill -9` / `pkill -9`** —— 之前用 SIGTERM 杀不掉孤儿 Electron 主进程（不响应 SIGTERM 的话留下来持有 `singleInstanceLock` 阻断下次启动），见上面"启动事故排查"小节
+- **Electron stdout/stderr 重定向到 `logs/electron.log`** —— 否则 `app.dock.setIcon` 之类的报错会被 applet 吞掉，"窗口不出来"完全无法定位
+- **`patch_electron_branding`**：启动 Electron 前修改 `node_modules/electron/dist/Electron.app/Contents/Info.plist` 的 `CFBundleName/DisplayName/IconFile` 为 iPaper，并把 `iPaper.icns` 复制进 Electron.app 的 Resources。每次启动幂等执行，npm install 覆盖后下次启动会自动重 patch
 
 **注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。`start-cursor-mode.sh` 也使用相同的 PID 文件 + 端口清理机制。
 
@@ -202,16 +242,19 @@ cd /tmp/ipaper-icon-design && python3 generate_icons.py   # 重生成全套 PNG 
 
 部署后用 iPhone Safari 强制刷新（关掉 PWA 进程后重开），验证图标和 manifest 已更新。
 
-### macOS 三个图标位置
+### macOS 图标的多个位置
 
-iPaper 在 macOS 上的图标分散在三个独立位置，**改设计后必须三个一起换**：
+iPaper 在 macOS 上的图标分散在多个独立位置，**改设计后必须一起换**（生成脚本
+`./scripts/generate-macos-icns.sh` 已经把它们一次性同步到位）：
 
-| 位置 | 用途 | 生成方式 |
-|------|------|---------|
-| `frontend/public/icons/*.png` | PWA / Web 端，favicon、apple-touch-icon、Web manifest icons | `/tmp/ipaper-icon-design/generate_icons.py` |
-| `iPaper.app/Contents/Resources/applet.icns` | macOS Finder 里的 .app 图标 + 未启动时 Dock 上的 iPaper.app 图标 | `./scripts/generate-macos-icns.sh`（用 `sips` + `iconutil` 从 PNG 编出 .icns） |
-| `electron/iPaper.icns` | Electron 启动后接管的 Dock 图标（`app.dock.setIcon` 在 `electron/main.js` 里加载） | 同上脚本同步生成 |
+| 位置 | 用途 | 备注 |
+|------|------|------|
+| `frontend/public/icons/*.png` | PWA / Web 端，favicon、apple-touch-icon、Web manifest icons | 由 `/tmp/ipaper-icon-design/generate_icons.py` 生成 |
+| `iPaper.app/Contents/Resources/applet.icns` | 但因为 `Info.plist` 里 `LSUIElement=YES`，applet 不在 Dock 显示，这个图标实际只影响 Finder 视图 | 因为 LSUIElement 的关系，这个图标的可见性其实很低 |
+| `electron/iPaper.icns` | Electron `app.dock.setIcon` 的 fallback 输入（PNG 加载失败时才用到） | Electron 28 对 `.icns` 解析偶尔失败，所以是 fallback 不是首选 |
+| `electron/iPaper-dock.png` | **Electron `app.dock.setIcon` 的首选输入** —— Dock 上看到的紫色 i 就是它 | NativeImage 对 PNG 最稳；squircle + 100px 透明边距已在 PNG 里烘焙 |
+| `node_modules/electron/dist/Electron.app/Contents/Resources/iPaper.icns` | Electron 进程在 Launch Services 注册时用的 bundle 图标（影响 Cmd+Tab 任务切换器和 Dock 图标） | 由 `iPaper.sh` 启动前从 `electron/iPaper.icns` 复制 + patch Info.plist 的 `CFBundleIconFile` |
 
-如果只换 PWA 图标不换 .icns，本地 iPaper.app 在 Finder 和 Dock 里就还是旧图标 —— 这是历史上踩过的坑。
+如果只换 PWA 图标不换其余几个，本地 iPaper.app 在 Finder 和 Dock 里还是旧图标 —— 这是历史上踩过的坑。
 
 ---
