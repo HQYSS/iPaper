@@ -4,13 +4,18 @@
 #   - electron/iPaper.icns       (Electron 运行时 app.dock.setIcon 用)
 #   - iPaper.app/Contents/Resources/applet.icns (双击 iPaper.app 时 Finder/Dock 显示的图标)
 #
+# 关键：PWA 的 PNG 是整张紫色背景方形（iOS / Android 会自己加 mask），但 macOS Big Sur+
+# 的 Dock 图标都是 squircle 圆角 + 内 padding 设计语言，源图直接拿来做 .icns 在 Dock 里
+# 跟其他 app 排在一起会显得正方形突兀。所以本脚本会先用 PIL 给源图加 squircle mask
+# + 100px 透明边距，再编 .icns —— 输出和系统其他 app 视觉风格对齐。
+#
 # 用法：
 #   ./scripts/generate-macos-icns.sh
 #
 # 替换图标素材的标准流程：
-#   1. 改 assets/m1-letter-i.png 或换源图
+#   1. 改源图（assets/m1-letter-i.png 等）
 #   2. 跑 /tmp/ipaper-icon-design/generate_icons.py（重新生成全套 PNG 到 frontend/public/icons/）
-#   3. 跑本脚本（生成 .icns 并同步到 Electron 和 iPaper.app）
+#   3. 跑本脚本（自动加 macOS squircle，生成 .icns 并同步到 Electron 和 iPaper.app）
 #   4. ./scripts/deploy.sh 把 PWA 端的 PNG 推到 moshang.xyz
 set -euo pipefail
 
@@ -35,9 +40,61 @@ if ! command -v iconutil >/dev/null 2>&1; then
   exit 1
 fi
 
+# 优先用 conda Python（PIL 通常在那里），找不到就 fallback 到 python3
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if [ -x "/Users/admin/miniconda3/bin/python" ]; then
+    PYTHON_BIN="/Users/admin/miniconda3/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "[ERROR] 找不到 python，无法做 squircle mask" >&2
+    exit 1
+  fi
+fi
+
+if ! "$PYTHON_BIN" -c "from PIL import Image" >/dev/null 2>&1; then
+  echo "[ERROR] $PYTHON_BIN 没装 Pillow（PIL）。装一下：$PYTHON_BIN -m pip install Pillow" >&2
+  exit 1
+fi
+
 WORK="$(mktemp -d)"
 ICONSET="$WORK/iPaper.iconset"
 mkdir -p "$ICONSET"
+
+# Step 1: 给源图套 macOS squircle mask + 100px 透明边距
+# macOS Big Sur+ 应用图标设计模板：1024 画布内 824x824 圆角方块，圆角半径 ≈ 22.37% × 824
+# 我们用 PIL 的 rounded_rectangle 近似（普通圆角矩形跟 superellipse squircle 视觉差极小）
+MASKED="$WORK/icon-macos-1024.png"
+echo "[INFO] 给 $SRC 加 macOS squircle mask → $MASKED"
+"$PYTHON_BIN" - "$SRC" "$MASKED" <<'PY'
+import sys
+from PIL import Image, ImageDraw
+
+src_path, out_path = sys.argv[1], sys.argv[2]
+
+CANVAS = 1024
+ICON = 824                           # macOS Big Sur+ 模板：1024 内 824 实心
+PAD = (CANVAS - ICON) // 2           # 100
+RADIUS = round(ICON * 0.2237)        # ≈ 184
+
+src = Image.open(src_path).convert("RGBA")
+if src.size != (ICON, ICON):
+    src = src.resize((ICON, ICON), Image.LANCZOS)
+
+mask = Image.new("L", (ICON, ICON), 0)
+draw = ImageDraw.Draw(mask)
+draw.rounded_rectangle((0, 0, ICON, ICON), radius=RADIUS, fill=255)
+
+# 用 mask 替换原 alpha（注意：原图 alpha 全 255，所以这里直接覆盖即可）
+src.putalpha(mask)
+
+canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+canvas.paste(src, (PAD, PAD), src)
+canvas.save(out_path, format="PNG")
+PY
+
+SRC="$MASKED"
 
 echo "[INFO] 从 $SRC 生成 .iconset"
 # macOS 标准 .iconset 命名约定：基础尺寸 + @2x 高分屏版本
