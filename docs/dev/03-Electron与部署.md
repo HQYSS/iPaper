@@ -97,6 +97,9 @@ iPaper.app/
     │   ├── applet           # AppleScript 生成的 Mach-O 二进制（macOS 启动入口）
     │   └── iPaper.sh        # Bash 启动脚本（被 applet 调用）
     └── Resources/
+        ├── applet.icns      # Finder/Dock 显示的 .app 图标（紫色 i，由 scripts/generate-macos-icns.sh 生成）
+        ├── applet.rsrc      # AppleScript applet 内置资源
+        └── Scripts/         # AppleScript 字节码
 ```
 
 > **为什么用 AppleScript applet？** macOS Sonoma 不允许通过 Finder/`open` 命令启动以 shell 脚本为可执行文件的 .app bundle（报 `procNotFound -600` 错误）。AppleScript `applet` 是正规的 Mach-O 二进制，macOS 能正常启动。
@@ -191,11 +194,24 @@ start_electron()    # 启动 Electron（前台运行）
 ### 改图标 / PWA 资产的标准动作
 
 ```bash
-cd /tmp/ipaper-icon-design && python3 generate_icons.py   # 重生成全套图标
+cd /tmp/ipaper-icon-design && python3 generate_icons.py   # 重生成全套 PNG 到 frontend/public/icons/
+./scripts/generate-macos-icns.sh                          # 同步到 electron/iPaper.icns + iPaper.app/Contents/Resources/applet.icns，并刷 Finder/Dock 缓存
 # 改 sw.js 里的 CACHE_NAME，加一档版本号
 ./scripts/deploy.sh                                       # 自动 build + 推 dist
 ```
 
 部署后用 iPhone Safari 强制刷新（关掉 PWA 进程后重开），验证图标和 manifest 已更新。
+
+### macOS 三个图标位置
+
+iPaper 在 macOS 上的图标分散在三个独立位置，**改设计后必须三个一起换**：
+
+| 位置 | 用途 | 生成方式 |
+|------|------|---------|
+| `frontend/public/icons/*.png` | PWA / Web 端，favicon、apple-touch-icon、Web manifest icons | `/tmp/ipaper-icon-design/generate_icons.py` |
+| `iPaper.app/Contents/Resources/applet.icns` | macOS Finder 里的 .app 图标 + 未启动时 Dock 上的 iPaper.app 图标 | `./scripts/generate-macos-icns.sh`（用 `sips` + `iconutil` 从 PNG 编出 .icns） |
+| `electron/iPaper.icns` | Electron 启动后接管的 Dock 图标（`app.dock.setIcon` 在 `electron/main.js` 里加载） | 同上脚本同步生成 |
+
+如果只换 PWA 图标不换 .icns，本地 iPaper.app 在 Finder 和 Dock 里就还是旧图标 —— 这是历史上踩过的坑。
 
 ---

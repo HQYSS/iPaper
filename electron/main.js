@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const { spawn } = require('child_process')
 
 const isDev = process.argv.includes('--dev') || process.env.NODE_ENV === 'development'
@@ -103,6 +104,17 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   if (!SINGLE_INSTANCE_LOCK) return
+
+  // macOS Dock 图标：iPaper.app 是 AppleScript applet 包装，applet.icns 只决定 Finder
+  // 里和"未启动时"的 Dock 图标。Electron 启动后 Dock 图标会被 Electron 进程接管，默认
+  // 是灰齿轮，必须显式 dock.setIcon 才能用我们设计的紫色 i。
+  if (process.platform === 'darwin' && app.dock) {
+    const iconPath = path.join(__dirname, 'iPaper.icns')
+    if (fs.existsSync(iconPath)) {
+      app.dock.setIcon(iconPath)
+    }
+  }
+
   startBackend()
 
   try {
