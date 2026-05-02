@@ -8,6 +8,8 @@ cd "$SCRIPT_DIR"
 BACKEND_PORT=3000
 FRONTEND_PORT=5173
 PID_FILE="$SCRIPT_DIR/logs/backend.pid"
+WATCHDOG_PID_FILE="$SCRIPT_DIR/logs/backend-watchdog.pid"
+BACKEND_WATCHDOG_PID=""
 mkdir -p "$SCRIPT_DIR/logs"
 
 kill_pattern_if_running() {
@@ -17,6 +19,13 @@ kill_pattern_if_running() {
 
 cleanup() {
     echo "正在关闭服务..."
+    if [ -n "$BACKEND_WATCHDOG_PID" ]; then
+        kill "$BACKEND_WATCHDOG_PID" 2>/dev/null
+    fi
+    if [ -f "$WATCHDOG_PID_FILE" ]; then
+        kill "$(cat "$WATCHDOG_PID_FILE")" 2>/dev/null
+        rm -f "$WATCHDOG_PID_FILE"
+    fi
     if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null
         rm -f "$PID_FILE"
@@ -25,6 +34,38 @@ cleanup() {
     exit 0
 }
 trap cleanup SIGINT SIGTERM
+
+start_backend() {
+    echo "启动后端..."
+    cd "$SCRIPT_DIR/backend"
+    IPAPER_SYNC_ROLE=client python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
+    BACKEND_PID=$!
+    echo $BACKEND_PID > "$PID_FILE"
+    cd "$SCRIPT_DIR"
+}
+
+backend_is_alive() {
+    local pid=""
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+    fi
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && curl -s "http://127.0.0.1:$BACKEND_PORT/" 2>/dev/null | grep -q "ok"
+}
+
+start_backend_watchdog() {
+    (
+        while true; do
+            if ! backend_is_alive; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] 后端未存活，自动重启..."
+                lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null || true
+                start_backend
+            fi
+            sleep 5
+        done
+    ) &
+    BACKEND_WATCHDOG_PID=$!
+    echo $BACKEND_WATCHDOG_PID > "$WATCHDOG_PID_FILE"
+}
 
 # 清理可能残留的旧后端进程
 if [ -f "$PID_FILE" ]; then
@@ -40,12 +81,7 @@ fi
 kill_pattern_if_running "uvicorn main:app"
 lsof -ti :$BACKEND_PORT | xargs kill 2>/dev/null && sleep 1
 
-echo "启动后端..."
-cd backend
-IPAPER_SYNC_ROLE=client python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
-BACKEND_PID=$!
-echo $BACKEND_PID > "$PID_FILE"
-cd "$SCRIPT_DIR"
+start_backend
 
 echo "等待后端就绪..."
 for i in $(seq 1 30); do
@@ -55,6 +91,7 @@ for i in $(seq 1 30); do
     fi
     sleep 1
 done
+start_backend_watchdog
 
 # 先清理残留的 Vite 进程，避免端口冲突
 EXISTING_VITE_PID=$(lsof -ti :$FRONTEND_PORT 2>/dev/null)

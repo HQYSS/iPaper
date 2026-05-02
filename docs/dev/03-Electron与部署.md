@@ -152,6 +152,9 @@ start_frontend()    # nohup 启动 npm run dev → logs/frontend.log
     │
 wait_for_services() # 轮询后端和前端端口
     │
+start_backend_watchdog()
+    │               # 每 5s 检查后端 PID + 健康检查，掉线自动拉起
+    │
 start_electron()    # 启动 Electron（前台运行）
 ```
 
@@ -164,6 +167,7 @@ start_electron()    # 启动 Electron（前台运行）
 - 日志输出到 `项目根目录/logs/`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
+- **后端 watchdog**：`start_backend_watchdog()` 在 Electron 壳运行期间每 5 秒检查 `logs/backend.pid` 和 `GET /` 健康检查；如果后端进程退出或 3000 端口不可用，会写入 `logs/backend-watchdog.log` 并自动重启后端，避免前端还在但 API 断掉后刷新进入登录页
 - cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁，避免出现"老 Electron 壳 + 新前后端服务"的混合运行态
 - **cleanup 用 `kill -9` / `pkill -9`** —— 之前用 SIGTERM 杀不掉孤儿 Electron 主进程（不响应 SIGTERM 的话留下来持有 `singleInstanceLock` 阻断下次启动），见上面"启动事故排查"小节
 - **Electron stdout/stderr 重定向到 `logs/electron.log`** —— 否则 `app.dock.setIcon` 之类的报错会被 applet 吞掉，"窗口不出来"完全无法定位

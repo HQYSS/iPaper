@@ -14,6 +14,8 @@ export PATH="/opt/homebrew/bin:/Users/admin/miniconda3/bin:$PATH"
 BACKEND_PORT=3000
 FRONTEND_PORT=5173
 PID_FILE="$LOG_DIR/backend.pid"
+WATCHDOG_PID_FILE="$LOG_DIR/backend-watchdog.pid"
+BACKEND_WATCHDOG_PID=""
 
 kill_pattern_if_running() {
     local pattern="$1"
@@ -24,6 +26,13 @@ kill_pattern_if_running() {
 }
 
 cleanup() {
+    if [ -n "$BACKEND_WATCHDOG_PID" ]; then
+        kill "$BACKEND_WATCHDOG_PID" 2>/dev/null
+    fi
+    if [ -f "$WATCHDOG_PID_FILE" ]; then
+        kill "$(cat "$WATCHDOG_PID_FILE")" 2>/dev/null
+        rm -f "$WATCHDOG_PID_FILE"
+    fi
     # 1. PID 文件精准清理（先 SIGTERM，给后端机会清理；不响应则进入 pattern + 端口兜底）
     if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null
@@ -40,8 +49,31 @@ cleanup() {
 
 start_backend() {
     cd "$PROJECT_DIR/backend"
-    nohup env IPAPER_SYNC_ROLE=client "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT > "$LOG_DIR/backend.log" 2>&1 &
+    nohup env IPAPER_SYNC_ROLE=client "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT >> "$LOG_DIR/backend.log" 2>&1 &
     echo $! > "$PID_FILE"
+}
+
+backend_is_alive() {
+    local pid=""
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+    fi
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && curl -s "http://127.0.0.1:$BACKEND_PORT/" 2>/dev/null | grep -q "ok"
+}
+
+start_backend_watchdog() {
+    (
+        while true; do
+            if ! backend_is_alive; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] backend not alive, restarting..." >> "$LOG_DIR/backend-watchdog.log"
+                lsof -ti :$BACKEND_PORT | xargs kill -9 2>/dev/null
+                start_backend
+            fi
+            sleep 5
+        done
+    ) &
+    BACKEND_WATCHDOG_PID=$!
+    echo $BACKEND_WATCHDOG_PID > "$WATCHDOG_PID_FILE"
 }
 
 start_frontend() {
@@ -105,4 +137,5 @@ cleanup
 start_backend
 start_frontend
 wait_for_services
+start_backend_watchdog
 start_electron
