@@ -11,12 +11,13 @@ import '@react-pdf-viewer/bookmark/lib/styles/index.css'
 import '@react-pdf-viewer/page-navigation/lib/styles/index.css'
 import '@react-pdf-viewer/zoom/lib/styles/index.css'
 
-import { getTranslations, triggerTranslation, getTranslateStatus, getPdfUrl, authFetch, type PdfLang, type TranslationStatus, type TranslateStatus } from '../../services/api'
+import { getTranslations, triggerTranslation, getTranslateStatus, getPdfUrl, authFetch, type PdfLang, type PaperSourceType, type TranslationStatus, type TranslateStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 import { usePreferencesStore } from '../../stores/preferencesStore'
 
 interface PdfViewerProps {
   paperId: string
+  sourceType?: PaperSourceType
   /**
    * 移动端模式：
    * - 隐藏桌面端底部浮动工具栏（缩放/页码/调光/目录/引用返回）
@@ -296,7 +297,7 @@ function SearchBox({
   )
 }
 
-export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
+export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }: PdfViewerProps) {
   const [pdfUrl, setPdfUrl] = useState<string>('')
   const [showSearch, setShowSearch] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
@@ -336,6 +337,7 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
   const { ZoomIn, ZoomOut, CurrentScale } = zoomPluginInstance
 
   const blobCache = useRef<Record<string, string>>({})
+  const supportsTranslation = sourceType === 'arxiv'
 
   const persistScale = useCallback((scale: number) => {
     usePreferencesStore.getState().setPdfScale(scale)
@@ -528,6 +530,16 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
     stopTranslatePoll()
     Object.values(blobCache.current).forEach(URL.revokeObjectURL)
     blobCache.current = {}
+    if (!supportsTranslation) {
+      setTranslations({ zh: false, bilingual: false })
+      setPdfLang('en')
+      usePreferencesStore.getState().setPdfLang(paperId, 'en')
+      return () => {
+        stopTranslatePoll()
+        Object.values(blobCache.current).forEach(URL.revokeObjectURL)
+        blobCache.current = {}
+      }
+    }
     getTranslations(paperId).then(tr => {
       setTranslations(tr)
       const saved = usePreferencesStore.getState().getPdfLang(paperId) as PdfLang
@@ -538,7 +550,7 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
       Object.values(blobCache.current).forEach(URL.revokeObjectURL)
       blobCache.current = {}
     }
-  }, [paperId, stopTranslatePoll])
+  }, [paperId, supportsTranslation, stopTranslatePoll])
 
   useEffect(() => {
     return () => {
@@ -849,6 +861,7 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
               </svg>
             </button>
 
+            {supportsTranslation && (
             <div className="flex items-center gap-1.5 min-w-0">
               {translateStatus && translateStatus.status !== 'finished' && translateStatus.status !== 'none' && (
                 <div className="flex items-center gap-1 text-xs max-w-[140px] min-w-0">
@@ -916,6 +929,7 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
                 </button>
               </div>
             </div>
+            )}
           </div>
         )}
 
@@ -1219,6 +1233,8 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
             </button>
 
             {/* 语言切换 */}
+            {supportsTranslation && (
+            <>
             <div className="h-6 w-px bg-slate-200 dark:bg-slate-700" />
             <div className="flex items-center gap-0.5">
               <button
@@ -1264,8 +1280,10 @@ export function PdfViewer({ paperId, mobileMode = false }: PdfViewerProps) {
                 中文
               </button>
             </div>
+            </>
+            )}
             {/* 翻译进度 */}
-            {translateStatus && translateStatus.status !== 'finished' && translateStatus.status !== 'none' && (
+            {supportsTranslation && translateStatus && translateStatus.status !== 'finished' && translateStatus.status !== 'none' && (
               <div className="flex items-center gap-1.5 text-xs max-w-[200px]">
                 {translateStatus.status === 'polling' && (
                   <>

@@ -116,6 +116,8 @@ export async function updatePreferencesApi(partial: Record<string, unknown>): Pr
 
 export interface Paper {
   arxiv_id: string
+  source_type?: PaperSourceType
+  source_url?: string | null
   title: string
   title_zh?: string
   summary: string
@@ -130,9 +132,12 @@ export interface Paper {
 }
 
 export type PaperDownloadStatus = 'downloading' | 'ready' | 'failed'
+export type PaperSourceType = 'arxiv' | 'pdf_url'
 
 export interface PaperListItem {
   arxiv_id: string
+  source_type?: PaperSourceType
+  source_url?: string | null
   title: string
   title_zh?: string
   summary: string

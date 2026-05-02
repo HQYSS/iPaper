@@ -16,6 +16,8 @@ class PaperCreate(BaseModel):
 class PaperMeta(BaseModel):
     """论文元信息"""
     arxiv_id: str
+    source_type: str = "arxiv"  # arxiv | pdf_url
+    source_url: Optional[str] = None
     title: str
     title_zh: Optional[str] = None
     summary: str
@@ -34,6 +36,8 @@ class PaperMeta(BaseModel):
 class PaperListItem(BaseModel):
     """论文列表项"""
     arxiv_id: str
+    source_type: str = "arxiv"
+    source_url: Optional[str] = None
     title: str
     title_zh: Optional[str] = None
     summary: str

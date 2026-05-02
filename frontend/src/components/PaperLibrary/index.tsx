@@ -366,7 +366,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
                       onClick={async (e) => {
                         e.stopPropagation()
                         try {
-                          await addPaper(paper.arxiv_id)
+                          await addPaper(paper.source_type === 'pdf_url' ? paper.source_url || paper.arxiv_id : paper.arxiv_id)
                           addToast('success', '已重新开始下载')
                         } catch (err) {
                           addToast('error', (err as Error).message || '重试失败')

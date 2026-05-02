@@ -111,7 +111,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
         <div className={cn('absolute inset-0', activeTab === 'reading' ? 'block' : 'hidden')}>
           {selectedPaper ? (
             paperReady ? (
-              <PdfViewer paperId={selectedPaper.arxiv_id} mobileMode />
+              <PdfViewer paperId={selectedPaper.arxiv_id} sourceType={selectedPaper.source_type} mobileMode />
             ) : (
               <PaperNotReadyHint status={downloadStatus} />
             )

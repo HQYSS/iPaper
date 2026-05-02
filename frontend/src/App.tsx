@@ -371,10 +371,10 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
                       {selectedPaper.download_error ? `：${selectedPaper.download_error}` : '。'}
                     </p>
                     <p className="text-xs text-muted-foreground mb-4">
-                      多数是 arXiv 速率限制或网络抖动，稍后重试通常可恢复。
+                      多数是源站限制或网络抖动，稍后重试通常可恢复。
                     </p>
                     <button
-                      onClick={() => addPaper(selectedPaper.arxiv_id)}
+                      onClick={() => addPaper(selectedPaper.source_type === 'pdf_url' ? selectedPaper.source_url || selectedPaper.arxiv_id : selectedPaper.arxiv_id)}
                       className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-red-500 hover:bg-red-600 text-white rounded-lg transition-all shadow-sm"
                     >
                       <RotateCw className="w-4 h-4" />
@@ -384,7 +384,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
                 </div>
               )
             }
-            return <PdfViewer paperId={selectedPaper.arxiv_id} />
+            return <PdfViewer paperId={selectedPaper.arxiv_id} sourceType={selectedPaper.source_type} />
           })()
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">

@@ -76,7 +76,7 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
               </div>
               <div>
                 <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">添加论文</h2>
-                <p className="text-xs text-slate-400 mt-0.5">输入 arXiv ID 或完整 URL，加入你的论文库</p>
+                <p className="text-xs text-slate-400 mt-0.5">输入 arXiv ID、arXiv URL 或 PDF URL，加入你的论文库</p>
               </div>
             </div>
             <button
@@ -92,7 +92,7 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
           <div className="px-6 pb-2 space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                arXiv ID 或 URL
+                arXiv ID、arXiv URL 或 PDF URL
               </label>
               <input
                 ref={inputRef}
@@ -105,7 +105,7 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
                     handleSubmit()
                   }
                 }}
-                placeholder="如 1706.03762 或 https://arxiv.org/abs/1706.03762"
+                placeholder="如 1706.03762、arXiv URL 或 https://example.com/paper.pdf"
                 disabled={isAdding}
                 className="w-full px-4 py-3 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400 disabled:opacity-60"
               />
@@ -121,7 +121,7 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
             </div>
 
             <div className="px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              支持 arXiv ID（如 <code className="font-mono text-slate-700 dark:text-slate-200">1706.03762</code>）或论文页 URL；点击「添加」后元数据会立刻入库，英文 PDF 在后台继续下载。
+              支持 arXiv ID（如 <code className="font-mono text-slate-700 dark:text-slate-200">1706.03762</code>）、arXiv 论文页 URL 或普通 PDF URL；普通 PDF 不会自动生成中文翻译。
             </div>
           </div>
 

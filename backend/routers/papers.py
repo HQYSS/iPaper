@@ -22,6 +22,8 @@ async def list_papers(user: dict = Depends(get_current_user)):
     return [
         PaperListItem(
             arxiv_id=p.arxiv_id,
+            source_type=getattr(p, "source_type", "arxiv") or "arxiv",
+            source_url=getattr(p, "source_url", None),
             title=p.title,
             title_zh=p.title_zh,
             summary=p.summary[:200] + "..." if len(p.summary) > 200 else p.summary,
@@ -43,7 +45,8 @@ async def add_paper(request: PaperCreate, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail=message)
 
     sync_service.clear_paper_tombstone(uid, meta.arxiv_id)
-    await translation_service.ensure_translation(uid, meta.arxiv_id)
+    if getattr(meta, "source_type", "arxiv") == "arxiv":
+        await translation_service.ensure_translation(uid, meta.arxiv_id)
     sync_service.request_sync("paper-added", meta.arxiv_id)
 
     return meta

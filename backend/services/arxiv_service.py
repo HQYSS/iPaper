@@ -7,14 +7,17 @@ arXiv 论文下载服务
 3. 下载失败自动重试 3 次（指数退避 2s/4s/8s），仍失败则 download_status=failed
 """
 import asyncio
+import hashlib
 import json
 import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 import arxiv
+import httpx
 
 from config import settings
 from models import PaperMeta
@@ -30,6 +33,7 @@ class ArxivService:
 
     ARXIV_ID_PATTERN = re.compile(r'(\d{4}\.\d{4,5})(v\d+)?')
     ARXIV_URL_PATTERN = re.compile(r'arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(v\d+)?')
+    PDF_URL_PATTERN = re.compile(r'^https?://', re.IGNORECASE)
 
     def __init__(self):
         # key: f"{user_id}:{arxiv_id}" → 正在跑的后台下载 task
@@ -60,9 +64,33 @@ class ArxivService:
 
         return None
 
+    def parse_pdf_url_input(self, input_str: str) -> Optional[str]:
+        """解析普通 PDF URL。arXiv URL 优先走 arXiv 元数据流程。"""
+        input_str = input_str.strip()
+        if not self.PDF_URL_PATTERN.match(input_str):
+            return None
+        if self.ARXIV_URL_PATTERN.search(input_str):
+            return None
+        return input_str
+
     def get_paper_dir(self, user_id: str, arxiv_id: str) -> Path:
-        base_id = self.ARXIV_ID_PATTERN.match(arxiv_id).group(1)
+        match = self.ARXIV_ID_PATTERN.match(arxiv_id)
+        base_id = match.group(1) if match else arxiv_id
         return settings.get_user_papers_dir(user_id) / base_id
+
+    @staticmethod
+    def _paper_id_for_pdf_url(pdf_url: str) -> str:
+        digest = hashlib.sha256(pdf_url.encode("utf-8")).hexdigest()[:16]
+        return f"pdf_{digest}"
+
+    @staticmethod
+    def _title_from_pdf_url(pdf_url: str) -> str:
+        parsed = urlparse(pdf_url)
+        filename = unquote(Path(parsed.path).name)
+        if filename.lower().endswith(".pdf"):
+            filename = filename[:-4]
+        title = filename.replace("_", " ").replace("-", " ").strip()
+        return title or parsed.netloc or "PDF 论文"
 
     @staticmethod
     def _task_key(user_id: str, arxiv_id: str) -> str:
@@ -78,7 +106,10 @@ class ArxivService:
         """
         arxiv_id = self.parse_arxiv_input(arxiv_input)
         if not arxiv_id:
-            return False, f"无法解析 arXiv ID: {arxiv_input}", None
+            pdf_url = self.parse_pdf_url_input(arxiv_input)
+            if pdf_url:
+                return await self._add_pdf_url_paper(user_id, pdf_url)
+            return False, f"无法解析 arXiv ID 或 PDF URL: {arxiv_input}", None
 
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
@@ -118,12 +149,59 @@ class ArxivService:
 
         meta = PaperMeta(
             arxiv_id=arxiv_id,
+            source_type="arxiv",
+            source_url=f"https://arxiv.org/abs/{arxiv_id}",
             title=paper.title,
             summary=paper.summary,
             authors=[author.name for author in paper.authors],
             download_time=datetime.now(),
             has_latex=False,
             pdf_path=str(pdf_path),
+            download_status="downloading",
+            download_error=None,
+        )
+
+        self._save_meta(meta_file, meta)
+        self._update_index(user_id, meta)
+        self._ensure_download_task(user_id, meta)
+
+        return True, "下载已开始", meta
+
+    async def _add_pdf_url_paper(self, user_id: str, pdf_url: str) -> Tuple[bool, str, Optional[PaperMeta]]:
+        paper_id = self._paper_id_for_pdf_url(pdf_url)
+        paper_dir = self.get_paper_dir(user_id, paper_id)
+        meta_file = paper_dir / "meta.json"
+
+        if meta_file.exists():
+            meta = self._load_meta(meta_file)
+            status = getattr(meta, "download_status", "ready") or "ready"
+
+            if status == "ready":
+                return True, "论文已存在", meta
+
+            if status == "downloading":
+                self._ensure_download_task(user_id, meta)
+                return True, "下载进行中", meta
+
+            meta.download_status = "downloading"
+            meta.download_error = None
+            self._save_meta(meta_file, meta)
+            self._ensure_download_task(user_id, meta)
+            return True, "重新下载中", meta
+
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = paper_dir / "paper.pdf"
+        meta = PaperMeta(
+            arxiv_id=paper_id,
+            source_type="pdf_url",
+            source_url=pdf_url,
+            title=self._title_from_pdf_url(pdf_url),
+            summary=f"PDF URL: {pdf_url}",
+            authors=[],
+            download_time=datetime.now(),
+            has_latex=False,
+            pdf_path=str(pdf_path),
+            translation_status="completed",
             download_status="downloading",
             download_error=None,
         )
@@ -158,7 +236,11 @@ class ArxivService:
 
         for attempt in range(DOWNLOAD_MAX_RETRIES):
             try:
-                await asyncio.to_thread(self._blocking_download_pdf, arxiv_id, paper_dir)
+                meta = self._load_meta(meta_file)
+                if getattr(meta, "source_type", "arxiv") == "pdf_url":
+                    await asyncio.to_thread(self._blocking_download_pdf_url, meta.source_url, paper_dir)
+                else:
+                    await asyncio.to_thread(self._blocking_download_pdf, arxiv_id, paper_dir)
                 # 成功：更新 meta.json 为 ready
                 if meta_file.exists():
                     meta = self._load_meta(meta_file)
@@ -214,6 +296,34 @@ class ArxivService:
         paper.download_pdf(dirpath=str(paper_dir), filename=tmp_name)
         tmp_path = paper_dir / tmp_name
         final_path = paper_dir / "paper.pdf"
+        if final_path.exists():
+            final_path.unlink()
+        tmp_path.rename(final_path)
+
+    def _blocking_download_pdf_url(self, pdf_url: Optional[str], paper_dir: Path) -> None:
+        """从普通 PDF URL 下载 PDF。确保原子写入，并验证结果像 PDF。"""
+        if not pdf_url:
+            raise RuntimeError("PDF URL 为空")
+
+        tmp_path = paper_dir / "paper.pdf.part"
+        final_path = paper_dir / "paper.pdf"
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+        with httpx.Client(follow_redirects=True, timeout=120) as client:
+            with client.stream("GET", pdf_url) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        if chunk:
+                            f.write(chunk)
+
+        with open(tmp_path, "rb") as f:
+            header = f.read(1024)
+        if b"%PDF" not in header:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError("URL 返回的内容不是 PDF")
+
         if final_path.exists():
             final_path.unlink()
         tmp_path.rename(final_path)

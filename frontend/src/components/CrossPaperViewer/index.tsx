@@ -16,6 +16,8 @@ export function CrossPaperViewer() {
     return paper.title.length > 20 ? paper.title.slice(0, 20) + '…' : paper.title
   }
 
+  const currentPaper = papers.find((p) => p.arxiv_id === currentTab)
+
   return (
     <div className="h-full flex flex-col">
       {/* Tab 栏 */}
@@ -42,7 +44,7 @@ export function CrossPaperViewer() {
 
       {/* PDF 内容 — 切换 tab 时通过 key 重建 PdfViewer */}
       <div className="flex-1 min-h-0">
-        <PdfViewer key={currentTab} paperId={currentTab} />
+        <PdfViewer key={currentTab} paperId={currentTab} sourceType={currentPaper?.source_type} />
       </div>
     </div>
   )

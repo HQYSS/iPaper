@@ -13,8 +13,11 @@ router = APIRouter()
 @router.post("/{paper_id}/translate")
 async def trigger_translation(paper_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
-    if not arxiv_service.get_paper(uid, paper_id):
+    meta = arxiv_service.get_paper(uid, paper_id)
+    if not meta:
         raise HTTPException(status_code=404, detail="论文不存在")
+    if getattr(meta, "source_type", "arxiv") != "arxiv":
+        raise HTTPException(status_code=400, detail="非 arXiv PDF 暂不支持中文翻译")
 
     task = await translation_service.ensure_translation(uid, paper_id)
     return {
