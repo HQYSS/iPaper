@@ -139,12 +139,15 @@ iPaper.app/
         └── Scripts/         # AppleScript 字节码
 ```
 
-> **为什么用 AppleScript applet？** macOS Sonoma 不允许通过 Finder/`open` 命令启动以 shell 脚本为可执行文件的 .app bundle（报 `procNotFound -600` 错误）。AppleScript `applet` 是正规的 Mach-O 二进制，macOS 能正常启动。
+> **为什么用 AppleScript applet？** macOS Sonoma 不允许通过 Finder/`open` 命令启动以 shell 脚本为可执行文件的 .app bundle（报 `procNotFound -600` 错误）。AppleScript `applet` 是正规的 Mach-O 二进制，macOS 能正常启动。applet 只负责 `nohup` 后台拉起 `iPaper.sh` 并立刻退出，避免 Command+Space 再次启动时只激活一个没有窗口的隐藏 applet。
 
 ### 启动脚本流程 (`MacOS/iPaper.sh`)
 
 ```
-cleanup()           # 杀死可能残留的旧进程
+acquire_launch_lock()
+    │               # 有健康 Electron 时触发 second-instance 聚焦；无窗口残留时清理旧 runner
+    │
+cleanup_runtime()   # 杀死可能残留的旧进程
     │
 start_backend()     # nohup 启动 Python 后端 → logs/backend.log
     │
@@ -156,6 +159,8 @@ start_backend_watchdog()
     │               # 每 5s 检查后端 PID + 健康检查，掉线自动拉起
     │
 start_electron()    # 启动 Electron（前台运行）
+    │
+trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PID 文件
 ```
 
 **关键细节：**
@@ -166,9 +171,10 @@ start_electron()    # 启动 Electron（前台运行）
   - node: `/opt/homebrew/bin/node`
 - 日志输出到 `项目根目录/logs/`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
+- **启动锁**：`logs/ipaper-launch.lock/runner.pid` 记录当前 launcher。再次打开 `iPaper.app` 时，如果 Electron 仍健康，会启动一个短暂的第二实例触发 `app.requestSingleInstanceLock()` 的聚焦逻辑；如果只有旧 runner/端口残留但 Electron 已不在，则杀掉残留并重建运行态
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
 - **后端 watchdog**：`start_backend_watchdog()` 在 Electron 壳运行期间每 5 秒检查 `logs/backend.pid` 和 `GET /` 健康检查；如果后端进程退出或 3000 端口不可用，会写入 `logs/backend-watchdog.log` 并自动重启后端，避免前端还在但 API 断掉后刷新进入登录页
-- cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁，避免出现"老 Electron 壳 + 新前后端服务"的混合运行态
+- cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁和 launcher 启动锁，避免出现"老 Electron 壳 + 新前后端服务"或"隐藏 applet 活着但窗口已退出"的混合运行态
 - **cleanup 用 `kill -9` / `pkill -9`** —— 之前用 SIGTERM 杀不掉孤儿 Electron 主进程（不响应 SIGTERM 的话留下来持有 `singleInstanceLock` 阻断下次启动），见上面"启动事故排查"小节
 - **Electron stdout/stderr 重定向到 `logs/electron.log`** —— 否则 `app.dock.setIcon` 之类的报错会被 applet 吞掉，"窗口不出来"完全无法定位
 - **`patch_electron_branding`**：启动 Electron 前修改 `node_modules/electron/dist/Electron.app/Contents/Info.plist` 的 `CFBundleName/DisplayName/IconFile` 为 iPaper，并把 `iPaper.icns` 复制进 Electron.app 的 Resources。每次启动幂等执行，npm install 覆盖后下次启动会自动重 patch

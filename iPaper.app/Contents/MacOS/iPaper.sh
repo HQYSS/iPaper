@@ -15,7 +15,13 @@ BACKEND_PORT=3000
 FRONTEND_PORT=5173
 PID_FILE="$LOG_DIR/backend.pid"
 WATCHDOG_PID_FILE="$LOG_DIR/backend-watchdog.pid"
+LOCK_DIR="$LOG_DIR/ipaper-launch.lock"
+RUNNER_PID_FILE="$LOCK_DIR/runner.pid"
 BACKEND_WATCHDOG_PID=""
+RUNNER_OWNS_LOCK=0
+SHOULD_CLEANUP=0
+ELECTRON_BIN="$PROJECT_DIR/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+ELECTRON_PROCESS_PATTERN="Electron\\.app/Contents/MacOS/Electron \\. --dev --skip-backend"
 
 kill_pattern_if_running() {
     local pattern="$1"
@@ -25,7 +31,49 @@ kill_pattern_if_running() {
     pgrep -f "$pattern" >/dev/null 2>&1 && pkill -9 -f "$pattern" 2>/dev/null || true
 }
 
-cleanup() {
+electron_is_alive() {
+    pgrep -f "$ELECTRON_PROCESS_PATTERN" >/dev/null 2>&1
+}
+
+focus_existing_electron() {
+    [ -x "$ELECTRON_BIN" ] || return 0
+    cd "$PROJECT_DIR/electron"
+    "$ELECTRON_BIN" . --dev --skip-backend >> "$LOG_DIR/electron.log" 2>&1 &
+}
+
+acquire_launch_lock() {
+    while true; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "$$" > "$RUNNER_PID_FILE"
+            RUNNER_OWNS_LOCK=1
+            return 0
+        fi
+
+        local runner_pid=""
+        if [ -f "$RUNNER_PID_FILE" ]; then
+            runner_pid="$(cat "$RUNNER_PID_FILE" 2>/dev/null)"
+        fi
+
+        if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
+            if electron_is_alive; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] iPaper already running, focusing existing Electron window." >> "$LOG_DIR/launcher.log"
+                focus_existing_electron
+                exit 0
+            fi
+
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] stale launcher pid=$runner_pid without Electron, restarting runtime." >> "$LOG_DIR/launcher.log"
+            kill "$runner_pid" 2>/dev/null || true
+            sleep 1
+            kill -0 "$runner_pid" 2>/dev/null && kill -9 "$runner_pid" 2>/dev/null || true
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] stale launcher lock without live runner, restarting runtime." >> "$LOG_DIR/launcher.log"
+        fi
+
+        rm -rf "$LOCK_DIR"
+    done
+}
+
+cleanup_runtime() {
     if [ -n "$BACKEND_WATCHDOG_PID" ]; then
         kill "$BACKEND_WATCHDOG_PID" 2>/dev/null
     fi
@@ -46,6 +94,17 @@ cleanup() {
     lsof -ti :$BACKEND_PORT | xargs kill -9 2>/dev/null
     lsof -ti :$FRONTEND_PORT | xargs kill -9 2>/dev/null
 }
+
+cleanup() {
+    if [ "$SHOULD_CLEANUP" = "1" ]; then
+        cleanup_runtime
+    fi
+    if [ "$RUNNER_OWNS_LOCK" = "1" ]; then
+        rm -rf "$LOCK_DIR"
+    fi
+}
+
+trap cleanup EXIT INT TERM
 
 start_backend() {
     cd "$PROJECT_DIR/backend"
@@ -130,10 +189,12 @@ start_electron() {
     patch_electron_branding
     cd "$PROJECT_DIR/electron"
     # 重定向 stdout/stderr 到 electron.log，方便诊断窗口不出来 / createWindow 报错等问题
-    ./node_modules/electron/dist/Electron.app/Contents/MacOS/Electron . --dev --skip-backend > "$LOG_DIR/electron.log" 2>&1
+    "$ELECTRON_BIN" . --dev --skip-backend > "$LOG_DIR/electron.log" 2>&1
 }
 
-cleanup
+acquire_launch_lock
+cleanup_runtime
+SHOULD_CLEANUP=1
 start_backend
 start_frontend
 wait_for_services
