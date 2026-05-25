@@ -253,6 +253,10 @@ class ArxivService:
         task = loop.create_task(self._download_pdf_async(user_id, meta.arxiv_id))
         self._download_tasks[key] = task
 
+    def _has_active_download_task(self, user_id: str, arxiv_id: str) -> bool:
+        existing = self._download_tasks.get(self._task_key(user_id, arxiv_id))
+        return bool(existing and not existing.done())
+
     def _ensure_metadata_task(self, user_id: str, arxiv_id: str) -> None:
         """后台补齐 arXiv metadata。只对 arXiv 来源生效，且同一篇幂等。"""
         key = self._task_key(user_id, arxiv_id)
@@ -330,6 +334,8 @@ class ArxivService:
             return meta
 
         if status == "downloading":
+            if self._has_active_download_task(user_id, meta.arxiv_id):
+                return meta
             part_path.unlink(missing_ok=True)
             self._ensure_download_task(user_id, meta)
 
