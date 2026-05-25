@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import papers, chat, config, profile, translation, auth, preferences, sync
+from services.arxiv_service import arxiv_service
 from services.sync_service import sync_service
 
 # 创建 FastAPI 应用
@@ -44,6 +45,7 @@ async def root():
 @app.on_event("startup")
 async def startup_event():
     await sync_service.startup()
+    arxiv_service.recover_incomplete_downloads()
 
 
 @app.on_event("shutdown")

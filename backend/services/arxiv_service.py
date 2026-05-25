@@ -11,10 +11,13 @@ import hashlib
 import json
 import logging
 import re
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import arxiv
 import httpx
@@ -27,6 +30,18 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_MAX_RETRIES = 3
 DOWNLOAD_RETRY_BACKOFF = (2.0, 4.0, 8.0)
 
+# arXiv API 要求 legacy API 不超过 3 秒 1 次、单连接访问。
+# metadata 不再阻塞“添加论文”，因此这里优先合规和稳定，而不是快速失败。
+METADATA_NUM_RETRIES = 1
+METADATA_DELAY_SECONDS = 3.0
+METADATA_MIN_INTERVAL_SECONDS = 3.0
+
+PDF_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=30.0, pool=30.0)
+PDF_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+)
+
 
 class ArxivService:
     """arXiv 论文下载和管理服务"""
@@ -38,6 +53,9 @@ class ArxivService:
     def __init__(self):
         # key: f"{user_id}:{arxiv_id}" → 正在跑的后台下载 task
         self._download_tasks: Dict[str, asyncio.Task] = {}
+        self._metadata_tasks: Dict[str, asyncio.Task] = {}
+        self._metadata_lock = asyncio.Lock()
+        self._metadata_last_request_at: float = 0.0
 
     def parse_arxiv_input(self, input_str: str) -> Optional[str]:
         """
@@ -118,6 +136,8 @@ class ArxivService:
         if meta_file.exists():
             meta = self._load_meta(meta_file)
             status = getattr(meta, "download_status", "ready") or "ready"
+            if getattr(meta, "source_type", "arxiv") == "arxiv":
+                self._ensure_metadata_task(user_id, meta.arxiv_id)
 
             if status == "ready":
                 return True, "论文已存在", meta
@@ -134,16 +154,7 @@ class ArxivService:
             self._ensure_download_task(user_id, meta)
             return True, "重新下载中", meta
 
-        # 新论文：查 metadata → 写占位 → 触发后台下载
-        try:
-            paper = await asyncio.to_thread(self._fetch_metadata, arxiv_id)
-        except Exception as e:
-            logger.exception("fetch arxiv metadata failed for %s", arxiv_id)
-            return False, f"查询 arXiv 失败: {e}", None
-
-        if paper is None:
-            return False, f"未找到论文: {arxiv_id}", None
-
+        # 新论文：先写入最小占位 meta，让 PDF 下载不再被 arXiv metadata API 卡住。
         paper_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = paper_dir / "paper.pdf"
 
@@ -151,9 +162,9 @@ class ArxivService:
             arxiv_id=arxiv_id,
             source_type="arxiv",
             source_url=f"https://arxiv.org/abs/{arxiv_id}",
-            title=paper.title,
-            summary=paper.summary,
-            authors=[author.name for author in paper.authors],
+            title=f"arXiv {arxiv_id}",
+            summary="arXiv 元数据待补齐；PDF 下载完成后即可先阅读。",
+            authors=[],
             download_time=datetime.now(),
             has_latex=False,
             pdf_path=str(pdf_path),
@@ -164,6 +175,7 @@ class ArxivService:
         self._save_meta(meta_file, meta)
         self._update_index(user_id, meta)
         self._ensure_download_task(user_id, meta)
+        self._ensure_metadata_task(user_id, meta.arxiv_id)
 
         return True, "下载已开始", meta
 
@@ -213,8 +225,16 @@ class ArxivService:
         return True, "下载已开始", meta
 
     def _fetch_metadata(self, arxiv_id: str):
-        """同步查 arXiv metadata（供 to_thread 包装）"""
-        client = arxiv.Client()
+        """同步查 arXiv metadata（供 to_thread 包装）。
+
+        该调用只用于后台补齐 title/summary/authors，不阻塞添加论文。
+        外层 `_fetch_metadata_rate_limited` 会串行化请求并保证至少 3 秒间隔，
+        避免频繁添加论文时触发 arXiv legacy API 的 429 限流。
+        """
+        client = arxiv.Client(
+            num_retries=METADATA_NUM_RETRIES,
+            delay_seconds=METADATA_DELAY_SECONDS,
+        )
         search = arxiv.Search(id_list=[arxiv_id])
         results = list(client.results(search))
         return results[0] if results else None
@@ -225,8 +245,151 @@ class ArxivService:
         existing = self._download_tasks.get(key)
         if existing and not existing.done():
             return
-        task = asyncio.create_task(self._download_pdf_async(user_id, meta.arxiv_id))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule download for %s without a running event loop", meta.arxiv_id)
+            return
+        task = loop.create_task(self._download_pdf_async(user_id, meta.arxiv_id))
         self._download_tasks[key] = task
+
+    def _ensure_metadata_task(self, user_id: str, arxiv_id: str) -> None:
+        """后台补齐 arXiv metadata。只对 arXiv 来源生效，且同一篇幂等。"""
+        key = self._task_key(user_id, arxiv_id)
+        existing = self._metadata_tasks.get(key)
+        if existing and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule metadata refresh for %s without a running event loop", arxiv_id)
+            return
+        task = loop.create_task(self._refresh_metadata_async(user_id, arxiv_id))
+        self._metadata_tasks[key] = task
+
+    def recover_incomplete_downloads(self) -> int:
+        """Recover downloads that were interrupted by a backend restart.
+
+        Download tasks live in memory. During development, uvicorn reloads can leave
+        meta.json stuck at download_status=downloading after the task disappeared.
+        Scanning persisted paper directories on startup makes the state self-healing.
+        """
+        recovered = 0
+        users_root = settings.data_dir / "data"
+        if not users_root.exists():
+            return 0
+
+        for user_dir in users_root.iterdir():
+            if not user_dir.is_dir():
+                continue
+            papers_dir = user_dir / "papers"
+            if not papers_dir.exists():
+                continue
+            for meta_file in papers_dir.glob("*/meta.json"):
+                try:
+                    meta = self._load_meta(meta_file)
+                    before = getattr(meta, "download_status", "ready") or "ready"
+                    repaired = self._repair_download_state(user_dir.name, meta)
+                    after = getattr(repaired, "download_status", "ready") or "ready"
+                    if before == "downloading" and after == "downloading":
+                        recovered += 1
+                except Exception:
+                    logger.exception("failed to recover download state from %s", meta_file)
+
+        if recovered:
+            logger.info("recovered %d interrupted download task(s)", recovered)
+        return recovered
+
+    def _repair_download_state(self, user_id: str, meta: PaperMeta) -> PaperMeta:
+        """Align persisted download_status with files and in-memory tasks."""
+        paper_dir = self.get_paper_dir(user_id, meta.arxiv_id)
+        meta_file = paper_dir / "meta.json"
+        pdf_path = paper_dir / "paper.pdf"
+        part_path = paper_dir / "paper.pdf.part"
+        status = getattr(meta, "download_status", "ready") or "ready"
+
+        if pdf_path.exists():
+            if self._path_looks_like_pdf(pdf_path):
+                if status != "ready" or meta.download_error:
+                    meta.download_status = "ready"
+                    meta.download_error = None
+                    self._save_meta(meta_file, meta)
+                    self._update_index(user_id, meta)
+                return meta
+
+            if status != "failed":
+                meta.download_status = "failed"
+                meta.download_error = "本地 PDF 文件损坏，请重新下载"
+                self._save_meta(meta_file, meta)
+            return meta
+
+        if status == "ready":
+            meta.download_status = "failed"
+            meta.download_error = "本地 PDF 文件缺失，请重新下载"
+            self._save_meta(meta_file, meta)
+            return meta
+
+        if status == "downloading":
+            part_path.unlink(missing_ok=True)
+            self._ensure_download_task(user_id, meta)
+
+        return meta
+
+    @staticmethod
+    def _path_looks_like_pdf(path: Path) -> bool:
+        try:
+            with open(path, "rb") as f:
+                return b"%PDF" in f.read(1024)
+        except OSError:
+            return False
+
+    async def _fetch_metadata_rate_limited(self, arxiv_id: str):
+        async with self._metadata_lock:
+            elapsed = time.monotonic() - self._metadata_last_request_at
+            if elapsed < METADATA_MIN_INTERVAL_SECONDS:
+                await asyncio.sleep(METADATA_MIN_INTERVAL_SECONDS - elapsed)
+            try:
+                return await asyncio.to_thread(self._fetch_metadata, arxiv_id)
+            finally:
+                self._metadata_last_request_at = time.monotonic()
+
+    async def _refresh_metadata_async(self, user_id: str, arxiv_id: str) -> None:
+        paper_dir = self.get_paper_dir(user_id, arxiv_id)
+        meta_file = paper_dir / "meta.json"
+        try:
+            paper = await self._fetch_metadata_rate_limited(arxiv_id)
+            if paper is None:
+                logger.warning("metadata not found for %s", arxiv_id)
+                return
+            if not meta_file.exists():
+                return
+            meta = self._load_meta(meta_file)
+            if getattr(meta, "source_type", "arxiv") != "arxiv":
+                return
+            meta.title = paper.title
+            meta.summary = paper.summary
+            meta.authors = [author.name for author in paper.authors]
+            meta.source_url = paper.entry_id or f"https://arxiv.org/abs/{arxiv_id}"
+            self._save_meta(meta_file, meta)
+            self._update_index(user_id, meta)
+            logger.info("metadata refreshed for %s", arxiv_id)
+            try:
+                from services.sync_service import sync_service
+                sync_service.request_sync("paper-metadata", arxiv_id)
+            except Exception:
+                logger.exception("request_sync failed after metadata refresh")
+        except arxiv.HTTPError as e:
+            logger.warning(
+                "arxiv metadata refresh HTTPError for %s: status=%s",
+                arxiv_id,
+                getattr(e, "status", None),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("metadata refresh failed for %s", arxiv_id)
+        finally:
+            self._metadata_tasks.pop(self._task_key(user_id, arxiv_id), None)
 
     async def _download_pdf_async(self, user_id: str, arxiv_id: str) -> None:
         """后台 PDF 下载任务，含最多 3 次重试"""
@@ -263,7 +426,7 @@ class ArxivService:
                 logger.info("download cancelled for %s", arxiv_id)
                 raise
             except Exception as e:
-                last_err = str(e)
+                last_err = self._format_download_error(e)
                 logger.warning(
                     "download failed for %s (attempt %d/%d): %s",
                     arxiv_id, attempt + 1, DOWNLOAD_MAX_RETRIES, e,
@@ -285,48 +448,112 @@ class ArxivService:
         logger.error("download permanently failed for %s: %s", arxiv_id, last_err)
 
     def _blocking_download_pdf(self, arxiv_id: str, paper_dir: Path) -> None:
-        """供 to_thread 调用的同步 PDF 下载。确保原子写入（先写 tmp，再 rename）。"""
-        client = arxiv.Client()
-        search = arxiv.Search(id_list=[arxiv_id])
-        results = list(client.results(search))
-        if not results:
-            raise RuntimeError(f"arXiv 未返回结果: {arxiv_id}")
-        paper = results[0]
-        tmp_name = "paper.pdf.part"
-        paper.download_pdf(dirpath=str(paper_dir), filename=tmp_name)
-        tmp_path = paper_dir / tmp_name
-        final_path = paper_dir / "paper.pdf"
-        if final_path.exists():
-            final_path.unlink()
-        tmp_path.rename(final_path)
+        """供 to_thread 调用的同步 PDF 下载。避免再次请求 arXiv metadata API。"""
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
+        referer = f"https://arxiv.org/abs/{arxiv_id}"
+        try:
+            self._download_pdf_stream(pdf_url, paper_dir, referer=referer)
+        except Exception as httpx_error:
+            logger.warning("httpx arxiv PDF download failed for %s, falling back: %s", arxiv_id, httpx_error)
+            self._download_arxiv_pdf_with_urllib(pdf_url, paper_dir)
 
     def _blocking_download_pdf_url(self, pdf_url: Optional[str], paper_dir: Path) -> None:
         """从普通 PDF URL 下载 PDF。确保原子写入，并验证结果像 PDF。"""
         if not pdf_url:
             raise RuntimeError("PDF URL 为空")
 
+        self._download_pdf_stream(pdf_url, paper_dir, referer=self._referer_for_pdf_url(pdf_url))
+
+    def _download_pdf_stream(self, pdf_url: str, paper_dir: Path, referer: Optional[str] = None) -> None:
         tmp_path = paper_dir / "paper.pdf.part"
         final_path = paper_dir / "paper.pdf"
         if tmp_path.exists():
             tmp_path.unlink()
 
-        with httpx.Client(follow_redirects=True, timeout=120) as client:
-            with client.stream("GET", pdf_url) as resp:
+        headers = self._pdf_download_headers(referer)
+        try:
+            with httpx.Client(follow_redirects=True, timeout=PDF_DOWNLOAD_TIMEOUT, headers=headers) as client:
+                # 这里不用 stream：当前网络环境下 arXiv PDF 流式读取偶发 SSL 读错误，
+                # 一次性读取同一 URL 更稳定；论文 PDF 通常在可接受大小范围内。
+                resp = client.get(pdf_url)
                 resp.raise_for_status()
-                with open(tmp_path, "wb") as f:
-                    for chunk in resp.iter_bytes():
-                        if chunk:
-                            f.write(chunk)
+                content = resp.content
 
-        with open(tmp_path, "rb") as f:
-            header = f.read(1024)
-        if b"%PDF" not in header:
+            header = content[:1024]
+            if b"%PDF" not in header:
+                raise RuntimeError("下载内容不是 PDF")
+
+            tmp_path.write_bytes(content)
+            if final_path.exists():
+                final_path.unlink()
+            tmp_path.rename(final_path)
+        except Exception:
             tmp_path.unlink(missing_ok=True)
-            raise RuntimeError("URL 返回的内容不是 PDF")
+            raise
 
-        if final_path.exists():
-            final_path.unlink()
-        tmp_path.rename(final_path)
+    @staticmethod
+    def _download_arxiv_pdf_with_urllib(pdf_url: str, paper_dir: Path) -> None:
+        tmp_path = paper_dir / "paper.pdf.part"
+        final_path = paper_dir / "paper.pdf"
+        if tmp_path.exists():
+            tmp_path.unlink()
+        try:
+            urllib.request.urlretrieve(pdf_url, tmp_path)
+            with open(tmp_path, "rb") as f:
+                header = f.read(1024)
+            if b"%PDF" not in header:
+                raise RuntimeError("下载内容不是 PDF")
+            if final_path.exists():
+                final_path.unlink()
+            tmp_path.rename(final_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _pdf_download_headers(referer: Optional[str] = None) -> dict:
+        headers = {
+            "User-Agent": PDF_USER_AGENT,
+            "Accept": "application/pdf,text/html;q=0.9,*/*;q=0.8",
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    @staticmethod
+    def _referer_for_pdf_url(pdf_url: str) -> Optional[str]:
+        parsed = urlparse(pdf_url)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        path = parsed.path
+        if path.endswith(".full.pdf"):
+            path = path[:-len(".full.pdf")]
+        elif path.lower().endswith(".pdf"):
+            path = path[:-4]
+        return urlunparse((parsed.scheme, parsed.netloc, path or "/", "", "", ""))
+
+    @staticmethod
+    def _format_download_error(error: Exception) -> str:
+        if isinstance(error, httpx.HTTPStatusError):
+            status = error.response.status_code
+            if status == 403:
+                return "源站拒绝程序下载（HTTP 403）"
+            if status == 404:
+                return "PDF 不存在或 arXiv ID 有误（HTTP 404）"
+            if status == 429:
+                return "源站暂时限流（HTTP 429），请稍后重试"
+            return f"源站返回 HTTP {status}"
+        if isinstance(error, httpx.TimeoutException):
+            return "PDF 下载超时，请稍后重试"
+        if isinstance(error, httpx.NetworkError):
+            return "网络连接失败，请稍后重试"
+        if isinstance(error, urllib.error.HTTPError):
+            if error.code == 404:
+                return "PDF 不存在或 arXiv ID 有误（HTTP 404）"
+            if error.code == 429:
+                return "源站暂时限流（HTTP 429），请稍后重试"
+            return f"源站返回 HTTP {error.code}"
+        return str(error)
 
     def cancel_download(self, user_id: str, arxiv_id: str) -> None:
         """取消后台下载 task（删除论文时调用）"""
@@ -339,7 +566,8 @@ class ArxivService:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
         if meta_file.exists():
-            return self._load_meta(meta_file)
+            meta = self._load_meta(meta_file)
+            return self._repair_download_state(user_id, meta)
         return None
 
     def list_papers(self, user_id: str) -> List[PaperMeta]:
@@ -356,7 +584,8 @@ class ArxivService:
             paper_dir = self.get_paper_dir(user_id, item["arxiv_id"])
             meta_file = paper_dir / "meta.json"
             if meta_file.exists():
-                papers.append(self._load_meta(meta_file))
+                meta = self._load_meta(meta_file)
+                papers.append(self._repair_download_state(user_id, meta))
 
         # Keep the library aligned with add order even if index.json was rebuilt.
         papers.sort(key=lambda paper: paper.download_time)
@@ -377,6 +606,9 @@ class ArxivService:
 
     def get_pdf_path(self, user_id: str, arxiv_id: str) -> Optional[Path]:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
+        meta_file = paper_dir / "meta.json"
+        if meta_file.exists():
+            self._repair_download_state(user_id, self._load_meta(meta_file))
         pdf_path = paper_dir / "paper.pdf"
         if pdf_path.exists():
             return pdf_path
@@ -405,6 +637,7 @@ class ArxivService:
 
         for item in data["papers"]:
             if item["arxiv_id"] == meta.arxiv_id:
+                item["title"] = meta.title
                 return
 
         data["papers"].append({

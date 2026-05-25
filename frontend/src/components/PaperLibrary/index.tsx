@@ -4,6 +4,7 @@ import { usePaperStore } from '../../stores/paperStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
+import { formatDownloadError } from '../../lib/downloadError'
 import * as api from '../../services/api'
 
 interface PaperLibraryProps {
@@ -36,6 +37,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
   const { addToast } = useToastStore()
   const [crossPaperSessions, setCrossPaperSessions] = useState<api.CrossPaperSessionMeta[]>([])
   const [contextMenu, setContextMenu] = useState<PaperContextMenuState | null>(null)
+  const [retryingPaperId, setRetryingPaperId] = useState<string | null>(null)
   const paperListRef = useRef<HTMLDivElement>(null)
 
   const isSelectingMode = crossPaper.isSelecting
@@ -276,6 +278,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
               const downloadStatus = paper.download_status ?? 'ready'
               const isDownloading = downloadStatus === 'downloading'
               const isFailed = downloadStatus === 'failed'
+              const isRetrying = retryingPaperId === paper.arxiv_id
               const notReady = isDownloading || isFailed
               return (
                 <li
@@ -329,7 +332,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
                       {isDownloading && (
                         <div className="flex items-center gap-1.5 mt-1.5 text-xs text-indigo-600 dark:text-indigo-400">
                           <Loader2 className="w-3 h-3 animate-spin" />
-                          <span>正在下载英文 PDF…</span>
+                          <span>正在下载/恢复英文 PDF…</span>
                         </div>
                       )}
                       {isFailed && (
@@ -338,7 +341,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
                           title={paper.download_error || undefined}
                         >
                           <AlertTriangle className="w-3 h-3" />
-                          <span className="truncate">下载失败{paper.download_error ? `：${paper.download_error}` : ''}</span>
+                          <span className="truncate">下载失败：{formatDownloadError(paper.download_error)}</span>
                         </div>
                       )}
 
@@ -360,22 +363,32 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
                     </div>
                   </button>
 
-                  {/* 失败状态下的重试按钮 */}
-                  {!isSelectingMode && isFailed && (
+                  {/* 下载中或失败时都允许重新触发后端补任务 */}
+                  {!isSelectingMode && (isDownloading || isFailed) && (
                     <button
                       onClick={async (e) => {
                         e.stopPropagation()
+                        if (retryingPaperId) return
+                        setRetryingPaperId(paper.arxiv_id)
                         try {
                           await addPaper(paper.source_type === 'pdf_url' ? paper.source_url || paper.arxiv_id : paper.arxiv_id)
-                          addToast('success', '已重新开始下载')
+                          addToast('success', isDownloading ? '已重新触发下载恢复' : '已重新开始下载')
                         } catch (err) {
                           addToast('error', (err as Error).message || '重试失败')
+                        } finally {
+                          setRetryingPaperId(null)
                         }
                       }}
-                      className="absolute right-11 top-4 p-1.5 rounded-md text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40 transition-all"
-                      title="重新下载"
+                      disabled={isRetrying}
+                      className={cn(
+                        'absolute right-11 top-4 p-1.5 rounded-md transition-all disabled:opacity-50 disabled:cursor-not-allowed',
+                        isFailed
+                          ? 'text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40'
+                          : 'text-indigo-500 hover:bg-indigo-100 dark:hover:bg-indigo-950/40'
+                      )}
+                      title={isDownloading ? '重新触发下载恢复' : '重新下载'}
                     >
-                      <RotateCw className="w-4 h-4" />
+                      {isRetrying ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />}
                     </button>
                   )}
 

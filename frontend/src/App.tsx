@@ -18,6 +18,7 @@ import { usePreferencesStore } from './stores/preferencesStore'
 import { getConfig } from './services/api'
 import { useDeviceLayout } from './hooks/useDeviceLayout'
 import { useThemeMode, applyThemeMode } from './hooks/useThemeMode'
+import { formatDownloadError } from './lib/downloadError'
 import type { ThemeMode } from './hooks/useThemeMode'
 import type { PaperListItem } from './services/api'
 
@@ -371,7 +372,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
                       {selectedPaper.download_error ? `：${selectedPaper.download_error}` : '。'}
                     </p>
                     <p className="text-xs text-muted-foreground mb-4">
-                      多数是源站限制或网络抖动，稍后重试通常可恢复。
+                      {formatDownloadError(selectedPaper.download_error)}
                     </p>
                     <button
                       onClick={() => addPaper(selectedPaper.source_type === 'pdf_url' ? selectedPaper.source_url || selectedPaper.arxiv_id : selectedPaper.arxiv_id)}
