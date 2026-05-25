@@ -15,7 +15,7 @@ import { useChatStore } from './stores/chatStore'
 import { useProfileStore } from './stores/profileStore'
 import { useAuthStore } from './stores/authStore'
 import { usePreferencesStore } from './stores/preferencesStore'
-import { getConfig } from './services/api'
+import { consumePaperOpenRequest, getConfig } from './services/api'
 import { useDeviceLayout } from './hooks/useDeviceLayout'
 import { useThemeMode, applyThemeMode } from './hooks/useThemeMode'
 import { formatDownloadError } from './lib/downloadError'
@@ -144,6 +144,39 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
       }
     }).catch(() => {})
   }, [fetchPapers])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const openPaperById = async (paperId: string) => {
+      await fetchPapers()
+      if (cancelled) return
+      const paper = usePaperStore.getState().papers.find((p) => p.arxiv_id === paperId)
+      if (paper) {
+        selectPaper(paper)
+        setSidebarCollapsed(true)
+        setSidebarHoverOpen(false)
+      }
+    }
+
+    const pollOpenRequest = async () => {
+      try {
+        const request = await consumePaperOpenRequest()
+        if (!cancelled && request.paper_id) {
+          await openPaperById(request.paper_id)
+        }
+      } catch {
+        // The app can still run normally if the local helper endpoint is unavailable.
+      }
+    }
+
+    pollOpenRequest()
+    const timer = window.setInterval(pollOpenRequest, 1200)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [fetchPapers, selectPaper])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

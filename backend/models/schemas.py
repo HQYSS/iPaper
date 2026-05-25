@@ -13,6 +13,16 @@ class PaperCreate(BaseModel):
     arxiv_input: str = Field(..., description="arXiv ID 或 URL")
 
 
+class PaperOpenRequest(BaseModel):
+    """请求前端打开指定论文"""
+    paper_id: str = Field(..., description="要打开的论文 ID")
+
+
+class PaperOpenRequestState(BaseModel):
+    """待打开论文状态"""
+    paper_id: Optional[str] = None
+
+
 class PaperMeta(BaseModel):
     """论文元信息"""
     arxiv_id: str

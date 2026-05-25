@@ -162,7 +162,11 @@ app.on('second-instance', () => {
   if (mainWindow.isMinimized()) {
     mainWindow.restore()
   }
+  mainWindow.show()
   mainWindow.focus()
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true })
+  }
 })
 
 app.on('window-all-closed', () => {

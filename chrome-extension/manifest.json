@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "iPaper 导入助手",
+  "description": "从 arXiv 页面和 PDF 页面一键导入论文到本机 iPaper。",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwJFT7tGJpuLAl4COxjXnLZnN4YvNf9QGJFEVka1UtmDbzo1F2M4mxqmvk56GGvYnRRyUtiNKX67v09Y0lmtqUOFVtFdeyoTo6sKzVudxknjMxplukkFT8CM2l0xXhcfSHzf6ZW9WbLaWBw2AzbH4JCeLGGW3F993q13zFb4UOfcn7dxANBv1g0Bytxx9ZtAtFivr6IaRB2BrBDx5kAnQgkQXFbRqd8qaQpyzZ0bQQAjr4GzEh8NxqEpTjwisz2WwV+pMwItOpTiKmNT69Yx6mHIvQWhGF9Ay0ZYcNSAftpRGEojnnp+Ja/gyifkUlSrgaqYKT98WYAlg8zc65axRPQIDAQAB",
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:3000/*",
+    "http://localhost:5173/*",
+    "https://arxiv.org/*"
+  ],
+  "action": {
+    "default_title": "导入 iPaper",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://arxiv.org/abs/*",
+        "https://arxiv.org/html/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "css": [
+        "src/content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

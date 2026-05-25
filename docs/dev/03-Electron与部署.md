@@ -221,10 +221,33 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
 |------|------|
 | Electron → Vite Dev Server | `http://localhost:5173` (开发模式) |
 | Vite Proxy → FastAPI | `/api` → `http://127.0.0.1:3000` |
+| Chrome 扩展 → FastAPI | `http://127.0.0.1:3000/api` |
 | FastAPI → arXiv | `https://arxiv.org/` (下载论文时) |
 | FastAPI → OpenRouter API | `https://openrouter.ai/api/v1` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。
+
+---
+
+## Chrome Native Messaging
+
+Chrome 扩展无法直接执行本地命令。`chrome-extension/native-host/` 提供一个按需启动的 Native Messaging host，用于在本地后端未运行时拉起 `iPaper.app`。
+
+调用链：
+
+1. 扩展先请求 `GET http://127.0.0.1:3000/`。
+2. 如果后端不可用，扩展调用 `chrome.runtime.sendNativeMessage("com.ipaper.native_host", { "action": "start_ipaper" })`。
+3. Chrome 根据本机 manifest 临时启动 `ipaper_native_host.py`。
+4. host 执行白名单动作：`open iPaper.app`，然后等待后端健康检查通过。
+5. host 返回 JSON 结果后退出，不常驻后台。
+
+安装脚本：
+
+```bash
+./chrome-extension/native-host/install_native_host.sh
+```
+
+host manifest 写入 Chrome 约定目录，并通过 `allowed_origins` 绑定固定扩展 ID `niopfodkcphjggappggakadlgkddlogf`。host 不暴露任意 shell 命令，只支持 `healthcheck`、`start_ipaper` 和 `open_ipaper`；其中 `open_ipaper` 用于扩展里的「打开 iPaper」按钮，负责拉起或聚焦桌面端。
 
 ---
 

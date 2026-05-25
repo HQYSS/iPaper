@@ -170,6 +170,18 @@ export async function addPaper(arxivInput: string): Promise<Paper> {
   return response.json()
 }
 
+export interface PaperOpenRequestState {
+  paper_id: string | null
+}
+
+export async function consumePaperOpenRequest(): Promise<PaperOpenRequestState> {
+  const response = await authFetch(`${API_BASE}/papers/open-request`)
+  if (!response.ok) {
+    throw new Error('Failed to consume paper open request')
+  }
+  return response.json()
+}
+
 export async function getPaper(paperId: string): Promise<Paper> {
   const response = await authFetch(`${API_BASE}/papers/${paperId}`)
   if (!response.ok) {

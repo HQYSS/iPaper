@@ -1,5 +1,7 @@
 from .schemas import (
     PaperCreate,
+    PaperOpenRequest,
+    PaperOpenRequestState,
     PaperMeta,
     PaperListItem,
     PaperDetail,
@@ -31,6 +33,8 @@ from .schemas import (
 
 __all__ = [
     "PaperCreate",
+    "PaperOpenRequest",
+    "PaperOpenRequestState",
     "PaperMeta",
     "PaperListItem",
     "PaperDetail",

@@ -6,13 +6,14 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
 
-from models import PaperCreate, PaperMeta, PaperListItem
+from models import PaperCreate, PaperMeta, PaperListItem, PaperOpenRequest, PaperOpenRequestState
 from services.arxiv_service import arxiv_service
 from services.sync_service import sync_service
 from services.translation_service import translation_service
 from middleware.auth import get_current_user
 
 router = APIRouter()
+_pending_open_papers: dict[str, str] = {}
 
 
 @router.get("", response_model=List[PaperListItem])
@@ -50,6 +51,22 @@ async def add_paper(request: PaperCreate, user: dict = Depends(get_current_user)
     sync_service.request_sync("paper-added", meta.arxiv_id)
 
     return meta
+
+
+@router.post("/open-request", response_model=PaperOpenRequestState)
+async def request_open_paper(request: PaperOpenRequest, user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    if not arxiv_service.get_paper(uid, request.paper_id):
+        raise HTTPException(status_code=404, detail="论文不存在")
+    _pending_open_papers[uid] = request.paper_id
+    return PaperOpenRequestState(paper_id=request.paper_id)
+
+
+@router.get("/open-request", response_model=PaperOpenRequestState)
+async def consume_open_paper_request(user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    paper_id = _pending_open_papers.pop(uid, None)
+    return PaperOpenRequestState(paper_id=paper_id)
 
 
 @router.get("/{paper_id}", response_model=PaperMeta)
