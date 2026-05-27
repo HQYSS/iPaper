@@ -34,18 +34,27 @@ chrome-extension/
 
 1. 扩展识别当前 tab URL。
 2. 如果是 arXiv `abs/html/pdf`，提取 arXiv ID 并规范化为 abs URL。
-3. 如果是普通 PDF URL，保留原始 URL。
-4. 扩展先检查 `http://127.0.0.1:3000/`。
-5. 后端已就绪时，直接 `POST http://127.0.0.1:3000/api/papers`。
-6. 后端未就绪时，扩展调用 Native Messaging host 拉起 `iPaper.app`，等待健康检查通过后再导入。
-7. 导入成功或点击「打开 iPaper」时，扩展 `POST /api/papers/open-request` 写入目标 `paper_id`，再通过 Native host 拉起/聚焦桌面端。
-8. 前端轮询 `GET /api/papers/open-request`，消费到 `paper_id` 后刷新论文列表并选中对应论文。
+3. arXiv `abs/html` 页面会同时抓取页面标题、摘要和作者，作为 arXiv metadata API 被 429 限流时的兜底元信息。
+4. 如果是普通 PDF URL，保留原始 URL。
+5. 扩展先检查 `http://127.0.0.1:3000/`。
+6. 后端已就绪时，直接 `POST http://127.0.0.1:3000/api/papers`。
+7. 后端未就绪时，扩展调用 Native Messaging host 拉起 `iPaper.app`，等待健康检查通过后再导入。
+8. 导入成功或点击「打开 iPaper」时，扩展 `POST /api/papers/open-request` 写入目标 `paper_id`，再通过 Native host 拉起/聚焦桌面端。
+9. 前端轮询 `GET /api/papers/open-request`，消费到 `paper_id` 后刷新论文列表并选中对应论文。
 
 后端复用现有 `POST /api/papers`，请求体：
 
 ```json
-{ "arxiv_input": "https://arxiv.org/abs/1706.03762" }
+{
+  "arxiv_input": "https://arxiv.org/abs/1706.03762",
+  "title": "Attention Is All You Need",
+  "summary": "The dominant sequence transduction models...",
+  "authors": ["Ashish Vaswani", "Noam Shazeer"],
+  "source_url": "https://arxiv.org/abs/1706.03762"
+}
 ```
+
+`title/summary/authors/source_url` 都是可选字段。后端只在本地 meta 仍是占位状态时使用这些字段；arXiv API 后台补齐成功后仍以官方 metadata 为准。
 
 打开对应论文使用本地 pending request：
 
@@ -130,6 +139,7 @@ node --check chrome-extension/src/popup.js
 - 点击按钮可通过本地后端导入 `1706.03762`，页面显示「已导入：1706.03762」。
 - arXiv PDF URL 会规范化为 `https://arxiv.org/abs/{id}`；普通 PDF URL 保留原始 URL。
 - `/api/papers/open-request` 可写入并被前端消费，导入后会自动打开对应论文。
+- arXiv metadata API 返回 429 时，abs/html 页面抓取的标题/摘要/作者会先写入本地 meta，后台任务延迟重试官方 metadata。
 
 ## 开发与验收 checklist
 
@@ -147,7 +157,8 @@ Chrome 扩展改动必须区分三层状态：
 4. 改 `ipaper_native_host.py` 后，必须重新运行 `install_native_host.sh`，并用 stdio 协议测试 `healthcheck`、`start_ipaper`、`open_ipaper`。
 5. 改 `electron/main.js` 后，必须完整重启 `iPaper.app`，只聚焦已有窗口不会替换常驻主进程。
 6. 验证“打开 iPaper”时，不能只看是否打开应用，还要确认前端选中了对应 `paper_id`。
-7. 如果使用 Playwright 临时 profile 验证，汇报时必须明确它不是用户日常 Chrome profile；用户日常 Chrome 是否生效要看 `chrome://extensions` 实际加载状态。
+7. 验证 arXiv abs/html 导入时，必须确认标题不是 `arXiv {id}` 占位标题；如果 arXiv API 429，也应使用页面 fallback 标题。
+8. 如果使用 Playwright 临时 profile 验证，汇报时必须明确它不是用户日常 Chrome profile；用户日常 Chrome 是否生效要看 `chrome://extensions` 实际加载状态。
 
 手动验证：
 
