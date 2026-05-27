@@ -35,6 +35,9 @@ DOWNLOAD_RETRY_BACKOFF = (2.0, 4.0, 8.0)
 METADATA_NUM_RETRIES = 1
 METADATA_DELAY_SECONDS = 3.0
 METADATA_MIN_INTERVAL_SECONDS = 3.0
+METADATA_REFRESH_MAX_RETRIES = 5
+METADATA_RETRY_BACKOFF = (60.0, 180.0, 600.0, 1800.0)
+PLACEHOLDER_METADATA_SUMMARY = "arXiv 元数据待补齐；PDF 下载完成后即可先阅读。"
 
 PDF_DOWNLOAD_TIMEOUT = httpx.Timeout(connect=20.0, read=180.0, write=30.0, pool=30.0)
 PDF_USER_AGENT = (
@@ -114,7 +117,12 @@ class ArxivService:
     def _task_key(user_id: str, arxiv_id: str) -> str:
         return f"{user_id}:{arxiv_id}"
 
-    async def download_paper(self, user_id: str, arxiv_input: str) -> Tuple[bool, str, Optional[PaperMeta]]:
+    async def download_paper(
+        self,
+        user_id: str,
+        arxiv_input: str,
+        metadata_fallback: Optional[dict] = None,
+    ) -> Tuple[bool, str, Optional[PaperMeta]]:
         """
         添加论文入口。
 
@@ -126,8 +134,10 @@ class ArxivService:
         if not arxiv_id:
             pdf_url = self.parse_pdf_url_input(arxiv_input)
             if pdf_url:
+                logger.info("parsed PDF URL input user=%s url_host=%s", user_id, urlparse(pdf_url).netloc)
                 return await self._add_pdf_url_paper(user_id, pdf_url)
             return False, f"无法解析 arXiv ID 或 PDF URL: {arxiv_input}", None
+        logger.info("parsed arxiv input user=%s arxiv_id=%s", user_id, arxiv_id)
 
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
@@ -137,6 +147,7 @@ class ArxivService:
             meta = self._load_meta(meta_file)
             status = getattr(meta, "download_status", "ready") or "ready"
             if getattr(meta, "source_type", "arxiv") == "arxiv":
+                meta = self._apply_metadata_fallback(user_id, meta, metadata_fallback)
                 self._ensure_metadata_task(user_id, meta.arxiv_id)
 
             if status == "ready":
@@ -163,7 +174,7 @@ class ArxivService:
             source_type="arxiv",
             source_url=f"https://arxiv.org/abs/{arxiv_id}",
             title=f"arXiv {arxiv_id}",
-            summary="arXiv 元数据待补齐；PDF 下载完成后即可先阅读。",
+            summary=PLACEHOLDER_METADATA_SUMMARY,
             authors=[],
             download_time=datetime.now(),
             has_latex=False,
@@ -171,6 +182,7 @@ class ArxivService:
             download_status="downloading",
             download_error=None,
         )
+        meta = self._apply_metadata_fallback(user_id, meta, metadata_fallback, persist=False)
 
         self._save_meta(meta_file, meta)
         self._update_index(user_id, meta)
@@ -252,6 +264,7 @@ class ArxivService:
             return
         task = loop.create_task(self._download_pdf_async(user_id, meta.arxiv_id))
         self._download_tasks[key] = task
+        logger.info("download task scheduled user=%s paper=%s", user_id, meta.arxiv_id)
 
     def _has_active_download_task(self, user_id: str, arxiv_id: str) -> bool:
         existing = self._download_tasks.get(self._task_key(user_id, arxiv_id))
@@ -270,6 +283,7 @@ class ArxivService:
             return
         task = loop.create_task(self._refresh_metadata_async(user_id, arxiv_id))
         self._metadata_tasks[key] = task
+        logger.info("metadata task scheduled user=%s paper=%s", user_id, arxiv_id)
 
     def recover_incomplete_downloads(self) -> int:
         """Recover downloads that were interrupted by a backend restart.
@@ -402,6 +416,7 @@ class ArxivService:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
         last_err: Optional[str] = None
+        logger.info("download task started user=%s paper=%s", user_id, arxiv_id)
 
         for attempt in range(DOWNLOAD_MAX_RETRIES):
             try:
@@ -416,7 +431,8 @@ class ArxivService:
                     meta.download_status = "ready"
                     meta.download_error = None
                     self._save_meta(meta_file, meta)
-                logger.info("paper %s downloaded (attempt %d)", arxiv_id, attempt + 1)
+                size = (paper_dir / "paper.pdf").stat().st_size if (paper_dir / "paper.pdf").exists() else 0
+                logger.info("paper %s downloaded attempt=%d size_bytes=%d", arxiv_id, attempt + 1, size)
 
                 # 触发一次 sync（ready 状态才进 manifest）
                 try:

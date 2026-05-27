@@ -11,9 +11,12 @@ from typing import Optional
 from config import settings
 from models import LLMConfigUpdate
 from middleware.auth import get_current_user
+from services.cursor_cli_service import cursor_cli_service
 from services.sync_service import sync_service
 
 router = APIRouter()
+
+VALID_LLM_PROVIDERS = {"openrouter", "cursor_cli"}
 
 
 @router.get("")
@@ -22,11 +25,16 @@ async def get_config(user: dict = Depends(get_current_user)):
     user_cfg = settings.load_user_config(uid)
     return {
         "llm": {
+            "provider": settings.llm.provider,
             "api_base": settings.llm.api_base,
             "api_key_configured": bool(settings.llm.api_key),
             "model": settings.llm.model,
             "temperature": settings.llm.temperature,
-            "max_tokens": settings.llm.max_tokens
+            "max_tokens": settings.llm.max_tokens,
+            "cursor_command": settings.llm.cursor_command,
+            "cursor_model": settings.llm.cursor_model,
+            "cursor_timeout_seconds": settings.llm.cursor_timeout_seconds,
+            "cursor_cli_available": cursor_cli_service.is_configured(),
         },
         "data_dir": str(settings.data_dir),
         "hjfy_cookie_configured": bool(user_cfg.get("hjfy_cookie", "") or settings.hjfy_cookie),
@@ -40,6 +48,11 @@ async def get_config(user: dict = Depends(get_current_user)):
 
 @router.put("/llm")
 async def update_llm_config(update: LLMConfigUpdate, user: dict = Depends(get_current_user)):
+    if update.provider is not None:
+        provider = update.provider.strip()
+        if provider not in VALID_LLM_PROVIDERS:
+            raise HTTPException(status_code=400, detail="不支持的 LLM Provider")
+        settings.llm.provider = provider
     if update.api_key is not None:
         settings.llm.api_key = update.api_key
     if update.model is not None:
@@ -48,9 +61,27 @@ async def update_llm_config(update: LLMConfigUpdate, user: dict = Depends(get_cu
         settings.llm.temperature = update.temperature
     if update.max_tokens is not None:
         settings.llm.max_tokens = update.max_tokens
+    if update.cursor_command is not None:
+        settings.llm.cursor_command = update.cursor_command.strip() or "cursor"
+    if update.cursor_model is not None:
+        settings.llm.cursor_model = update.cursor_model.strip()
+    if update.cursor_timeout_seconds is not None:
+        if update.cursor_timeout_seconds < 30:
+            raise HTTPException(status_code=400, detail="Cursor CLI 超时时间不能小于 30 秒")
+        settings.llm.cursor_timeout_seconds = update.cursor_timeout_seconds
 
     settings.save_config()
     return {"message": "配置已更新"}
+
+
+@router.get("/llm/cursor-models")
+async def list_cursor_models(user: dict = Depends(get_current_user)):
+    if not cursor_cli_service.is_configured():
+        raise HTTPException(status_code=400, detail="Cursor CLI 不可用，请确认已安装 cursor 命令")
+    try:
+        return {"models": await cursor_cli_service.list_models()}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 class HjfyCookieUpdate(BaseModel):

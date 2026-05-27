@@ -7,6 +7,7 @@ import json
 import zipfile
 import logging
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
@@ -471,6 +472,9 @@ class SyncService:
             return
 
         async with self._sync_lock:
+            sync_run_id = uuid.uuid4().hex[:10]
+            started = time.monotonic()
+            logger.info("sync started run=%s reason=%s user=%s", sync_run_id, reason, user_id)
             local_manifest = self.get_manifest(user_id)
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=60.0)
@@ -482,7 +486,7 @@ class SyncService:
                 remote_manifest_resp.raise_for_status()
                 remote_manifest = remote_manifest_resp.json()
 
-                await self._sync_papers(client, sync_base, sync_token, user_id, local_manifest.to_dict(), remote_manifest)
+                await self._sync_papers(client, sync_base, sync_token, user_id, local_manifest.to_dict(), remote_manifest, sync_run_id)
                 await self._sync_document(
                     client,
                     "preferences",
@@ -492,6 +496,7 @@ class SyncService:
                     lambda data: self.put_preferences(user_id, data),
                     f"{sync_base}/preferences",
                     sync_token,
+                    sync_run_id,
                 )
                 await self._sync_document(
                     client,
@@ -502,14 +507,20 @@ class SyncService:
                     lambda data: self.put_profile(user_id, data.get("content", ""), data.get("updated_at")),
                     f"{sync_base}/profile",
                     sync_token,
+                    sync_run_id,
                 )
 
             final_local_manifest = self.get_manifest(user_id)
             self._last_local_fingerprint = self._paper_fingerprint(final_local_manifest)
             self._last_remote_fingerprint = json.dumps(remote_manifest, ensure_ascii=False, sort_keys=True)
-            logger.info("Background sync completed: %s", reason)
+            logger.info(
+                "sync completed run=%s reason=%s duration_ms=%d",
+                sync_run_id,
+                reason,
+                int((time.monotonic() - started) * 1000),
+            )
 
-    async def _sync_papers(self, client: httpx.AsyncClient, sync_base: str, sync_token: str, user_id: str, local_manifest: dict, remote_manifest: dict) -> None:
+    async def _sync_papers(self, client: httpx.AsyncClient, sync_base: str, sync_token: str, user_id: str, local_manifest: dict, remote_manifest: dict, sync_run_id: str) -> None:
         local_papers = {paper["arxiv_id"]: paper for paper in local_manifest.get("papers", [])}
         remote_papers = {paper["arxiv_id"]: paper for paper in remote_manifest.get("papers", [])}
         local_deleted = {paper["arxiv_id"]: paper for paper in local_manifest.get("deleted_papers", [])}
@@ -528,6 +539,7 @@ class SyncService:
 
             if self._compare_timestamps(remote_deleted_at, local_deleted_at) > 0 and self._compare_timestamps(remote_deleted_at, local_updated) > 0:
                 self.delete_paper(user_id, paper_id, remote_deleted_at)
+                logger.info("sync paper run=%s action=delete-local paper=%s remote_deleted_at=%s", sync_run_id, paper_id, remote_deleted_at)
                 continue
 
             if self._compare_timestamps(local_deleted_at, remote_deleted_at) > 0 and self._compare_timestamps(local_deleted_at, remote_updated) > 0:
@@ -536,6 +548,7 @@ class SyncService:
                     headers={"Authorization": f"Bearer {sync_token}"},
                 )
                 resp.raise_for_status()
+                logger.info("sync paper run=%s action=delete-remote paper=%s local_deleted_at=%s", sync_run_id, paper_id, local_deleted_at)
                 continue
 
             if self._compare_timestamps(remote_updated, local_updated) > 0:
@@ -545,11 +558,13 @@ class SyncService:
                 )
                 resp.raise_for_status()
                 self.extract_paper_bundle(user_id, paper_id, resp.content)
+                logger.info("sync paper run=%s action=pull paper=%s bytes=%d remote_updated=%s local_updated=%s", sync_run_id, paper_id, len(resp.content), remote_updated, local_updated)
                 continue
 
             if self._compare_timestamps(local_updated, remote_updated) > 0:
                 bundle = self.create_paper_bundle(user_id, paper_id)
                 if bundle is None:
+                    logger.info("sync paper run=%s action=skip paper=%s reason=no-bundle", sync_run_id, paper_id)
                     continue
                 files = {"file": (f"{paper_id}.zip", bundle, "application/zip")}
                 resp = await client.put(
@@ -558,19 +573,25 @@ class SyncService:
                     files=files,
                 )
                 resp.raise_for_status()
+                logger.info("sync paper run=%s action=push paper=%s bytes=%d local_updated=%s remote_updated=%s", sync_run_id, paper_id, len(bundle), local_updated, remote_updated)
+                continue
+
+            logger.debug("sync paper run=%s action=skip paper=%s reason=up-to-date", sync_run_id, paper_id)
 
         self._priority_paper_ids.difference_update(ordered_paper_ids)
 
-    async def _sync_document(self, client: httpx.AsyncClient, name: str, local_updated: Optional[str], remote_updated: Optional[str], get_local_data, apply_remote_data, remote_url: str, sync_token: str) -> None:
+    async def _sync_document(self, client: httpx.AsyncClient, name: str, local_updated: Optional[str], remote_updated: Optional[str], get_local_data, apply_remote_data, remote_url: str, sync_token: str, sync_run_id: str) -> None:
         if self._compare_timestamps(remote_updated, local_updated) > 0:
             resp = await client.get(remote_url, headers={"Authorization": f"Bearer {sync_token}"})
             resp.raise_for_status()
             apply_remote_data(resp.json())
+            logger.info("sync document run=%s action=pull name=%s remote_updated=%s local_updated=%s", sync_run_id, name, remote_updated, local_updated)
             return
 
         if self._compare_timestamps(local_updated, remote_updated) > 0:
             resp = await client.put(remote_url, headers={"Authorization": f"Bearer {sync_token}"}, json=get_local_data())
             resp.raise_for_status()
+            logger.info("sync document run=%s action=push name=%s local_updated=%s remote_updated=%s", sync_run_id, name, local_updated, remote_updated)
 
     def _get_file_updated_at(self, path: Path) -> Optional[str]:
         if not path.exists():

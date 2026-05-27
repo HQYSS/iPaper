@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key, ChevronDown, ChevronUp } from 'lucide-react'
-import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
+import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listCursorModels, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type CursorModelOption, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
@@ -25,6 +25,11 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
+  const [cursorCommand, setCursorCommand] = useState('cursor')
+  const [cursorModel, setCursorModel] = useState('')
+  const [cursorModels, setCursorModels] = useState<CursorModelOption[]>([])
+  const [cursorModelsLoading, setCursorModelsLoading] = useState(false)
+  const [cursorCliAvailable, setCursorCliAvailable] = useState(false)
   const [syncRole, setSyncRole] = useState<'server' | 'client' | 'off'>('server')
   const [syncUrl, setSyncUrl] = useState('')
   const [syncToken, setSyncToken] = useState('')
@@ -43,6 +48,18 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       const config = await getConfig()
       setModel(config.llm.model)
       setIsConfigured(config.llm.api_key_configured)
+      setCursorCommand(config.llm.cursor_command || 'cursor')
+      setCursorModel(config.llm.cursor_model || '')
+      setCursorCliAvailable(config.llm.cursor_cli_available)
+      if (config.llm.cursor_cli_available) {
+        setCursorModelsLoading(true)
+        listCursorModels()
+          .then(setCursorModels)
+          .catch(() => setCursorModels([]))
+          .finally(() => setCursorModelsLoading(false))
+      } else {
+        setCursorModels([])
+      }
       setApiKey('')
       setSyncRole(config.sync.role)
       setSyncUrl(config.sync.url || '')
@@ -98,15 +115,19 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const handleSave = async () => {
     const trimmedApiKey = apiKey.trim()
     const trimmedSyncToken = syncToken.trim()
+    const trimmedCursorCommand = cursorCommand.trim() || 'cursor'
+    const trimmedCursorModel = cursorModel.trim()
     const syncChanged = syncRole === 'client' && Boolean(trimmedSyncToken)
-
-    if (!trimmedApiKey && !syncChanged) return
 
     setIsSaving(true)
     setSaveSuccess(false)
     try {
+      await updateLLMConfig({
+        ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
+        cursor_command: trimmedCursorCommand,
+        cursor_model: trimmedCursorModel,
+      })
       if (trimmedApiKey) {
-        await updateLLMConfig({ api_key: trimmedApiKey })
         setIsConfigured(true)
         setApiKey('')
       }
@@ -117,6 +138,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
         setSyncConfigured(Boolean(trimmedSyncToken))
         setSyncToken('')
       }
+      await loadConfig()
       setSaveSuccess(true)
       addToast('success', '本地配置已保存')
       onConfigured?.()
@@ -238,7 +260,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                         ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
                         : 'bg-amber-500 shadow-sm shadow-amber-500/50 animate-pulse'
                     )} />
-                    {isConfigured ? '本地 API Key 已配置' : '需要配置本地 API Key'}
+                    {isConfigured ? 'OpenRouter API Key 已配置' : 'OpenRouter API Key 未配置'}
                   </div>
                   {env.isElectron && (
                     <div className={cn(
@@ -300,7 +322,64 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     模型
                   </label>
                   <div className="flex items-center px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
-                    <span className="font-mono text-xs">{model}</span>
+                    <span className="font-mono text-xs">
+                      {model}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    Cursor CLI 高级配置
+                  </label>
+                  <div className="space-y-2">
+                    <div className={cn(
+                      'flex items-center gap-2 px-3 py-2 rounded-lg text-xs',
+                      cursorCliAvailable
+                        ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
+                        : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'
+                    )}>
+                      <div className={cn('w-2 h-2 rounded-full', cursorCliAvailable ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse')} />
+                      {cursorCliAvailable ? '已检测到 Cursor CLI' : '未检测到 Cursor CLI'}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                        Cursor CLI 命令
+                      </label>
+                      <input
+                        type="text"
+                        value={cursorCommand}
+                        onChange={(e) => setCursorCommand(e.target.value)}
+                        placeholder="cursor"
+                        className="w-full px-4 py-3 text-sm font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400"
+                      />
+                      <p className="mt-1 text-xs text-slate-400 leading-relaxed">
+                        通常保持 <span className="font-mono">cursor</span>。iPaper 会自动执行 <span className="font-mono">cursor agent -p ...</span>；只有命令找不到时才需要填写完整路径。
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                        Cursor 模型
+                      </label>
+                      <select
+                        value={cursorModel}
+                        onChange={(e) => setCursorModel(e.target.value)}
+                        disabled={!cursorCliAvailable || cursorModelsLoading}
+                        className="w-full px-4 py-3 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all disabled:opacity-60"
+                      >
+                        <option value="">
+                          {cursorModelsLoading ? '正在加载模型列表...' : '使用 Cursor 默认模型'}
+                        </option>
+                        {cursorModels.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label} ({option.id}){option.default ? ' - 默认' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      主切换入口在右侧讲解面板标题栏；这里仅配置命令路径和可选模型。留空会使用公司 Cursor 当前默认模型。
+                    </p>
                   </div>
                 </div>
 
@@ -463,13 +542,13 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={(!apiKey.trim() && !(syncRole === 'client' && syncToken.trim())) || isSaving}
+                  disabled={isSaving}
                   className={cn(
                     "flex-1 px-4 py-2.5 text-sm font-medium rounded-xl flex items-center justify-center gap-2 transition-all",
                     saveSuccess
                       ? "bg-emerald-500 text-white"
                       : "bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 shadow-sm shadow-indigo-500/20",
-                    (!apiKey.trim() && !(syncRole === 'client' && syncToken.trim()) || isSaving) && "opacity-50 cursor-not-allowed"
+                    isSaving && "opacity-50 cursor-not-allowed"
                   )}
                 >
                   {isSaving ? (

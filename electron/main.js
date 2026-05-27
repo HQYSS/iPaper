@@ -1,13 +1,33 @@
 const { app, BrowserWindow, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
-const { spawn } = require('child_process')
+const { spawn, execFileSync } = require('child_process')
 
 const isDev = process.argv.includes('--dev') || process.env.NODE_ENV === 'development'
 // iPaper.app/Contents/MacOS/iPaper.sh 启动时已经自己起了一个 uvicorn 后端，传 --skip-backend
 // 让 main.js 不要再 spawn 一个 python main.py 重复绑 3000 端口。
 const SKIP_BACKEND = process.argv.includes('--skip-backend')
 const BACKEND_URL = 'http://127.0.0.1:3000/'
+
+function gitInfo() {
+  const projectRoot = path.join(__dirname, '..')
+  try {
+    return {
+      sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot, encoding: 'utf8' }).trim(),
+      branch: execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: projectRoot, encoding: 'utf8' }).trim(),
+      dirty: execFileSync('git', ['status', '--short'], { cwd: projectRoot, encoding: 'utf8' }).trim().length > 0,
+    }
+  } catch (err) {
+    return { sha: null, branch: null, dirty: null, error: err.message }
+  }
+}
+
+console.log('[runtime] Electron starting', {
+  pid: process.pid,
+  isDev,
+  skipBackend: SKIP_BACKEND,
+  git: gitInfo(),
+})
 
 // 顶部菜单栏显示成 iPaper（默认会跟着 Electron.app 的 CFBundleName 显示成 "Electron"）。
 // Dock 显示的图标 label 由 Electron.app/Contents/Info.plist 的 CFBundleName 决定，那个由
@@ -81,6 +101,7 @@ async function waitForBackend(maxRetries = 30) {
 }
 
 function createWindow() {
+  console.log('[window] creating main window')
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -96,10 +117,28 @@ function createWindow() {
   })
 
   if (isDev) {
+    console.log('[window] loading dev URL http://localhost:5173')
     mainWindow.loadURL('http://localhost:5173')
   } else {
+    console.log('[window] loading dist index.html')
     mainWindow.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'))
   }
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('[window] did-fail-load', { errorCode, errorDescription, validatedURL })
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[window] render-process-gone', details)
+  })
+
+  mainWindow.webContents.on('unresponsive', () => {
+    console.error('[window] renderer became unresponsive')
+  })
+
+  mainWindow.webContents.on('responsive', () => {
+    console.log('[window] renderer became responsive')
+  })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -107,6 +146,7 @@ function createWindow() {
   })
 
   mainWindow.on('closed', () => {
+    console.log('[window] closed')
     mainWindow = null
   })
 }

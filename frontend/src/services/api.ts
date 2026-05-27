@@ -2,6 +2,41 @@ const API_BASE = (import.meta.env.BASE_URL.replace(/\/$/, '')) + '/api'
 
 const TOKEN_STORAGE_KEY = 'ipaper.auth.token'
 
+type ClientLogLevel = 'info' | 'warning' | 'error'
+
+function makeRequestId(): string {
+  if (crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+}
+
+export function reportClientLog(
+  level: ClientLogLevel,
+  message: string,
+  context: Record<string, unknown> = {},
+): void {
+  const token = getAuthToken()
+  if (!token) return
+  fetch(`${API_BASE}/client-logs`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-Request-ID': makeRequestId(),
+    },
+    body: JSON.stringify({
+      level,
+      message: message.slice(0, 1000),
+      context: {
+        ...context,
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        buildSha: import.meta.env.VITE_BUILD_SHA || 'dev',
+      },
+    }),
+    keepalive: true,
+  }).catch(() => {})
+}
+
 export function getAuthToken(): string | null {
   return localStorage.getItem(TOKEN_STORAGE_KEY)
 }
@@ -17,15 +52,37 @@ export function clearAuthToken(): void {
 export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken()
   const headers = new Headers(options?.headers)
+  if (!headers.has('X-Request-ID')) {
+    headers.set('X-Request-ID', makeRequestId())
+  }
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  const response = await fetch(url, { ...options, headers })
+  let response: Response
+  try {
+    response = await fetch(url, { ...options, headers })
+  } catch (error) {
+    reportClientLog('error', 'fetch failed', {
+      url,
+      method: options?.method || 'GET',
+      error: (error as Error).message,
+    })
+    throw error
+  }
 
   if (response.status === 401) {
     clearAuthToken()
     window.dispatchEvent(new CustomEvent('ipaper:auth-expired'))
+  }
+
+  if (response.status >= 500 && !url.includes('/client-logs')) {
+    reportClientLog('error', 'server response error', {
+      url,
+      method: options?.method || 'GET',
+      status: response.status,
+      requestId: response.headers.get('X-Request-ID'),
+    })
   }
 
   return response
@@ -707,11 +764,16 @@ export async function* sendCrossPaperMessage(
 
 export interface Config {
   llm: {
+    provider: 'openrouter' | 'cursor_cli'
     api_base: string
     api_key_configured: boolean
     model: string
     temperature: number
     max_tokens: number
+    cursor_command: string
+    cursor_model: string
+    cursor_timeout_seconds: number
+    cursor_cli_available: boolean
   }
   data_dir: string
   hjfy_cookie_configured: boolean
@@ -731,10 +793,14 @@ export async function getConfig(): Promise<Config> {
 }
 
 export async function updateLLMConfig(config: {
+  provider?: 'openrouter' | 'cursor_cli'
   api_key?: string
   model?: string
   temperature?: number
   max_tokens?: number
+  cursor_command?: string
+  cursor_model?: string
+  cursor_timeout_seconds?: number
 }): Promise<void> {
   const response = await authFetch(`${API_BASE}/config/llm`, {
     method: 'PUT',
@@ -746,6 +812,23 @@ export async function updateLLMConfig(config: {
   if (!response.ok) {
     throw new Error('Failed to update config')
   }
+}
+
+export interface CursorModelOption {
+  id: string
+  label: string
+  current: boolean
+  default: boolean
+}
+
+export async function listCursorModels(): Promise<CursorModelOption[]> {
+  const response = await authFetch(`${API_BASE}/config/llm/cursor-models`)
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    throw new Error(error.detail || 'Failed to list Cursor models')
+  }
+  const data = await response.json()
+  return data.models || []
 }
 
 export async function updateSyncConfig(config: {

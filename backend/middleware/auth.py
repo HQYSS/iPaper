@@ -10,6 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from config import settings
 from services.auth_service import auth_service
+from services.log_context import set_log_user_id
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -31,6 +32,13 @@ def _make_user_dict(user: dict) -> dict:
     return {"id": user["id"], "username": user["username"], "is_admin": user.get("is_admin", False)}
 
 
+def _attach_user(request: Request, user: dict) -> dict:
+    user_dict = _make_user_dict(user)
+    request.state.user_id = user_dict["id"]
+    set_log_user_id(user_dict["id"])
+    return user_dict
+
+
 def _get_local_user() -> dict:
     user = auth_service.ensure_local_user(LOCAL_USER_ID, LOCAL_USERNAME)
     return _make_user_dict(user)
@@ -42,9 +50,9 @@ async def get_current_user(
 ) -> dict:
     if _is_local_mode() and _is_loopback_request(request):
         if credentials is None:
-            return _get_local_user()
+            return _attach_user(request, auth_service.ensure_local_user(LOCAL_USER_ID, LOCAL_USERNAME))
         user = auth_service.get_current_user(credentials.credentials)
-        return _make_user_dict(user) if user else _get_local_user()
+        return _attach_user(request, user) if user else _attach_user(request, auth_service.ensure_local_user(LOCAL_USER_ID, LOCAL_USERNAME))
 
     if credentials is None:
         raise HTTPException(
@@ -57,7 +65,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或过期的 token",
         )
-    return _make_user_dict(user)
+    return _attach_user(request, user)
 
 
 async def get_sync_user(
@@ -66,11 +74,11 @@ async def get_sync_user(
 ) -> dict:
     if _is_local_mode() and _is_loopback_request(request):
         if credentials is None:
-            return _get_local_user()
+            return _attach_user(request, auth_service.ensure_local_user(LOCAL_USER_ID, LOCAL_USERNAME))
         user = auth_service.get_current_user(credentials.credentials)
         if not user:
             user = auth_service.get_user_by_sync_token(credentials.credentials)
-        return _make_user_dict(user) if user else _get_local_user()
+        return _attach_user(request, user) if user else _attach_user(request, auth_service.ensure_local_user(LOCAL_USER_ID, LOCAL_USERNAME))
 
     if credentials is None:
         raise HTTPException(
@@ -86,4 +94,4 @@ async def get_sync_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或过期的同步凭证",
         )
-    return _make_user_dict(user)
+    return _attach_user(request, user)

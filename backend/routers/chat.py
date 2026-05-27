@@ -13,10 +13,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from openai import APIConnectionError, APIStatusError, AuthenticationError, RateLimitError
+from openai import APIConnectionError, APIError, APIStatusError, AuthenticationError, RateLimitError
 
 logger = logging.getLogger(__name__)
 
+from config import settings
 from middleware.auth import get_current_user
 from models import (
     ChatDraftUpdate,
@@ -85,6 +86,8 @@ def _llm_error_message(exc: Exception) -> str:
         if detail:
             msg += f"：{detail}"
         return msg
+    if isinstance(exc, APIError):
+        return "LLM 流式响应中断，请稍后重试"
     return f"AI 服务出现错误：{exc}"
 
 
@@ -140,14 +143,27 @@ async def add_papers_to_cross_paper_session(session_id: str, request: CrossPaper
 async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user: dict = Depends(get_current_user)):
     uid = user["id"]
     session = _check_cross_paper_session(uid, session_id)
+    logger.info(
+        "[chat cross:%s] request user=%s papers=%s provider=%s msg_chars=%d quotes=%d page_selections=%d",
+        session_id,
+        uid,
+        ",".join(session.paper_ids),
+        settings.llm.provider,
+        len(request.message or ""),
+        len(request.quotes or []),
+        len(request.page_selections or []),
+    )
 
     if not llm_service.is_configured():
-        raise HTTPException(status_code=400, detail="LLM API Key 未配置")
+        logger.warning("[chat cross:%s] provider not configured provider=%s", session_id, settings.llm.provider)
+        raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
     if chat_task_service.is_running("cross", session_id):
+        logger.warning("[chat cross:%s] rejected because task already running", session_id)
         raise HTTPException(status_code=409, detail="该会话已有正在生成的回复，请等待完成或先停止")
 
     messages, forks_raw, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
+    logger.info("[chat cross:%s] loaded history messages=%d", session_id, len(messages))
 
     try:
         prepared_api_messages = llm_service.prepare_cross_paper_api_messages(
@@ -157,9 +173,13 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
             quotes=request.quotes,
             page_selections=request.page_selections,
         )
+        prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
+        logger.info("[chat cross:%s] prepared provider payload units=%d", session_id, prepared_size)
     except PageSelectionRequiredError as exc:
+        logger.info("[chat cross:%s] page selection required requirements=%d", session_id, len(exc.requirements))
         raise _page_selection_http_exception(exc)
     except ValueError as exc:
+        logger.warning("[chat cross:%s] invalid request: %s", session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
     user_message = ChatMessage(
@@ -179,6 +199,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         forks_raw,
         {"input": "", "quotes": None, "page_selections": request.page_selections},
     )
+    logger.info("[chat cross:%s] saved user message and assistant placeholder messages=%d", session_id, len(messages))
     storage_service.set_last_active_cross_paper_session(uid, session_id)
 
     captured_messages_for_stream = list(messages[:-1])  # 去掉占位 assistant，传给 LLM 作为 history
@@ -193,7 +214,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
                 prepared_api_messages=prepared_api_messages,
             ):
                 yield chunk
-        except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError) as e:
+        except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
             raise RuntimeError(_llm_error_message(e)) from e
 
     def persist(content: str, reasoning: Optional[str], in_progress: bool, finish_reason: Optional[str]):
@@ -221,6 +242,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         stream_factory=stream_factory,
         persist=persist,
     )
+    logger.info("[chat cross:%s] task started", session_id)
 
     async def generate():
         try:
@@ -365,15 +387,33 @@ async def delete_session(paper_id: str, session_id: str, user: dict = Depends(ge
 async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict = Depends(get_current_user)):
     uid = user["id"]
     paper = _check_paper(uid, paper_id)
+    logger.info(
+        "[chat single:%s] request user=%s paper=%s provider=%s msg_chars=%d quotes=%d page_selections=%d",
+        session_id,
+        uid,
+        paper_id,
+        settings.llm.provider,
+        len(request.message or ""),
+        len(request.quotes or []),
+        len(request.page_selections or []),
+    )
 
     if not llm_service.is_configured():
-        raise HTTPException(status_code=400, detail="LLM API Key 未配置")
+        logger.warning("[chat single:%s] provider not configured provider=%s", session_id, settings.llm.provider)
+        raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
     if chat_task_service.is_running("single", session_id):
+        logger.warning("[chat single:%s] rejected because task already running", session_id)
         raise HTTPException(status_code=409, detail="该会话已有正在生成的回复，请等待完成或先停止")
 
     messages, forks_raw, _ = storage_service.get_chat_history(uid, paper_id, session_id)
     pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
+    logger.info(
+        "[chat single:%s] loaded history messages=%d pdf_available=%s",
+        session_id,
+        len(messages),
+        bool(pdf_path),
+    )
 
     try:
         prepared_api_messages = llm_service.prepare_chat_api_messages(
@@ -384,9 +424,13 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
             paper_id=paper_id,
             paper_title=paper.title,
         )
+        prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
+        logger.info("[chat single:%s] prepared provider payload units=%d", session_id, prepared_size)
     except PageSelectionRequiredError as exc:
+        logger.info("[chat single:%s] page selection required requirements=%d", session_id, len(exc.requirements))
         raise _page_selection_http_exception(exc)
     except ValueError as exc:
+        logger.warning("[chat single:%s] invalid request: %s", session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
     user_message = ChatMessage(
@@ -406,6 +450,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         forks_raw,
         {"input": "", "quotes": None, "page_selections": request.page_selections},
     )
+    logger.info("[chat single:%s] saved user message and assistant placeholder messages=%d", session_id, len(messages))
     storage_service.set_last_active_session(uid, paper_id, session_id)
 
     captured_messages_for_stream = list(messages[:-1])  # 去占位 assistant 给 LLM
@@ -420,7 +465,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
                 prepared_api_messages=prepared_api_messages,
             ):
                 yield chunk
-        except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError) as e:
+        except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
             raise RuntimeError(_llm_error_message(e)) from e
 
     def persist(content: str, reasoning: Optional[str], in_progress: bool, finish_reason: Optional[str]):
@@ -448,6 +493,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         stream_factory=stream_factory,
         persist=persist,
     )
+    logger.info("[chat single:%s] task started", session_id)
 
     async def generate():
         try:

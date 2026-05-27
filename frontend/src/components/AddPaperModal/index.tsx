@@ -9,21 +9,35 @@ interface AddPaperModalProps {
   onClose: () => void
 }
 
+const SLOW_HINT_DELAY_MS = 8000
+
 export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
   const addPaper = usePaperStore((s) => s.addPaper)
   const { addToast } = useToastStore()
   const inputRef = useRef<HTMLInputElement>(null)
+  const slowHintTimerRef = useRef<number | null>(null)
   const [arxivInput, setArxivInput] = useState('')
   const [isAdding, setIsAdding] = useState(false)
+  const [showSlowHint, setShowSlowHint] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setArxivInput('')
     setIsAdding(false)
+    setShowSlowHint(false)
     // 等弹窗的 fade-in 起来再聚焦，避免某些浏览器把焦点抢走
     const timer = window.setTimeout(() => inputRef.current?.focus(), 50)
     return () => window.clearTimeout(timer)
   }, [open])
+
+  useEffect(() => {
+    return () => {
+      if (slowHintTimerRef.current !== null) {
+        window.clearTimeout(slowHintTimerRef.current)
+        slowHintTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -42,6 +56,14 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
     if (!value || isAdding) return
 
     setIsAdding(true)
+    setShowSlowHint(false)
+    if (slowHintTimerRef.current !== null) {
+      window.clearTimeout(slowHintTimerRef.current)
+    }
+    slowHintTimerRef.current = window.setTimeout(() => {
+      setShowSlowHint(true)
+    }, SLOW_HINT_DELAY_MS)
+
     try {
       await addPaper(value)
       addToast('success', '已加入论文库，英文 PDF 正在后台下载…')
@@ -49,7 +71,12 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
     } catch (error) {
       addToast('error', (error as Error).message || '添加论文失败')
     } finally {
+      if (slowHintTimerRef.current !== null) {
+        window.clearTimeout(slowHintTimerRef.current)
+        slowHintTimerRef.current = null
+      }
       setIsAdding(false)
+      setShowSlowHint(false)
     }
   }
 
@@ -123,6 +150,12 @@ export function AddPaperModal({ open, onClose }: AddPaperModalProps) {
             <div className="px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               支持 arXiv ID（如 <code className="font-mono text-slate-700 dark:text-slate-200">1706.03762</code>）、arXiv 论文页 URL 或普通 PDF URL；普通 PDF 不会自动生成中文翻译。
             </div>
+
+            {showSlowHint && (
+              <div className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200/60 dark:border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 leading-relaxed animate-in fade-in duration-200">
+                arXiv 响应较慢，正在重试…如果一直没反应，可能是 ID 输错了或 arXiv 暂时限流，可以关闭弹窗稍后再试。
+              </div>
+            )}
           </div>
 
           {/* Footer */}

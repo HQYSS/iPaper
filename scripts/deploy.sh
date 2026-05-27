@@ -29,13 +29,14 @@ check_remote_worktree_clean() {
 
 HAS_FRONTEND=0
 HAS_BACKEND=0
+CHANGED=$(git diff --name-only HEAD~1 2>/dev/null || git diff --name-only)
+LOCAL_SHA=$(git rev-parse HEAD)
 
 if [[ "$*" == *"--frontend"* ]]; then HAS_FRONTEND=1; fi
 if [[ "$*" == *"--backend"* ]]; then HAS_BACKEND=1; fi
 if [[ "$*" == *"--all"* ]]; then HAS_FRONTEND=1; HAS_BACKEND=1; fi
 
 if [[ "$HAS_FRONTEND" -eq 0 && "$HAS_BACKEND" -eq 0 ]]; then
-    CHANGED=$(git diff --name-only HEAD~1 2>/dev/null || git diff --name-only)
     if echo "$CHANGED" | grep -q "^frontend/"; then HAS_FRONTEND=1; fi
     if echo "$CHANGED" | grep -q "^backend/"; then HAS_BACKEND=1; fi
 
@@ -60,6 +61,17 @@ check_remote_worktree_clean
 
 info "服务器拉取代码..."
 ssh aws "cd ~/iPaper && git pull --ff-only"
+REMOTE_SHA=$(ssh aws "cd ~/iPaper && git rev-parse HEAD")
+if [[ "$REMOTE_SHA" != "$LOCAL_SHA" ]]; then
+    error "服务器代码版本不一致：local=$LOCAL_SHA remote=$REMOTE_SHA"
+fi
+
+if [[ "$HAS_BACKEND" -gt 0 ]]; then
+    if echo "$CHANGED" | grep -q "^backend/requirements.txt$"; then
+        warn "检测到 backend/requirements.txt 变更；请确认服务器 venv 已安装新依赖"
+        warn "如需手动执行：ssh aws 'cd ~/iPaper/backend && ./venv/bin/pip install -r requirements.txt'"
+    fi
+fi
 
 if [[ "$HAS_FRONTEND" -gt 0 ]]; then
     info "=== 部署前端 ==="
@@ -92,6 +104,23 @@ if [[ "$HAS_BACKEND" -gt 0 ]]; then
     else
         warn "后端可能未正常启动，请检查: ssh aws 'sudo journalctl -u ipaper-backend -n 20'"
     fi
+fi
+
+info "验证线上运行版本..."
+RUNTIME_JSON=$(curl -fsS https://www.moshang.xyz/ipaper/api/health/runtime)
+RUNTIME_SHA=$(RUNTIME_JSON="$RUNTIME_JSON" python3 - <<'PY'
+import json
+import os
+print((json.loads(os.environ["RUNTIME_JSON"]).get("git") or {}).get("sha") or "")
+PY
+)
+if [[ "$RUNTIME_SHA" != "$LOCAL_SHA" ]]; then
+    warn "线上运行版本与本地 HEAD 不一致: runtime=$RUNTIME_SHA local=$LOCAL_SHA"
+    if [[ "$HAS_BACKEND" -gt 0 ]]; then
+        error "后端部署后运行版本未对齐，请检查 systemd/journal"
+    fi
+else
+    info "线上运行版本已对齐: $RUNTIME_SHA"
 fi
 
 echo ""

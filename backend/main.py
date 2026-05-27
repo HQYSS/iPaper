@@ -1,13 +1,46 @@
 """
 iPaper Backend - FastAPI 入口
 """
-from fastapi import FastAPI
+import logging
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import papers, chat, config, profile, translation, auth, preferences, sync
+from middleware.auth import get_current_user
+from middleware.request_logging import RequestLoggingMiddleware
 from services.arxiv_service import arxiv_service
+from services.log_context import RequestContextFilter
+from services.runtime_info import get_runtime_info
 from services.sync_service import sync_service
+
+
+def configure_logging():
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s [req=%(request_id)s user=%(user_id)s]: %(message)s"
+    )
+    context_filter = RequestContextFilter()
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        root_logger.addHandler(handler)
+    for handler in root_logger.handlers:
+        handler.setLevel(logging.INFO)
+        handler.addFilter(context_filter)
+        handler.setFormatter(formatter)
+    for logger_name in (
+        "routers.chat",
+        "services.chat_task_service",
+        "services.llm_service",
+        "services.cursor_cli_service",
+    ):
+        logging.getLogger(logger_name).setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+configure_logging()
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -24,6 +57,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLoggingMiddleware)
 
 # 注册路由
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -42,8 +76,28 @@ async def root():
     return {"status": "ok", "message": "iPaper API is running"}
 
 
+@app.get("/api/health/runtime")
+async def runtime_health():
+    """Return runtime version and process metadata for deployment/debug checks."""
+    return get_runtime_info()
+
+
+@app.post("/api/client-logs")
+async def client_logs(payload: dict, user: dict = Depends(get_current_user)):
+    """Receive browser/Electron renderer diagnostics."""
+    logging.getLogger("client").log(
+        logging.WARNING if payload.get("level") in {"error", "warning"} else logging.INFO,
+        "client event level=%s message=%s context=%s",
+        payload.get("level", "info"),
+        payload.get("message", ""),
+        {**payload.get("context", {}), "client_user_id": user["id"]},
+    )
+    return {"status": "ok"}
+
+
 @app.on_event("startup")
 async def startup_event():
+    logging.getLogger(__name__).info("backend startup runtime=%s", get_runtime_info())
     await sync_service.startup()
     arxiv_service.recover_incomplete_downloads()
 

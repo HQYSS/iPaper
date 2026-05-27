@@ -36,7 +36,7 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 start_backend() {
-    echo "启动后端..."
+    echo "启动后端... sha=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null) dirty=$(test -n "$(git -C "$SCRIPT_DIR" status --short 2>/dev/null)" && echo yes || echo no)"
     cd "$SCRIPT_DIR/backend"
     IPAPER_SYNC_ROLE=client python -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT &
     BACKEND_PID=$!

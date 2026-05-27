@@ -11,11 +11,19 @@ VALID_SYNC_ROLES = {"server", "client", "off"}
 
 class LLMConfig(BaseSettings):
     """LLM 配置"""
+    provider: str = "openrouter"  # openrouter | cursor_cli
     api_base: str = "https://openrouter.ai/api/v1"
     api_key: str = ""
     model: str = "google/gemini-3.1-pro-preview"
     temperature: float = 0.7
     max_tokens: int = 8192
+    cursor_command: str = "cursor"
+    cursor_model: str = ""
+    cursor_timeout_seconds: int = 600
+    cursor_visual_dpi: int = 120
+    cursor_visual_quality: int = 75
+    cursor_visual_max_pages: int = 40
+    cursor_visual_cache_max_mb: int = 1024
 
 
 class ProfileAnalysisConfig(BaseSettings):
@@ -135,11 +143,19 @@ class Settings(BaseSettings):
                 data = json.load(f)
         data.update({
             "llm": {
+                "provider": self.llm.provider,
                 "api_base": self.llm.api_base,
                 "api_key": self.llm.api_key,
                 "model": self.llm.model,
                 "temperature": self.llm.temperature,
                 "max_tokens": self.llm.max_tokens,
+                "cursor_command": self.llm.cursor_command,
+                "cursor_model": self.llm.cursor_model,
+                "cursor_timeout_seconds": self.llm.cursor_timeout_seconds,
+                "cursor_visual_dpi": self.llm.cursor_visual_dpi,
+                "cursor_visual_quality": self.llm.cursor_visual_quality,
+                "cursor_visual_max_pages": self.llm.cursor_visual_max_pages,
+                "cursor_visual_cache_max_mb": self.llm.cursor_visual_cache_max_mb,
             },
             "hjfy_cookie": self.hjfy_cookie,
             "invite_code": self.invite_code,

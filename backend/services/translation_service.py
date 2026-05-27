@@ -68,10 +68,12 @@ class TranslationService:
             task = TranslationTask(base_id)
             task.status = "finished"
             self._tasks[key] = task
+            logger.info("translation already available for %s", base_id)
             return task
 
         existing = self._tasks.get(key)
         if existing and existing.status == "polling":
+            logger.info("translation polling already active for %s", base_id)
             return existing
 
         task = TranslationTask(base_id)
@@ -80,6 +82,7 @@ class TranslationService:
         self._tasks[key] = task
 
         asyncio.create_task(self._poll_loop(user_id, task))
+        logger.info("translation poll task started for %s", base_id)
         return task
 
     async def _poll_loop(self, user_id: str, task: TranslationTask):
@@ -88,7 +91,9 @@ class TranslationService:
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
+                poll_count = 0
                 while True:
+                    poll_count += 1
                     headers = {}
                     if cookie:
                         headers["Cookie"] = cookie
@@ -118,6 +123,14 @@ class TranslationService:
                     inner = data["data"]
                     hjfy_status = inner.get("status", "")
                     info = inner.get("info", "")
+                    if poll_count == 1 or hjfy_status in {"finished", "failed", "error", "fault"}:
+                        logger.info(
+                            "translation poll paper=%s count=%d status=%s info=%s",
+                            base_id,
+                            poll_count,
+                            hjfy_status,
+                            info,
+                        )
 
                     if info:
                         task.info = info
@@ -136,6 +149,7 @@ class TranslationService:
                             "error": "翻译出错，可能该论文没有 LaTeX 源码",
                             "fault": "LaTeX 编译失败",
                         }.get(hjfy_status, hjfy_status)
+                        logger.warning("translation failed for %s status=%s", base_id, hjfy_status)
                         return
 
                     task.info = info or "翻译中…"

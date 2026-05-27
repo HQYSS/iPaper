@@ -7,6 +7,7 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import katexModule from 'katex'
 import { marked } from 'marked'
+import { getConfig, updateLLMConfig, type Config, type SessionMeta } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 import { usePaperStore } from '../../stores/paperStore'
 import { PageSelectionModal } from '../PageSelectionModal'
@@ -38,9 +39,9 @@ interface ChatPanelProps {
   onOpenEvolution?: () => void
 }
 
-import type { SessionMeta } from '../../services/api'
-
 import type { QuoteItem } from '../../stores/chatStore'
+
+type LLMProvider = Config['llm']['provider']
 
 interface ChatScrollState {
   scrollTop: number
@@ -49,6 +50,10 @@ interface ChatScrollState {
 
 const CHAT_SCROLL_THRESHOLD = 80
 const chatScrollStateCache = new Map<string, ChatScrollState>()
+const LLM_PROVIDER_LABELS: Record<LLMProvider, string> = {
+  openrouter: 'OpenRouter',
+  cursor_cli: 'Cursor CLI',
+}
 
 function getChatScrollStateKey(
   paperId: string | undefined,
@@ -289,7 +294,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const {
     messages,
     isLoading,
-    isStreaming,
+    streamingByConversation,
     loadSessions,
     sendMessage,
     stopStreaming,
@@ -332,18 +337,69 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const [showAddPaperPanel, setShowAddPaperPanel] = useState(false)
   const [addPaperSelected, setAddPaperSelected] = useState<string[]>([])
   const [addPaperNote, setAddPaperNote] = useState('')
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>('openrouter')
+  const [llmConfig, setLlmConfig] = useState<Config['llm'] | null>(null)
+  const [showEngineMenu, setShowEngineMenu] = useState(false)
+  const [engineSaving, setEngineSaving] = useState(false)
+  const [engineError, setEngineError] = useState<string | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
   const activeSessionKey = getChatScrollStateKey(paperId, crossPaperSessionId, activeSessionId)
+  const isStreaming = activeSessionKey ? Boolean(streamingByConversation[activeSessionKey]) : false
   const pendingRestoreSessionKeyRef = useRef<string | null>(null)
   const isRestoringScrollRef = useRef(false)
   const hasHydratedSessionRef = useRef(false)
   const lastMessageCountRef = useRef(0)
   const captureCurrentScrollState = () => {
     saveChatScrollState(activeSessionKey, messagesContainerRef.current)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    getConfig()
+      .then((config) => {
+        if (cancelled) return
+        setLlmProvider(config.llm.provider)
+        setLlmConfig(config.llm)
+      })
+      .catch(() => {
+        if (!cancelled) setEngineError('加载讲解引擎状态失败')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const switchLLMProvider = async (provider: LLMProvider) => {
+    if (provider === llmProvider || isStreaming || engineSaving) {
+      setShowEngineMenu(false)
+      return
+    }
+    if (provider === 'cursor_cli' && llmConfig && !llmConfig.cursor_cli_available) {
+      setEngineError('未检测到 Cursor CLI，请先确认本机已安装并登录')
+      return
+    }
+    if (provider === 'openrouter' && llmConfig && !llmConfig.api_key_configured) {
+      setEngineError('OpenRouter API Key 未配置，请先到设置中填写')
+      return
+    }
+
+    setEngineSaving(true)
+    setEngineError(null)
+    try {
+      await updateLLMConfig({ provider })
+      const config = await getConfig()
+      setLlmProvider(config.llm.provider)
+      setLlmConfig(config.llm)
+      setShowEngineMenu(false)
+    } catch {
+      setEngineError('切换讲解引擎失败，请稍后重试')
+    } finally {
+      setEngineSaving(false)
+    }
   }
 
   useEffect(() => {
@@ -621,6 +677,60 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
             {isCrossMode && <GitCompareArrows className="w-4 h-4 text-purple-500" />}
             {isCrossMode ? '串讲' : 'AI 助手'}
           </h2>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setEngineError(null)
+                setShowEngineMenu((open) => !open)
+              }}
+              disabled={isStreaming || engineSaving}
+              className="ml-1 inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title={isStreaming ? '生成中不能切换讲解引擎' : '切换讲解引擎'}
+            >
+              {engineSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              <span>{LLM_PROVIDER_LABELS[llmProvider]}</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {showEngineMenu && (
+              <div className="absolute left-1 top-7 z-30 w-56 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
+                {(['cursor_cli', 'openrouter'] as LLMProvider[]).map((provider) => {
+                  const isActive = provider === llmProvider
+                  const isUnavailable =
+                    provider === 'cursor_cli'
+                      ? llmConfig?.cursor_cli_available === false
+                      : llmConfig?.api_key_configured === false
+                  return (
+                    <button
+                      key={provider}
+                      type="button"
+                      onClick={() => switchLLMProvider(provider)}
+                      disabled={engineSaving || isStreaming}
+                      className={`w-full rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                        isActive
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-foreground hover:bg-accent'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{LLM_PROVIDER_LABELS[provider]}</span>
+                        {isActive && <span className="text-[10px]">当前</span>}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {provider === 'cursor_cli' ? '本机 Cursor Agent' : '云端 API 稳定兜底'}
+                        {isUnavailable ? ' · 未配置' : ''}
+                      </div>
+                    </button>
+                  )
+                })}
+                {engineError && (
+                  <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                    {engineError}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-1">
           {isCrossMode && (

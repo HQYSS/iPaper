@@ -4,15 +4,17 @@ LLM 对话服务
 import io
 import json
 import base64
+import hashlib
 import logging
 from pathlib import Path
-from typing import AsyncGenerator, Optional, List, Dict, Tuple
+from typing import Any, AsyncGenerator, Optional, List, Dict, Tuple
 
 import fitz
 from openai import AsyncOpenAI
 
 from config import settings
 from models import ChatMessage, Quote, PaperPageSelection
+from services.cursor_cli_service import cursor_cli_service
 from services.user_profile_service import user_profile_service
 from services.arxiv_service import arxiv_service
 
@@ -53,8 +55,14 @@ class LLMService:
         return self._client
     
     def is_configured(self) -> bool:
-        """检查是否已配置 API Key"""
+        """检查当前 LLM Provider 是否可用"""
+        if self._is_cursor_cli_provider():
+            return cursor_cli_service.is_configured()
         return bool(settings.llm.api_key)
+
+    @staticmethod
+    def _is_cursor_cli_provider() -> bool:
+        return settings.llm.provider == "cursor_cli"
     
     async def chat(
         self,
@@ -66,8 +74,14 @@ class LLMService:
         非流式对话
         """
         if not self.is_configured():
-            raise ValueError("LLM API Key 未配置")
-        
+            raise ValueError(self.configured_error_message())
+
+        if self._is_cursor_cli_provider():
+            chunks = []
+            async for chunk in self.chat_stream(messages, pdf_path=pdf_path, quotes=quotes):
+                chunks.append(chunk)
+            return "".join(chunks)
+
         api_messages = self._build_messages(messages, pdf_path, quotes)
         
         response = await self.client.chat.completions.create(
@@ -86,7 +100,7 @@ class LLMService:
         pdf_path: Optional[Path] = None,
         quotes: Optional[List[Quote]] = None,
         reasoning_collector: Optional[List[str]] = None,
-        prepared_api_messages: Optional[list] = None,
+        prepared_api_messages: Optional[Any] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
@@ -97,8 +111,21 @@ class LLMService:
         调用方在流结束后通过 ''.join(reasoning_collector) 获取完整 reasoning。
         """
         if not self.is_configured():
-            raise ValueError("LLM API Key 未配置")
-        
+            raise ValueError(self.configured_error_message())
+
+        if self._is_cursor_cli_provider():
+            prompt = prepared_api_messages or self._build_cursor_single_prompt(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
+            async for chunk in cursor_cli_service.chat_stream(prompt):
+                yield chunk
+            return
+
         api_messages = prepared_api_messages or self._build_messages(
             messages,
             pdf_path,
@@ -148,6 +175,249 @@ class LLMService:
             return user_profile_service.compile_system_prompt()
         return FALLBACK_SYSTEM_PROMPT
 
+    def configured_error_message(self) -> str:
+        if self._is_cursor_cli_provider():
+            return "Cursor CLI 不可用，请确认已安装 cursor 命令并完成登录"
+        return "LLM API Key 未配置"
+
+    def _build_cursor_single_prompt(
+        self,
+        messages: List[ChatMessage],
+        pdf_path: Optional[Path] = None,
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+    ) -> str:
+        parts = [
+            self._cursor_instruction_header(self.get_system_prompt()),
+            "## 当前论文",
+            f"- 论文 ID：{paper_id or '未知'}",
+            f"- 标题：{paper_title or '未知'}",
+        ]
+
+        if pdf_path:
+            parts.append(f"- PDF 本地路径：{pdf_path}")
+            selection = self._pick_page_selection(page_selections, paper_id)
+            if selection:
+                parts.append(f"- 用户指定重点页码：{self._format_selection_ranges(selection)}")
+            visual_pages = self._render_cursor_pdf_pages(
+                pdf_path=pdf_path,
+                paper_id=paper_id or pdf_path.stem,
+                paper_title=paper_title or pdf_path.name,
+                page_selection=selection,
+                max_pages=settings.llm.cursor_visual_max_pages,
+            )
+            parts.extend([
+                "",
+                "## PDF 页面图像（原生视觉输入）",
+                "以下是由 PDF 渲染出的页面图片路径。需要理解公式、图表、版式或扫描内容时，优先读取这些图片，而不是只读 PDF 文本层。",
+                self._format_cursor_visual_pages(visual_pages),
+            ])
+        else:
+            parts.append("- PDF 本地路径：不可用")
+
+        if quotes:
+            parts.extend(["", "## 用户引用", self._format_quotes(quotes)])
+
+        parts.extend(["", "## 对话历史", self._format_messages_for_cursor(messages)])
+        parts.extend([
+            "",
+            "请直接回答最后一条用户消息。需要理解论文视觉内容时，优先读取上面的页面图片；PDF 本地路径仅作为文本层/元数据 fallback。如果只阅读了部分页码，请在回答中说明依据范围。",
+        ])
+        return "\n".join(parts)
+
+    def _build_cursor_cross_paper_prompt(
+        self,
+        messages: List[ChatMessage],
+        user_id: str,
+        paper_ids: List[str],
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+    ) -> str:
+        selection_map = {
+            selection.paper_id: selection
+            for selection in (page_selections or [])
+            if selection.paper_id
+        }
+        parts = [
+            self._cursor_instruction_header(self.get_cross_paper_system_prompt()),
+            "## 串讲论文",
+        ]
+        max_pages_per_paper = max(1, settings.llm.cursor_visual_max_pages // max(len(paper_ids), 1))
+
+        for paper_id in paper_ids:
+            meta = arxiv_service.get_paper(user_id, paper_id)
+            title = meta.title if meta else paper_id
+            pdf_path = arxiv_service.get_pdf_path(user_id, paper_id)
+            parts.append(f"- [[{paper_id}]] {title}")
+            parts.append(f"  - PDF 本地路径：{pdf_path if pdf_path else '不可用'}")
+            selection = selection_map.get(paper_id)
+            if selection:
+                parts.append(f"  - 用户指定重点页码：{self._format_selection_ranges(selection)}")
+            if pdf_path:
+                visual_pages = self._render_cursor_pdf_pages(
+                    pdf_path=pdf_path,
+                    paper_id=paper_id,
+                    paper_title=title,
+                    page_selection=selection,
+                    max_pages=max_pages_per_paper,
+                )
+                parts.append("  - PDF 页面图像（原生视觉输入）：")
+                for page_num, image_path in visual_pages:
+                    parts.append(f"    - 第 {page_num} 页：{image_path}")
+
+        if quotes:
+            parts.extend(["", "## 用户引用", self._format_quotes(quotes)])
+
+        parts.extend(["", "## 对话历史", self._format_messages_for_cursor(messages)])
+        parts.extend([
+            "",
+            "请直接回答最后一条用户消息。需要理解图表、公式或版式时，优先读取上面的页面图片路径；讨论具体论文时沿用 [[arXiv ID]] 标注来源。",
+        ])
+        return "\n".join(parts)
+
+    @staticmethod
+    def _cursor_instruction_header(system_prompt: str) -> str:
+        return "\n".join([
+            "你是 iPaper 的论文讲解 Agent。",
+            "请严格遵守以下系统指令：",
+            system_prompt,
+            "",
+            "运行约束：",
+            "- 只进行论文阅读、分析和回答。",
+            "- 不要修改、创建或删除任何文件。",
+            "- 使用中文回答，专业术语保留英文原文。",
+            "- 不要编造论文中没有的信息；无法确认时明确说明。",
+        ])
+
+    @staticmethod
+    def _format_messages_for_cursor(messages: List[ChatMessage]) -> str:
+        if not messages:
+            return "（无历史消息）"
+        lines = []
+        for idx, msg in enumerate(messages, start=1):
+            role = "用户" if msg.role == "user" else "助手"
+            content = msg.content.strip() or "（空）"
+            lines.append(f"### {idx}. {role}\n{content}")
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _format_selection_ranges(selection: PaperPageSelection) -> str:
+        ranges = []
+        for page_range in selection.ranges:
+            ranges.append(str(page_range.start) if page_range.start == page_range.end else f"{page_range.start}-{page_range.end}")
+        return "、".join(ranges)
+
+    def _render_cursor_pdf_pages(
+        self,
+        pdf_path: Path,
+        paper_id: str,
+        paper_title: str,
+        page_selection: Optional[PaperPageSelection] = None,
+        max_pages: Optional[int] = None,
+    ) -> List[Tuple[int, Path]]:
+        """将 PDF 页面渲染为图片路径，供 Cursor CLI 通过视觉能力读取。"""
+        doc = fitz.open(pdf_path)
+        try:
+            max_pages = max_pages or settings.llm.cursor_visual_max_pages
+            total_pages = len(doc)
+            normalized_ranges: Optional[List[Tuple[int, int]]] = None
+            if page_selection:
+                normalized_ranges = self._normalize_page_ranges(page_selection, total_pages, paper_title)
+                target_pages = [
+                    page_num
+                    for start, end in normalized_ranges
+                    for page_num in range(start - 1, end)
+                ]
+            else:
+                target_pages = list(range(total_pages))
+
+            if len(target_pages) > max_pages:
+                requirement = self._build_page_selection_requirement(
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                    total_pages=total_pages,
+                    selected_ranges=normalized_ranges,
+                )
+                if normalized_ranges:
+                    message = (
+                        f"Cursor CLI 原生视觉读取《{paper_title}》时，选中的页码范围"
+                        f"（{self._format_page_ranges(normalized_ranges)}）共 {len(target_pages)} 页，"
+                        f"超过当前上限 {max_pages} 页，请进一步缩小保留范围。"
+                    )
+                else:
+                    message = (
+                        f"Cursor CLI 原生视觉读取《{paper_title}》需要先把 PDF 渲染成页面图片；"
+                        f"该论文共 {total_pages} 页，超过当前上限 {max_pages} 页，请先选择要保留的页码范围。"
+                    )
+                raise PageSelectionRequiredError(requirements=[requirement], message=message)
+
+            cache_dir = self._cursor_visual_cache_dir(pdf_path)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            dpi = max(72, int(settings.llm.cursor_visual_dpi))
+            quality = min(95, max(40, int(settings.llm.cursor_visual_quality)))
+            matrix = fitz.Matrix(dpi / 72, dpi / 72)
+            rendered: List[Tuple[int, Path]] = []
+
+            for page_num in target_pages:
+                image_path = cache_dir / f"page_{page_num + 1:04d}.jpg"
+                if not image_path.exists():
+                    pix = doc[page_num].get_pixmap(matrix=matrix, alpha=False)
+                    image_path.write_bytes(pix.tobytes("jpeg", jpg_quality=quality))
+                rendered.append((page_num + 1, image_path))
+
+            self._prune_cursor_visual_cache()
+            return rendered
+        finally:
+            doc.close()
+
+    @staticmethod
+    def _cursor_visual_cache_dir(pdf_path: Path) -> Path:
+        stat = pdf_path.stat()
+        digest = hashlib.sha256(
+            f"{pdf_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{settings.llm.cursor_visual_dpi}:{settings.llm.cursor_visual_quality}".encode("utf-8")
+        ).hexdigest()[:16]
+        return settings.data_dir / "cache" / "cursor_pdf_pages" / digest
+
+    @staticmethod
+    def _prune_cursor_visual_cache() -> None:
+        cache_root = settings.data_dir / "cache" / "cursor_pdf_pages"
+        max_bytes = max(64, int(settings.llm.cursor_visual_cache_max_mb)) * 1024 * 1024
+        if not cache_root.exists():
+            return
+
+        files = [path for path in cache_root.glob("**/*") if path.is_file()]
+        total_bytes = sum(path.stat().st_size for path in files)
+        if total_bytes <= max_bytes:
+            return
+
+        files.sort(key=lambda path: path.stat().st_mtime)
+        for path in files:
+            if total_bytes <= max_bytes:
+                break
+            try:
+                size = path.stat().st_size
+                path.unlink()
+                total_bytes -= size
+            except OSError:
+                continue
+
+        for directory in sorted((path for path in cache_root.glob("**/*") if path.is_dir()), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _format_cursor_visual_pages(pages: List[Tuple[int, Path]]) -> str:
+        if not pages:
+            return "（无可用页面图片）"
+        return "\n".join(
+            f"- 第 {page_num} 页：{image_path}"
+            for page_num, image_path in pages
+        )
+
     def prepare_chat_api_messages(
         self,
         messages: List[ChatMessage],
@@ -156,7 +426,16 @@ class LLMService:
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
-    ) -> list:
+    ) -> Any:
+        if self._is_cursor_cli_provider():
+            return self._build_cursor_single_prompt(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
         return self._build_messages(
             messages=messages,
             pdf_path=pdf_path,
@@ -173,7 +452,15 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
-    ) -> list:
+    ) -> Any:
+        if self._is_cursor_cli_provider():
+            return self._build_cursor_cross_paper_prompt(
+                messages=messages,
+                user_id=user_id,
+                paper_ids=paper_ids,
+                quotes=quotes,
+                page_selections=page_selections,
+            )
         return self._build_messages_cross_paper(
             messages=messages,
             user_id=user_id,
@@ -617,13 +904,29 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         reasoning_collector: Optional[List[str]] = None,
-        prepared_api_messages: Optional[list] = None,
+        prepared_api_messages: Optional[Any] = None,
         user_id: Optional[str] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
     ) -> AsyncGenerator[str, None]:
         """串讲模式的流式对话"""
         if not self.is_configured():
-            raise ValueError("LLM API Key 未配置")
+            raise ValueError(self.configured_error_message())
+
+        if self._is_cursor_cli_provider():
+            prompt = prepared_api_messages
+            if prompt is None:
+                if not user_id:
+                    raise ValueError("串讲模式缺少 user_id")
+                prompt = self._build_cursor_cross_paper_prompt(
+                    messages=messages,
+                    user_id=user_id,
+                    paper_ids=paper_ids,
+                    quotes=quotes,
+                    page_selections=page_selections,
+                )
+            async for chunk in cursor_cli_service.chat_stream(prompt):
+                yield chunk
+            return
 
         api_messages = prepared_api_messages
         if api_messages is None:

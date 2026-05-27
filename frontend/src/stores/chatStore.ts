@@ -30,6 +30,7 @@ interface ChatStore {
   messages: api.ChatMessage[]
   isLoading: boolean
   isStreaming: boolean
+  streamingByConversation: Record<string, boolean>
   error: string | null
   currentPaperId: string | null
   draftInput: string
@@ -42,6 +43,7 @@ interface ChatStore {
   currentSessionId: string | null
 
   abortController: AbortController | null
+  abortControllersByConversation: Record<string, AbortController>
   forks: Record<string, api.ForkData>
 
   // 串讲模式标记
@@ -221,6 +223,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
   isLoading: false,
   isStreaming: false,
+  streamingByConversation: {},
   error: null,
   currentPaperId: null,
   draftInput: '',
@@ -231,6 +234,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: [],
   currentSessionId: null,
   abortController: null,
+  abortControllersByConversation: {},
   forks: {},
   isCrossPaperMode: false,
   crossPaperIds: [],
@@ -272,7 +276,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set({ sessions: [newSession], currentSessionId: newSession.id })
         setTimeout(() => {
           const store = get()
-          if (store.currentPaperId === paperId && store.currentSessionId === newSession.id && store.messages.length === 0 && !store.isStreaming) {
+          const conversationKey = getConversationSelectionKey(paperId, newSession.id, false)
+          if (
+            store.currentPaperId === paperId &&
+            store.currentSessionId === newSession.id &&
+            store.messages.length === 0 &&
+            !store.streamingByConversation[conversationKey]
+          ) {
             store.sendMessage(paperId, newSession.id, AUTO_EXPLAIN_MESSAGE)
           }
         }, 300)
@@ -384,6 +394,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     //    用户重新打开/切回会话时由 loadChatHistory 拉到最新内容
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
+    const streamKey = selectionKey
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
 
     const userMessage: api.ChatMessage = {
@@ -395,8 +406,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((state) => ({
       messages: [...state.messages, userMessage, assistantMessage],
       isStreaming: true,
+      streamingByConversation: { ...state.streamingByConversation, [streamKey]: true },
       error: null,
       abortController: controller,
+      abortControllersByConversation: {
+        ...state.abortControllersByConversation,
+        [streamKey]: controller,
+      },
       draftInput: '',
       quotes: [],
       pendingPageSelection: null,
@@ -409,11 +425,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       get().currentPaperId === paperId && get().currentSessionId === sessionId
 
     const clearStreamingState = () => {
-      set((state) => (
-        state.abortController === controller
-          ? { isStreaming: false, abortController: null }
-          : {}
-      ))
+      set((state) => {
+        if (state.abortControllersByConversation[streamKey] !== controller) return {}
+        const nextStreamingByConversation = { ...state.streamingByConversation }
+        const nextAbortControllers = { ...state.abortControllersByConversation }
+        delete nextStreamingByConversation[streamKey]
+        delete nextAbortControllers[streamKey]
+        return {
+          isStreaming: Object.keys(nextStreamingByConversation).length > 0,
+          abortController: state.abortController === controller ? null : state.abortController,
+          streamingByConversation: nextStreamingByConversation,
+          abortControllersByConversation: nextAbortControllers,
+        }
+      })
     }
 
     const finalizeAssistantMessage = () => {
@@ -518,7 +542,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   stopStreaming: () => {
-    const { abortController, currentPaperId, currentSessionId, isCrossPaperMode } = get()
+    const {
+      abortControllersByConversation,
+      currentPaperId,
+      currentSessionId,
+      isCrossPaperMode,
+    } = get()
     if (currentSessionId) {
       // 显式告诉后端停止 task；后端会触发 cancel + persist truncated 状态
       if (isCrossPaperMode) {
@@ -527,8 +556,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         api.stopChat(currentPaperId, currentSessionId).catch(() => {})
       }
     }
-    if (abortController) {
-      abortController.abort()
+    const streamKey = currentSessionId
+      ? getConversationSelectionKey(currentPaperId ?? undefined, currentSessionId, isCrossPaperMode)
+      : null
+    const controller = streamKey ? abortControllersByConversation[streamKey] : null
+    if (controller) {
+      controller.abort()
     }
   },
 
@@ -803,6 +836,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     // 网络断/abort 都不删除 partial。详细说明见 sendMessage 注释。
     const controller = new AbortController()
     const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+    const streamKey = selectionKey
     const effectivePageSelections = pageSelections || get().pageSelectionsByConversation[selectionKey]
 
     const userMessage: api.ChatMessage = {
@@ -814,8 +848,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((state) => ({
       messages: [...state.messages, userMessage, assistantMessage],
       isStreaming: true,
+      streamingByConversation: { ...state.streamingByConversation, [streamKey]: true },
       error: null,
       abortController: controller,
+      abortControllersByConversation: {
+        ...state.abortControllersByConversation,
+        [streamKey]: controller,
+      },
       draftInput: '',
       quotes: [],
       pendingPageSelection: null,
@@ -828,11 +867,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       get().isCrossPaperMode && get().currentSessionId === sessionId
 
     const clearStreamingState = () => {
-      set((state) => (
-        state.abortController === controller
-          ? { isStreaming: false, abortController: null }
-          : {}
-      ))
+      set((state) => {
+        if (state.abortControllersByConversation[streamKey] !== controller) return {}
+        const nextStreamingByConversation = { ...state.streamingByConversation }
+        const nextAbortControllers = { ...state.abortControllersByConversation }
+        delete nextStreamingByConversation[streamKey]
+        delete nextAbortControllers[streamKey]
+        return {
+          isStreaming: Object.keys(nextStreamingByConversation).length > 0,
+          abortController: state.abortController === controller ? null : state.abortController,
+          streamingByConversation: nextStreamingByConversation,
+          abortControllersByConversation: nextAbortControllers,
+        }
+      })
     }
 
     const finalizeAssistantMessage = () => {

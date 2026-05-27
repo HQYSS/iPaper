@@ -170,6 +170,7 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
   - npm: `/opt/homebrew/bin/npm`
   - node: `/opt/homebrew/bin/node`
 - 日志输出到 `项目根目录/logs/`
+- 启动后端/前端时会写入当前 git SHA；`backend.log`、`frontend.log`、`electron.log` 超过 50MB 时，启动脚本会先轮转为 `.1`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
 - **启动锁**：`logs/ipaper-launch.lock/runner.pid` 记录当前 launcher。再次打开 `iPaper.app` 时，如果 Electron 仍健康，会启动一个短暂的第二实例触发 `app.requestSingleInstanceLock()` 的聚焦逻辑；如果只有旧 runner/端口残留但 Electron 已不在，则杀掉残留并重建运行态
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
@@ -226,6 +227,21 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
 | FastAPI → OpenRouter API | `https://openrouter.ai/api/v1` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。
+
+---
+
+## 运行态一致性检查
+
+后端提供 `GET /api/health/runtime`，返回当前进程 PID、启动时间、git SHA、dirty 状态、`sync_role` 和 LLM Provider。
+
+排查“代码改了但行为还是旧的”时，先核对：
+
+1. `git rev-parse HEAD`
+2. `curl http://127.0.0.1:3000/api/health/runtime`
+3. `lsof -nP -iTCP:3000 -sTCP:LISTEN`
+4. `ps -p <pid> -o pid,lstart,command`
+
+若 runtime 的 `git.sha` 或进程启动时间不符合预期，说明需要重启本地后端或完整重启 `iPaper.app`。再次打开 `iPaper.app` 可能只是聚焦旧 Electron 窗口，不等于重启运行态。
 
 ---
 

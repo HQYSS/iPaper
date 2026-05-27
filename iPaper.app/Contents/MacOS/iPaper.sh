@@ -20,8 +20,20 @@ RUNNER_PID_FILE="$LOCK_DIR/runner.pid"
 BACKEND_WATCHDOG_PID=""
 RUNNER_OWNS_LOCK=0
 SHOULD_CLEANUP=0
+MAX_LOG_BYTES=$((50 * 1024 * 1024))
 ELECTRON_BIN="$PROJECT_DIR/electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 ELECTRON_PROCESS_PATTERN="Electron\\.app/Contents/MacOS/Electron \\. --dev --skip-backend"
+
+rotate_log_if_needed() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        local size
+        size=$(wc -c < "$file" 2>/dev/null || echo 0)
+        if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
+            mv "$file" "$file.1" 2>/dev/null || true
+        fi
+    fi
+}
 
 kill_pattern_if_running() {
     local pattern="$1"
@@ -108,6 +120,8 @@ trap cleanup EXIT INT TERM
 
 start_backend() {
     cd "$PROJECT_DIR/backend"
+    rotate_log_if_needed "$LOG_DIR/backend.log"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting backend sha=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null) dirty=$(test -n "$(git -C "$PROJECT_DIR" status --short 2>/dev/null)" && echo yes || echo no)" >> "$LOG_DIR/backend.log"
     nohup env IPAPER_SYNC_ROLE=client "$PYTHON" -m uvicorn main:app --host 127.0.0.1 --port $BACKEND_PORT >> "$LOG_DIR/backend.log" 2>&1 &
     echo $! > "$PID_FILE"
 }
@@ -137,7 +151,9 @@ start_backend_watchdog() {
 
 start_frontend() {
     cd "$PROJECT_DIR/frontend"
-    nohup "$NPM" run dev -- --host 127.0.0.1 --port $FRONTEND_PORT > "$LOG_DIR/frontend.log" 2>&1 &
+    rotate_log_if_needed "$LOG_DIR/frontend.log"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting frontend sha=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null)" >> "$LOG_DIR/frontend.log"
+    nohup "$NPM" run dev -- --host 127.0.0.1 --port $FRONTEND_PORT >> "$LOG_DIR/frontend.log" 2>&1 &
 }
 
 wait_for_services() {
@@ -188,6 +204,7 @@ patch_electron_branding() {
 start_electron() {
     patch_electron_branding
     cd "$PROJECT_DIR/electron"
+    rotate_log_if_needed "$LOG_DIR/electron.log"
     # 重定向 stdout/stderr 到 electron.log，方便诊断窗口不出来 / createWindow 报错等问题
     "$ELECTRON_BIN" . --dev --skip-backend > "$LOG_DIR/electron.log" 2>&1
 }

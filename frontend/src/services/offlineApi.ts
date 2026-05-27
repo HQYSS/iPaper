@@ -9,6 +9,7 @@
 import {
   authFetch,
   getAuthToken,
+  reportClientLog,
   type PaperListItem,
   type ChatMessage,
   type ChatHistory,
@@ -73,6 +74,10 @@ async function networkFirstJson<T>(
     } catch (err) {
       const cached = await safeCacheGet()
       if (cached !== null) return cached
+      reportClientLog('warning', 'network-first request failed without cache', {
+        url,
+        error: (err as Error).message,
+      })
       throw err
     }
   }
@@ -133,7 +138,12 @@ export async function replayPendingOps(): Promise<{ succeeded: number; failed: n
       })
       if (resp.ok) succeeded++
       else failed++
-    } catch {
+    } catch (error) {
+      reportClientLog('warning', 'pending offline operation replay failed', {
+        url: op.url,
+        method: op.method,
+        error: (error as Error).message,
+      })
       failed++
     }
   }

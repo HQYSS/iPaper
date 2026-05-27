@@ -11,6 +11,10 @@ from pydantic import BaseModel, Field
 class PaperCreate(BaseModel):
     """添加论文请求"""
     arxiv_input: str = Field(..., description="arXiv ID 或 URL")
+    title: Optional[str] = Field(None, description="页面上抓取到的标题兜底")
+    summary: Optional[str] = Field(None, description="页面上抓取到的摘要兜底")
+    authors: Optional[List[str]] = Field(None, description="页面上抓取到的作者兜底")
+    source_url: Optional[str] = Field(None, description="原始页面 URL 兜底")
 
 
 class PaperOpenRequest(BaseModel):
@@ -197,10 +201,14 @@ class CrossPaperChatHistory(BaseModel):
 
 class LLMConfigUpdate(BaseModel):
     """更新 LLM 配置"""
+    provider: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    cursor_command: Optional[str] = None
+    cursor_model: Optional[str] = None
+    cursor_timeout_seconds: Optional[int] = None
 
 
 # ============ 用户画像相关模型 ============

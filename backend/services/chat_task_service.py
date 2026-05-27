@@ -116,6 +116,13 @@ class ChatTaskService:
             paper_id=paper_id,
         )
         self._tasks[task.key] = task
+        logger.info(
+            "[chat-task %s:%s] registered user=%s paper=%s",
+            kind,
+            session_id,
+            user_id,
+            paper_id,
+        )
         task.asyncio_task = asyncio.create_task(
             self._run(task, stream_factory, persist),
             name=f"chat-task-{kind}-{session_id}",
@@ -125,6 +132,7 @@ class ChatTaskService:
     async def _run(self, task: ChatTask, stream_factory: StreamFactory, persist: PersistFn):
         last_persist_at = time.monotonic()
         dirty = False
+        first_chunk_at: Optional[float] = None
 
         def _do_persist(force: bool = False):
             nonlocal last_persist_at, dirty
@@ -144,9 +152,18 @@ class ChatTaskService:
                 logger.exception("[chat-task %s:%s] persist failed", task.kind, task.session_id)
 
         try:
+            logger.info("[chat-task %s:%s] run started", task.kind, task.session_id)
             async for chunk in stream_factory(task.reasoning_parts):
                 if not chunk:
                     continue
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
+                    logger.info(
+                        "[chat-task %s:%s] first chunk after %.2fs",
+                        task.kind,
+                        task.session_id,
+                        first_chunk_at - last_persist_at,
+                    )
                 task.full_response += chunk
                 dirty = True
                 task._broadcast({"type": "chunk", "content": chunk})
@@ -166,7 +183,27 @@ class ChatTaskService:
         finally:
             task.finished = True
             task.finished_at = time.time()
+            if task.finish_reason == "error" and not task.full_response.strip():
+                task.full_response = f"生成失败：{task.error_message or 'AI 服务出现错误'}"
             _do_persist(force=True)
+            elapsed = task.finished_at - task.started_at
+            if not task.full_response and task.finish_reason == "stop":
+                logger.warning(
+                    "[chat-task %s:%s] finished with empty response after %.2fs",
+                    task.kind,
+                    task.session_id,
+                    elapsed,
+                )
+            else:
+                logger.info(
+                    "[chat-task %s:%s] finished reason=%s elapsed=%.2fs chars=%d subscribers=%d",
+                    task.kind,
+                    task.session_id,
+                    task.finish_reason,
+                    elapsed,
+                    len(task.full_response),
+                    len(task.subscribers),
+                )
 
             if task.finish_reason in ("stop", "length"):
                 terminal: dict = {"type": "done", "finish_reason": task.finish_reason}
@@ -196,6 +233,13 @@ class ChatTaskService:
         generator 自然退出，finally 摘除订阅者。"""
         # 任务已结束：直接吐 partial + terminal 退出
         if task.finished:
+            logger.info(
+                "[chat-task %s:%s] late subscriber receives terminal reason=%s chars=%d",
+                task.kind,
+                task.session_id,
+                task.finish_reason,
+                len(task.full_response),
+            )
             yield {"type": "open"}
             if task.full_response:
                 yield {"type": "chunk", "content": task.full_response}
@@ -207,6 +251,13 @@ class ChatTaskService:
         snapshot = task.full_response
         sub = _Subscriber(queue=asyncio.Queue())
         task.subscribers.append(sub)
+        logger.info(
+            "[chat-task %s:%s] subscriber attached count=%d snapshot_chars=%d",
+            task.kind,
+            task.session_id,
+            len(task.subscribers),
+            len(snapshot),
+        )
         try:
             yield {"type": "open"}
             if snapshot:
@@ -221,6 +272,13 @@ class ChatTaskService:
                 task.subscribers.remove(sub)
             except ValueError:
                 pass
+            logger.info(
+                "[chat-task %s:%s] subscriber detached count=%d finished=%s",
+                task.kind,
+                task.session_id,
+                len(task.subscribers),
+                task.finished,
+            )
 
 
 chat_task_service = ChatTaskService()

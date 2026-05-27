@@ -139,7 +139,10 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   useEffect(() => {
     fetchPapers()
     getConfig().then((config) => {
-      if (!config.llm.api_key_configured) {
+      const llmReady = config.llm.provider === 'cursor_cli'
+        ? config.llm.cursor_cli_available
+        : config.llm.api_key_configured
+      if (!llmReady) {
         setSettingsOpen(true)
       }
     }).catch(() => {})
