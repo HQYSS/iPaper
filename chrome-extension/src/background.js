@@ -199,18 +199,44 @@ async function injectArxivButton(tabId, url) {
   }
 }
 
-async function importToIpaper(rawUrl) {
+function cleanMetadataText(value) {
+  if (!value || typeof value !== 'string') return ''
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizePageMetadata(metadata, sourceUrl) {
+  if (!metadata || typeof metadata !== 'object') {
+    return { source_url: sourceUrl }
+  }
+
+  const authors = Array.isArray(metadata.authors)
+    ? metadata.authors.map(cleanMetadataText).filter(Boolean).slice(0, 50)
+    : []
+
+  return {
+    title: cleanMetadataText(metadata.title) || undefined,
+    summary: cleanMetadataText(metadata.summary) || undefined,
+    authors: authors.length ? authors : undefined,
+    source_url: cleanMetadataText(metadata.sourceUrl) || sourceUrl,
+  }
+}
+
+async function importToIpaper(rawUrl, pageMetadata) {
   const normalized = getImportInput(rawUrl)
   if (!normalized.ok) return normalized
 
   await ensureBackendReady()
+  const body = { arxiv_input: normalized.input }
+  if (normalized.source === 'arxiv') {
+    Object.assign(body, normalizePageMetadata(pageMetadata, rawUrl))
+  }
 
   const response = await fetchWithTimeout(
     `${API_BASE}/papers`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ arxiv_input: normalized.input }),
+      body: JSON.stringify(body),
     },
     60000,
   )
@@ -283,7 +309,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'ipaper:import-url') {
-      const result = await importToIpaper(message.url || sender.tab?.url)
+      const result = await importToIpaper(message.url || sender.tab?.url, message.metadata)
       sendResponse(result)
       return
     }

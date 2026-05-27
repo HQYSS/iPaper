@@ -29,6 +29,47 @@ function setButtonBusy(button, busy) {
   button.textContent = busy ? '导入中...' : '导入 iPaper'
 }
 
+function cleanText(text) {
+  return (text || '').replace(/\s+/g, ' ').trim()
+}
+
+function getMetaContent(name) {
+  return cleanText(document.querySelector(`meta[name="${name}"]`)?.getAttribute('content') || '')
+}
+
+function stripLabel(text, label) {
+  return cleanText(text).replace(new RegExp(`^${label}:?\\s*`, 'i'), '').trim()
+}
+
+function getPageMetadata() {
+  const citationAuthors = Array.from(document.querySelectorAll('meta[name="citation_author"]'))
+    .map((el) => cleanText(el.getAttribute('content') || ''))
+    .filter(Boolean)
+
+  const title =
+    getMetaContent('citation_title') ||
+    stripLabel(document.querySelector('h1.title')?.textContent || '', 'Title') ||
+    cleanText(document.querySelector('.ltx_title_document')?.textContent || '')
+
+  const abstractText =
+    getMetaContent('description') ||
+    stripLabel(document.querySelector('blockquote.abstract')?.textContent || '', 'Abstract') ||
+    stripLabel(document.querySelector('.ltx_abstract')?.textContent || '', 'Abstract')
+
+  const fallbackAuthors = Array.from(
+    document.querySelectorAll('.authors a, .ltx_authors .ltx_personname'),
+  )
+    .map((el) => cleanText(el.textContent || ''))
+    .filter(Boolean)
+
+  return {
+    title,
+    summary: abstractText,
+    authors: citationAuthors.length ? citationAuthors : fallbackAuthors,
+    sourceUrl: window.location.href,
+  }
+}
+
 async function handleImport(button) {
   setButtonBusy(button, true)
   setStatus('正在连接本地 iPaper...', 'muted')
@@ -36,6 +77,7 @@ async function handleImport(button) {
   const result = await sendMessage({
     type: 'ipaper:import-url',
     url: window.location.href,
+    metadata: getPageMetadata(),
   })
 
   setButtonBusy(button, false)
