@@ -117,6 +117,72 @@ class ArxivService:
     def _task_key(user_id: str, arxiv_id: str) -> str:
         return f"{user_id}:{arxiv_id}"
 
+    @staticmethod
+    def _clean_metadata_text(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return re.sub(r"\s+", " ", value).strip()
+
+    @staticmethod
+    def _clean_metadata_authors(value: Optional[List[str]]) -> List[str]:
+        if not value:
+            return []
+        authors: List[str] = []
+        seen = set()
+        for author in value:
+            cleaned = ArxivService._clean_metadata_text(author)
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            authors.append(cleaned)
+        return authors[:50]
+
+    @staticmethod
+    def _is_placeholder_metadata(meta: PaperMeta) -> bool:
+        return (
+            meta.title == f"arXiv {meta.arxiv_id}"
+            or meta.summary == PLACEHOLDER_METADATA_SUMMARY
+            or not meta.authors
+        )
+
+    def _apply_metadata_fallback(
+        self,
+        user_id: str,
+        meta: PaperMeta,
+        fallback: Optional[dict],
+        persist: bool = True,
+    ) -> PaperMeta:
+        """Use page-scraped metadata while the arXiv API is rate-limited."""
+        if not fallback or getattr(meta, "source_type", "arxiv") != "arxiv":
+            return meta
+
+        changed = False
+        title = self._clean_metadata_text(fallback.get("title"))
+        summary = self._clean_metadata_text(fallback.get("summary"))
+        authors = self._clean_metadata_authors(fallback.get("authors"))
+        source_url = self._clean_metadata_text(fallback.get("source_url"))
+
+        if title and (not meta.title or meta.title == f"arXiv {meta.arxiv_id}"):
+            meta.title = title
+            changed = True
+        if summary and (not meta.summary or meta.summary == PLACEHOLDER_METADATA_SUMMARY):
+            meta.summary = summary
+            changed = True
+        if authors and not meta.authors:
+            meta.authors = authors
+            changed = True
+        if source_url and "arxiv.org/" in source_url and not meta.source_url:
+            meta.source_url = source_url
+            changed = True
+
+        if changed and persist:
+            meta_file = self.get_paper_dir(user_id, meta.arxiv_id) / "meta.json"
+            self._save_meta(meta_file, meta)
+            self._update_index(user_id, meta)
+            logger.info("metadata fallback applied for %s", meta.arxiv_id)
+
+        return meta
+
     async def download_paper(
         self,
         user_id: str,
@@ -377,37 +443,61 @@ class ArxivService:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
         try:
-            paper = await self._fetch_metadata_rate_limited(arxiv_id)
-            if paper is None:
-                logger.warning("metadata not found for %s", arxiv_id)
-                return
-            if not meta_file.exists():
-                return
-            meta = self._load_meta(meta_file)
-            if getattr(meta, "source_type", "arxiv") != "arxiv":
-                return
-            meta.title = paper.title
-            meta.summary = paper.summary
-            meta.authors = [author.name for author in paper.authors]
-            meta.source_url = paper.entry_id or f"https://arxiv.org/abs/{arxiv_id}"
-            self._save_meta(meta_file, meta)
-            self._update_index(user_id, meta)
-            logger.info("metadata refreshed for %s", arxiv_id)
-            try:
-                from services.sync_service import sync_service
-                sync_service.request_sync("paper-metadata", arxiv_id)
-            except Exception:
-                logger.exception("request_sync failed after metadata refresh")
-        except arxiv.HTTPError as e:
-            logger.warning(
-                "arxiv metadata refresh HTTPError for %s: status=%s",
-                arxiv_id,
-                getattr(e, "status", None),
-            )
+            for attempt in range(METADATA_REFRESH_MAX_RETRIES):
+                try:
+                    paper = await self._fetch_metadata_rate_limited(arxiv_id)
+                    if paper is None:
+                        logger.warning("metadata not found for %s", arxiv_id)
+                        return
+                    if not meta_file.exists():
+                        return
+                    meta = self._load_meta(meta_file)
+                    if getattr(meta, "source_type", "arxiv") != "arxiv":
+                        return
+                    meta.title = paper.title
+                    meta.summary = paper.summary
+                    meta.authors = [author.name for author in paper.authors]
+                    meta.source_url = paper.entry_id or f"https://arxiv.org/abs/{arxiv_id}"
+                    self._save_meta(meta_file, meta)
+                    self._update_index(user_id, meta)
+                    logger.info("metadata refreshed for %s", arxiv_id)
+                    try:
+                        from services.sync_service import sync_service
+                        sync_service.request_sync("paper-metadata", arxiv_id)
+                    except Exception:
+                        logger.exception("request_sync failed after metadata refresh")
+                    return
+                except arxiv.HTTPError as e:
+                    status = getattr(e, "status", None)
+                    if status == 429 and attempt < METADATA_REFRESH_MAX_RETRIES - 1:
+                        retry_in = METADATA_RETRY_BACKOFF[min(attempt, len(METADATA_RETRY_BACKOFF) - 1)]
+                        logger.warning(
+                            "arxiv metadata refresh rate-limited for %s; retrying in %.0fs",
+                            arxiv_id,
+                            retry_in,
+                        )
+                        await asyncio.sleep(retry_in)
+                        continue
+                    logger.warning(
+                        "arxiv metadata refresh HTTPError for %s: status=%s",
+                        arxiv_id,
+                        status,
+                    )
+                    return
+                except Exception:
+                    if attempt < METADATA_REFRESH_MAX_RETRIES - 1:
+                        retry_in = METADATA_RETRY_BACKOFF[min(attempt, len(METADATA_RETRY_BACKOFF) - 1)]
+                        logger.exception(
+                            "metadata refresh failed for %s; retrying in %.0fs",
+                            arxiv_id,
+                            retry_in,
+                        )
+                        await asyncio.sleep(retry_in)
+                        continue
+                    logger.exception("metadata refresh failed for %s", arxiv_id)
+                    return
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("metadata refresh failed for %s", arxiv_id)
         finally:
             self._metadata_tasks.pop(self._task_key(user_id, arxiv_id), None)
 
