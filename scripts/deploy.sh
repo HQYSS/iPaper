@@ -49,7 +49,7 @@ if [[ "$HAS_FRONTEND" -eq 0 && "$HAS_BACKEND" -eq 0 ]]; then
     info "自动检测到改动: $([ $HAS_FRONTEND -gt 0 ] && echo '前端 ')$([ $HAS_BACKEND -gt 0 ] && echo '后端')"
 fi
 
-if [[ -n $(git status --porcelain) ]]; then
+if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
     error "有未提交的改动，请先 git commit"
 fi
 
