@@ -13,6 +13,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+DEPLOY_HOST="${IPAPER_DEPLOY_HOST:-admin@59.110.154.252}"
 
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -20,7 +21,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 check_remote_worktree_clean() {
     local status_output
-    status_output=$(ssh aws 'cd ~/iPaper && python3 -c "from pathlib import Path; repo = Path.home() / \"iPaper\"; [p.unlink() for p in repo.rglob(\"._*\") if p.is_file()]" >/dev/null 2>&1 && git status --short --untracked-files=all | while IFS= read -r line; do path=${line:3}; path=${path#\"}; path=${path%\"}; case "$path" in backend/venv|backend/venv/*|frontend/dist|frontend/dist/*) ;; *) printf "%s\n" "$line" ;; esac; done')
+    status_output=$(ssh "$DEPLOY_HOST" 'cd ~/iPaper && python3 -c "from pathlib import Path; repo = Path.home() / \"iPaper\"; [p.unlink() for p in repo.rglob(\"._*\") if p.is_file()]" >/dev/null 2>&1 && git status --short --untracked-files=all | while IFS= read -r line; do path=${line:3}; path=${path#\"}; path=${path%\"}; case "$path" in backend/venv|backend/venv/*|frontend/dist|frontend/dist/*) ;; *) printf "%s\n" "$line" ;; esac; done')
     if [[ -n "$status_output" ]]; then
         echo "$status_output"
         error "服务器工作树不干净，请先备份并清理远端改动后再部署"
@@ -60,8 +61,8 @@ info "检查服务器工作树..."
 check_remote_worktree_clean
 
 info "服务器拉取代码..."
-ssh aws "cd ~/iPaper && git pull --ff-only"
-REMOTE_SHA=$(ssh aws "cd ~/iPaper && git rev-parse HEAD")
+ssh "$DEPLOY_HOST" "cd ~/iPaper && git pull --ff-only"
+REMOTE_SHA=$(ssh "$DEPLOY_HOST" "cd ~/iPaper && git rev-parse HEAD")
 if [[ "$REMOTE_SHA" != "$LOCAL_SHA" ]]; then
     error "服务器代码版本不一致：local=$LOCAL_SHA remote=$REMOTE_SHA"
 fi
@@ -89,20 +90,20 @@ target_path = Path("/tmp/dist.tar.gz")
 with tarfile.open(target_path, "w:gz") as archive:
     archive.add(source_dir, arcname="dist")
 PY
-    scp /tmp/dist.tar.gz aws:/tmp/
-    ssh aws "cd ~/iPaper/frontend && rm -rf dist && tar xzf /tmp/dist.tar.gz && rm /tmp/dist.tar.gz"
+    scp /tmp/dist.tar.gz "$DEPLOY_HOST":/tmp/
+    ssh "$DEPLOY_HOST" "cd ~/iPaper/frontend && rm -rf dist && tar xzf /tmp/dist.tar.gz && rm /tmp/dist.tar.gz"
     rm -f /tmp/dist.tar.gz
     info "前端部署完成"
 fi
 
 if [[ "$HAS_BACKEND" -gt 0 ]]; then
     info "=== 部署后端 ==="
-    ssh aws "sudo systemctl restart ipaper-backend"
+    ssh "$DEPLOY_HOST" "sudo systemctl restart ipaper-backend"
     sleep 2
-    if ssh aws "systemctl is-active --quiet ipaper-backend"; then
+    if ssh "$DEPLOY_HOST" "systemctl is-active --quiet ipaper-backend"; then
         info "后端重启成功"
     else
-        warn "后端可能未正常启动，请检查: ssh aws 'sudo journalctl -u ipaper-backend -n 20'"
+        warn "后端可能未正常启动，请检查: ssh $DEPLOY_HOST 'sudo journalctl -u ipaper-backend -n 20'"
     fi
 fi
 
