@@ -16,7 +16,11 @@ from services.sync_service import sync_service
 
 router = APIRouter()
 
-VALID_LLM_PROVIDERS = {"openrouter", "cursor_cli"}
+VALID_LLM_PROVIDERS = {"llm_center_gpt_responses", "llm_center_anthropic", "cursor_cli"}
+PROVIDER_DEFAULTS = {
+    "llm_center_gpt_responses": {"model": "gpt-5.5", "provider_id": "64", "max_tokens": 32768},
+    "llm_center_anthropic": {"model": "claude-opus-4-8", "provider_id": "52", "max_tokens": 32768},
+}
 
 
 @router.get("")
@@ -29,6 +33,7 @@ async def get_config(user: dict = Depends(get_current_user)):
             "api_base": settings.llm.api_base,
             "api_key_configured": bool(settings.llm.api_key),
             "model": settings.llm.model,
+            "provider_id": settings.llm.provider_id,
             "temperature": settings.llm.temperature,
             "max_tokens": settings.llm.max_tokens,
             "cursor_command": settings.llm.cursor_command,
@@ -41,6 +46,7 @@ async def get_config(user: dict = Depends(get_current_user)):
         "sync": {
             "role": settings.sync_role,
             "url": settings.sync_url,
+            "verify_ssl": settings.sync_verify_ssl,
             "token_configured": bool(settings.sync_token),
         },
     }
@@ -53,10 +59,17 @@ async def update_llm_config(update: LLMConfigUpdate, user: dict = Depends(get_cu
         if provider not in VALID_LLM_PROVIDERS:
             raise HTTPException(status_code=400, detail="不支持的 LLM Provider")
         settings.llm.provider = provider
+        defaults = PROVIDER_DEFAULTS.get(provider)
+        if defaults:
+            settings.llm.model = defaults["model"]
+            settings.llm.provider_id = defaults["provider_id"]
+            settings.llm.max_tokens = defaults["max_tokens"]
     if update.api_key is not None:
         settings.llm.api_key = update.api_key
     if update.model is not None:
         settings.llm.model = update.model
+    if update.provider_id is not None:
+        settings.llm.provider_id = update.provider_id.strip()
     if update.temperature is not None:
         settings.llm.temperature = update.temperature
     if update.max_tokens is not None:

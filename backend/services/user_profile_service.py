@@ -13,10 +13,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-from openai import AsyncOpenAI
-
 from config import settings
 from models import ChatMessage
+from services import anthropic_service
 
 
 class UserProfileService:
@@ -214,10 +213,6 @@ class UserProfileService:
         if not current_profile:
             return None
 
-        client = AsyncOpenAI(
-            api_key=settings.llm.api_key,
-            base_url=settings.llm.api_base,
-        )
         analysis_model = settings.profile_analysis.model
         analysis_temp = settings.profile_analysis.temperature
         analysis_max_tokens = settings.profile_analysis.max_tokens
@@ -225,7 +220,7 @@ class UserProfileService:
         # --- Step 1: 信号提取 ---
         print("[ProfilePipeline] Step 1: 提取反馈信号...")
         signals = await self._step1_extract_signals(
-            client, analysis_model, analysis_temp, analysis_max_tokens,
+            analysis_model, analysis_temp, analysis_max_tokens,
             messages, current_profile, paper_title, paper_summary,
         )
         if not signals:
@@ -236,7 +231,7 @@ class UserProfileService:
         # --- Step 2: 编辑规划 ---
         print("[ProfilePipeline] Step 2: 规划编辑操作...")
         edit_plan = await self._step2_plan_edits(
-            client, analysis_model, analysis_temp, analysis_max_tokens,
+            analysis_model, analysis_temp, analysis_max_tokens,
             signals, current_profile,
         )
         if not edit_plan or not edit_plan.get("edits"):
@@ -271,7 +266,6 @@ class UserProfileService:
 
     async def _step1_extract_signals(
         self,
-        client: AsyncOpenAI,
         model: str,
         temperature: float,
         max_tokens: int,
@@ -296,16 +290,14 @@ class UserProfileService:
 {conversation_text}"""
 
         try:
-            response = await client.chat.completions.create(
+            content = await anthropic_service.create_message(
                 model=model,
-                messages=[
-                    {"role": "system", "content": self.SIGNAL_EXTRACTION_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
+                system=self.SIGNAL_EXTRACTION_PROMPT,
+                messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}],
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            result = self._parse_json_response(response.choices[0].message.content)
+            result = self._parse_json_response(content)
             if result and result.get("signals"):
                 return result["signals"]
             return None
@@ -317,7 +309,6 @@ class UserProfileService:
 
     async def _step2_plan_edits(
         self,
-        client: AsyncOpenAI,
         model: str,
         temperature: float,
         max_tokens: int,
@@ -337,16 +328,14 @@ class UserProfileService:
 请根据以上信号，规划对画像的编辑操作。"""
 
         try:
-            response = await client.chat.completions.create(
+            content = await anthropic_service.create_message(
                 model=model,
-                messages=[
-                    {"role": "system", "content": self.EDIT_PLANNING_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
+                system=self.EDIT_PLANNING_PROMPT,
+                messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}],
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            return self._parse_json_response(response.choices[0].message.content)
+            return self._parse_json_response(content)
         except Exception as e:
             print(f"[ProfilePipeline] Step 2 失败: {e}")
             return None

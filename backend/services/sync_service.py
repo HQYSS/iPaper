@@ -400,6 +400,18 @@ class SyncService:
         self._wake_event.set()
         logger.warning("Scheduled local sync: %s paper=%s", reason, paper_id)
 
+    async def sync_now(self, reason: str = "manual", paper_id: Optional[str] = None) -> None:
+        if not self._client_role_required():
+            return
+        if paper_id:
+            self._priority_paper_ids.add(paper_id)
+        await self._sync_once(
+            LOCAL_SYNC_USER_ID,
+            reason,
+            target_paper_ids={paper_id} if paper_id else None,
+            sync_documents=paper_id is None,
+        )
+
     async def startup(self) -> None:
         if not self._client_role_required():
             return
@@ -463,7 +475,13 @@ class SyncService:
             return f"{sync_url}/sync"
         return f"{sync_url}/api/sync"
 
-    async def _sync_once(self, user_id: str, reason: str) -> None:
+    async def _sync_once(
+        self,
+        user_id: str,
+        reason: str,
+        target_paper_ids: Optional[set[str]] = None,
+        sync_documents: bool = True,
+    ) -> None:
         if not self._client_role_required():
             return
         sync_token = settings.sync_token.strip()
@@ -477,7 +495,8 @@ class SyncService:
             logger.info("sync started run=%s reason=%s user=%s", sync_run_id, reason, user_id)
             local_manifest = self.get_manifest(user_id)
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=60.0)
+                timeout=httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=60.0),
+                verify=settings.sync_verify_ssl,
             ) as client:
                 remote_manifest_resp = await client.get(
                     f"{sync_base}/manifest",
@@ -486,29 +505,39 @@ class SyncService:
                 remote_manifest_resp.raise_for_status()
                 remote_manifest = remote_manifest_resp.json()
 
-                await self._sync_papers(client, sync_base, sync_token, user_id, local_manifest.to_dict(), remote_manifest, sync_run_id)
-                await self._sync_document(
+                await self._sync_papers(
                     client,
-                    "preferences",
-                    local_manifest.preferences_updated_at,
-                    remote_manifest.get("preferences_updated_at"),
-                    lambda: self.get_preferences(user_id) or {},
-                    lambda data: self.put_preferences(user_id, data),
-                    f"{sync_base}/preferences",
+                    sync_base,
                     sync_token,
+                    user_id,
+                    local_manifest.to_dict(),
+                    remote_manifest,
                     sync_run_id,
+                    target_paper_ids=target_paper_ids,
                 )
-                await self._sync_document(
-                    client,
-                    "profile",
-                    local_manifest.profile_updated_at,
-                    remote_manifest.get("profile_updated_at"),
-                    lambda: {"content": self.get_profile(user_id) or "", "updated_at": self.get_profile_updated_at(user_id)},
-                    lambda data: self.put_profile(user_id, data.get("content", ""), data.get("updated_at")),
-                    f"{sync_base}/profile",
-                    sync_token,
-                    sync_run_id,
-                )
+                if sync_documents:
+                    await self._sync_document(
+                        client,
+                        "preferences",
+                        local_manifest.preferences_updated_at,
+                        remote_manifest.get("preferences_updated_at"),
+                        lambda: self.get_preferences(user_id) or {},
+                        lambda data: self.put_preferences(user_id, data),
+                        f"{sync_base}/preferences",
+                        sync_token,
+                        sync_run_id,
+                    )
+                    await self._sync_document(
+                        client,
+                        "profile",
+                        local_manifest.profile_updated_at,
+                        remote_manifest.get("profile_updated_at"),
+                        lambda: {"content": self.get_profile(user_id) or "", "updated_at": self.get_profile_updated_at(user_id)},
+                        lambda data: self.put_profile(user_id, data.get("content", ""), data.get("updated_at")),
+                        f"{sync_base}/profile",
+                        sync_token,
+                        sync_run_id,
+                    )
 
             final_local_manifest = self.get_manifest(user_id)
             self._last_local_fingerprint = self._paper_fingerprint(final_local_manifest)
@@ -520,12 +549,24 @@ class SyncService:
                 int((time.monotonic() - started) * 1000),
             )
 
-    async def _sync_papers(self, client: httpx.AsyncClient, sync_base: str, sync_token: str, user_id: str, local_manifest: dict, remote_manifest: dict, sync_run_id: str) -> None:
+    async def _sync_papers(
+        self,
+        client: httpx.AsyncClient,
+        sync_base: str,
+        sync_token: str,
+        user_id: str,
+        local_manifest: dict,
+        remote_manifest: dict,
+        sync_run_id: str,
+        target_paper_ids: Optional[set[str]] = None,
+    ) -> None:
         local_papers = {paper["arxiv_id"]: paper for paper in local_manifest.get("papers", [])}
         remote_papers = {paper["arxiv_id"]: paper for paper in remote_manifest.get("papers", [])}
         local_deleted = {paper["arxiv_id"]: paper for paper in local_manifest.get("deleted_papers", [])}
         remote_deleted = {paper["arxiv_id"]: paper for paper in remote_manifest.get("deleted_papers", [])}
         paper_ids = set(local_papers) | set(remote_papers) | set(local_deleted) | set(remote_deleted)
+        if target_paper_ids is not None:
+            paper_ids &= target_paper_ids
         ordered_paper_ids = [
             *[paper_id for paper_id in self._priority_paper_ids if paper_id in paper_ids],
             *[paper_id for paper_id in sorted(paper_ids) if paper_id not in self._priority_paper_ids],

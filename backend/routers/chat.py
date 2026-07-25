@@ -18,13 +18,15 @@ from openai import APIConnectionError, APIError, APIStatusError, AuthenticationE
 logger = logging.getLogger(__name__)
 
 from config import settings
-from middleware.auth import get_current_user
+from middleware.auth import get_current_user, get_sync_user
 from models import (
     ChatDraftUpdate,
     ChatHistory,
     ChatHistoryUpdate,
     ChatMessage,
     ChatRequest,
+    CloudCrossPaperChatRequest,
+    CloudSingleChatRequest,
     CrossPaperAddPapersRequest,
     CrossPaperChatHistory,
     CrossPaperChatRequest,
@@ -37,8 +39,10 @@ from models import (
 )
 from services.arxiv_service import arxiv_service
 from services.chat_task_service import chat_task_service
+from services.cloud_chat_service import cloud_chat_service
 from services.llm_service import PageSelectionRequiredError, llm_service
 from services.storage_service import storage_service
+from services.sync_service import sync_service
 
 router = APIRouter()
 
@@ -69,7 +73,7 @@ def _page_selection_http_exception(exc: PageSelectionRequiredError) -> HTTPExcep
 
 
 def _llm_error_message(exc: Exception) -> str:
-    """把 OpenAI/OpenRouter SDK 异常映射成给用户看的中文消息"""
+    """把 LLM SDK 异常映射成给用户看的中文消息"""
     if isinstance(exc, AuthenticationError):
         return "API Key 无效或已过期，请在设置中检查"
     if isinstance(exc, RateLimitError):
@@ -89,6 +93,146 @@ def _llm_error_message(exc: Exception) -> str:
     if isinstance(exc, APIError):
         return "LLM 流式响应中断，请稍后重试"
     return f"AI 服务出现错误：{exc}"
+
+
+def _cloud_chat_forbidden_if_not_server():
+    if not settings.is_sync_server:
+        raise HTTPException(status_code=403, detail="该接口仅允许云端后端执行")
+
+
+async def _cloud_generate_events(stream):
+    reasoning_collector: list[str] = []
+    content_blocks_collector: list[dict] = []
+    response_metadata_collector: dict[str, str] = {}
+    try:
+        async for chunk in stream(
+            reasoning_collector,
+            content_blocks_collector,
+            response_metadata_collector,
+        ):
+            yield f"data: {json.dumps({'type': 'chunk', 'content': chunk}, ensure_ascii=False)}\n\n"
+        done_event = {
+            'type': 'done',
+            'finish_reason': 'stop',
+            'reasoning': ''.join(reasoning_collector) if reasoning_collector else None,
+            'content_blocks': content_blocks_collector or None,
+            'response_id': response_metadata_collector.get('response_id'),
+        }
+        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+    except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
+        yield f"data: {json.dumps({'type': 'error', 'message': _llm_error_message(e)}, ensure_ascii=False)}\n\n"
+    except Exception as e:
+        logger.exception("cloud chat stream failed: %s", e)
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e) or '云端生成失败'}, ensure_ascii=False)}\n\n"
+
+
+@router.post("/_cloud/single/{paper_id}/stream")
+async def cloud_single_chat_stream(
+    paper_id: str,
+    request: CloudSingleChatRequest,
+    user: dict = Depends(get_sync_user),
+):
+    _cloud_chat_forbidden_if_not_server()
+    uid = user["id"]
+    paper = _check_paper(uid, paper_id)
+    pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
+    if not pdf_path:
+        raise HTTPException(status_code=404, detail="云端还没有这篇论文 PDF，请等待同步完成后重试")
+    if not llm_service.is_configured():
+        raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
+
+    try:
+        prepared_api_messages = llm_service.prepare_chat_api_messages(
+            messages=request.messages,
+            pdf_path=pdf_path,
+            quotes=request.quotes,
+            page_selections=request.page_selections,
+            paper_id=paper_id,
+            paper_title=request.paper_title or paper.title,
+        )
+    except PageSelectionRequiredError as exc:
+        raise _page_selection_http_exception(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    logger.info(
+        "[chat cloud single] user=%s paper=%s messages=%d delegated_pdf=%s",
+        uid,
+        paper_id,
+        len(request.messages),
+        bool(pdf_path),
+    )
+
+    async def stream(reasoning_collector, content_blocks_collector, response_metadata_collector):
+        async for chunk in llm_service.chat_stream(
+            messages=request.messages,
+            pdf_path=pdf_path,
+            quotes=request.quotes,
+            reasoning_collector=reasoning_collector,
+            content_blocks_collector=content_blocks_collector,
+            response_metadata_collector=response_metadata_collector,
+            prepared_api_messages=prepared_api_messages,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        _cloud_generate_events(stream),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/_cloud/cross-paper/stream")
+async def cloud_cross_paper_chat_stream(
+    request: CloudCrossPaperChatRequest,
+    user: dict = Depends(get_sync_user),
+):
+    _cloud_chat_forbidden_if_not_server()
+    uid = user["id"]
+    for pid in request.paper_ids:
+        _check_paper(uid, pid)
+        if not arxiv_service.get_pdf_path(uid, pid):
+            raise HTTPException(status_code=404, detail=f"云端还没有论文 {pid} 的 PDF，请等待同步完成后重试")
+    if not llm_service.is_configured():
+        raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
+
+    try:
+        prepared_api_messages = llm_service.prepare_cross_paper_api_messages(
+            messages=request.messages,
+            user_id=uid,
+            paper_ids=request.paper_ids,
+            quotes=request.quotes,
+            page_selections=request.page_selections,
+        )
+    except PageSelectionRequiredError as exc:
+        raise _page_selection_http_exception(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    logger.info(
+        "[chat cloud cross] user=%s papers=%s messages=%d",
+        uid,
+        ",".join(request.paper_ids),
+        len(request.messages),
+    )
+
+    async def stream(reasoning_collector, content_blocks_collector, response_metadata_collector):
+        async for chunk in llm_service.chat_stream_cross_paper(
+            messages=request.messages,
+            paper_ids=request.paper_ids,
+            quotes=request.quotes,
+            reasoning_collector=reasoning_collector,
+            content_blocks_collector=content_blocks_collector,
+            response_metadata_collector=response_metadata_collector,
+            prepared_api_messages=prepared_api_messages,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        _cloud_generate_events(stream),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ==================== Cross-Paper (串讲) — 必须在 {paper_id} 路由前 ====================
@@ -154,7 +298,8 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         len(request.page_selections or []),
     )
 
-    if not llm_service.is_configured():
+    delegate_to_cloud = cloud_chat_service.should_delegate()
+    if not delegate_to_cloud and not llm_service.is_configured():
         logger.warning("[chat cross:%s] provider not configured provider=%s", session_id, settings.llm.provider)
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
@@ -165,22 +310,42 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
     messages, forks_raw, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
     logger.info("[chat cross:%s] loaded history messages=%d", session_id, len(messages))
 
+    captured_messages_for_stream = messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)]
+    prepared_api_messages = None
+    cloud_stream = None
     try:
-        prepared_api_messages = llm_service.prepare_cross_paper_api_messages(
-            messages=messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)],
-            user_id=uid,
-            paper_ids=session.paper_ids,
-            quotes=request.quotes,
-            page_selections=request.page_selections,
-        )
-        prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
-        logger.info("[chat cross:%s] prepared provider payload units=%d", session_id, prepared_size)
+        if delegate_to_cloud:
+            for pid in session.paper_ids:
+                await sync_service.sync_now("cloud-cross-chat-before-open", pid)
+            cloud_stream = await cloud_chat_service.open_cross_paper_stream(
+                paper_ids=session.paper_ids,
+                messages=captured_messages_for_stream,
+                quotes=request.quotes,
+                page_selections=request.page_selections,
+            )
+            logger.info("[chat cross:%s] delegated_to_cloud=true papers=%s", session_id, ",".join(session.paper_ids))
+        else:
+            prepared_api_messages = llm_service.prepare_cross_paper_api_messages(
+                messages=captured_messages_for_stream,
+                user_id=uid,
+                paper_ids=session.paper_ids,
+                quotes=request.quotes,
+                page_selections=request.page_selections,
+            )
+            prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
+            logger.info("[chat cross:%s] prepared provider payload units=%d", session_id, prepared_size)
     except PageSelectionRequiredError as exc:
         logger.info("[chat cross:%s] page selection required requirements=%d", session_id, len(exc.requirements))
         raise _page_selection_http_exception(exc)
     except ValueError as exc:
         logger.warning("[chat cross:%s] invalid request: %s", session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        logger.warning("[chat cross:%s] cloud delegation failed before start: %s", session_id, exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        logger.exception("[chat cross:%s] cloud delegation failed before start", session_id)
+        raise HTTPException(status_code=502, detail=f"云端生成准备失败：{exc}")
 
     user_message = ChatMessage(
         role="user",
@@ -202,27 +367,37 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
     logger.info("[chat cross:%s] saved user message and assistant placeholder messages=%d", session_id, len(messages))
     storage_service.set_last_active_cross_paper_session(uid, session_id)
 
-    captured_messages_for_stream = list(messages[:-1])  # 去掉占位 assistant，传给 LLM 作为 history
-
-    async def stream_factory(reasoning_collector):
+    async def stream_factory(reasoning_collector, content_blocks_collector, response_metadata_collector):
         try:
-            async for chunk in llm_service.chat_stream_cross_paper(
-                messages=captured_messages_for_stream,
-                paper_ids=session.paper_ids,
-                quotes=request.quotes,
-                reasoning_collector=reasoning_collector,
-                prepared_api_messages=prepared_api_messages,
-            ):
-                yield chunk
+            if cloud_stream is not None:
+                async for chunk in cloud_stream.aiter_chunks(
+                    reasoning_collector=reasoning_collector,
+                    content_blocks_collector=content_blocks_collector,
+                    response_metadata_collector=response_metadata_collector,
+                ):
+                    yield chunk
+            else:
+                async for chunk in llm_service.chat_stream_cross_paper(
+                    messages=captured_messages_for_stream,
+                    paper_ids=session.paper_ids,
+                    quotes=request.quotes,
+                    reasoning_collector=reasoning_collector,
+                    content_blocks_collector=content_blocks_collector,
+                    response_metadata_collector=response_metadata_collector,
+                    prepared_api_messages=prepared_api_messages,
+                ):
+                    yield chunk
         except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
             raise RuntimeError(_llm_error_message(e)) from e
 
-    def persist(content: str, reasoning: Optional[str], in_progress: bool, finish_reason: Optional[str]):
+    def persist(content: str, reasoning: Optional[str], content_blocks: Optional[list], response_id: Optional[str], in_progress: bool, finish_reason: Optional[str]):
         cur_messages, cur_forks, cur_draft = storage_service.get_cross_paper_chat_history(uid, session_id)
         truncated = in_progress or finish_reason in ("length", "stopped", "error")
         new_msg = ChatMessage(
             role="assistant",
             content=content,
+            content_blocks=content_blocks,
+            response_id=response_id,
             reasoning=reasoning,
             truncated=truncated,
         )
@@ -398,7 +573,8 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         len(request.page_selections or []),
     )
 
-    if not llm_service.is_configured():
+    delegate_to_cloud = cloud_chat_service.should_delegate()
+    if not delegate_to_cloud and not llm_service.is_configured():
         logger.warning("[chat single:%s] provider not configured provider=%s", session_id, settings.llm.provider)
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
@@ -415,23 +591,43 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         bool(pdf_path),
     )
 
+    captured_messages_for_stream = messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)]
+    prepared_api_messages = None
+    cloud_stream = None
     try:
-        prepared_api_messages = llm_service.prepare_chat_api_messages(
-            messages=messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)],
-            pdf_path=pdf_path,
-            quotes=request.quotes,
-            page_selections=request.page_selections,
-            paper_id=paper_id,
-            paper_title=paper.title,
-        )
-        prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
-        logger.info("[chat single:%s] prepared provider payload units=%d", session_id, prepared_size)
+        if delegate_to_cloud:
+            await sync_service.sync_now("cloud-chat-before-open", paper_id)
+            cloud_stream = await cloud_chat_service.open_single_stream(
+                paper_id=paper_id,
+                messages=captured_messages_for_stream,
+                quotes=request.quotes,
+                page_selections=request.page_selections,
+                paper_title=paper.title,
+            )
+            logger.info("[chat single:%s] delegated_to_cloud=true paper=%s", session_id, paper_id)
+        else:
+            prepared_api_messages = llm_service.prepare_chat_api_messages(
+                messages=captured_messages_for_stream,
+                pdf_path=pdf_path,
+                quotes=request.quotes,
+                page_selections=request.page_selections,
+                paper_id=paper_id,
+                paper_title=paper.title,
+            )
+            prepared_size = len(prepared_api_messages) if isinstance(prepared_api_messages, str) else len(prepared_api_messages or [])
+            logger.info("[chat single:%s] prepared provider payload units=%d", session_id, prepared_size)
     except PageSelectionRequiredError as exc:
         logger.info("[chat single:%s] page selection required requirements=%d", session_id, len(exc.requirements))
         raise _page_selection_http_exception(exc)
     except ValueError as exc:
         logger.warning("[chat single:%s] invalid request: %s", session_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        logger.warning("[chat single:%s] cloud delegation failed before start: %s", session_id, exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        logger.exception("[chat single:%s] cloud delegation failed before start", session_id)
+        raise HTTPException(status_code=502, detail=f"云端生成准备失败：{exc}")
 
     user_message = ChatMessage(
         role="user",
@@ -453,27 +649,37 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
     logger.info("[chat single:%s] saved user message and assistant placeholder messages=%d", session_id, len(messages))
     storage_service.set_last_active_session(uid, paper_id, session_id)
 
-    captured_messages_for_stream = list(messages[:-1])  # 去占位 assistant 给 LLM
-
-    async def stream_factory(reasoning_collector):
+    async def stream_factory(reasoning_collector, content_blocks_collector, response_metadata_collector):
         try:
-            async for chunk in llm_service.chat_stream(
-                messages=captured_messages_for_stream,
-                pdf_path=pdf_path,
-                quotes=request.quotes,
-                reasoning_collector=reasoning_collector,
-                prepared_api_messages=prepared_api_messages,
-            ):
-                yield chunk
+            if cloud_stream is not None:
+                async for chunk in cloud_stream.aiter_chunks(
+                    reasoning_collector=reasoning_collector,
+                    content_blocks_collector=content_blocks_collector,
+                    response_metadata_collector=response_metadata_collector,
+                ):
+                    yield chunk
+            else:
+                async for chunk in llm_service.chat_stream(
+                    messages=captured_messages_for_stream,
+                    pdf_path=pdf_path,
+                    quotes=request.quotes,
+                    reasoning_collector=reasoning_collector,
+                    content_blocks_collector=content_blocks_collector,
+                    response_metadata_collector=response_metadata_collector,
+                    prepared_api_messages=prepared_api_messages,
+                ):
+                    yield chunk
         except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
             raise RuntimeError(_llm_error_message(e)) from e
 
-    def persist(content: str, reasoning: Optional[str], in_progress: bool, finish_reason: Optional[str]):
+    def persist(content: str, reasoning: Optional[str], content_blocks: Optional[list], response_id: Optional[str], in_progress: bool, finish_reason: Optional[str]):
         cur_messages, cur_forks, cur_draft = storage_service.get_chat_history(uid, paper_id, session_id)
         truncated = in_progress or finish_reason in ("length", "stopped", "error")
         new_msg = ChatMessage(
             role="assistant",
             content=content,
+            content_blocks=content_blocks,
+            response_id=response_id,
             reasoning=reasoning,
             truncated=truncated,
         )

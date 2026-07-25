@@ -107,7 +107,7 @@ if [[ "$HAS_BACKEND" -gt 0 ]]; then
 fi
 
 info "验证线上运行版本..."
-RUNTIME_JSON=$(curl -fsS https://www.moshang.xyz/ipaper/api/health/runtime)
+RUNTIME_JSON=$(curl -k -fsS https://59.110.154.252/ipaper/api/health/runtime)
 RUNTIME_SHA=$(RUNTIME_JSON="$RUNTIME_JSON" python3 - <<'PY'
 import json
 import os
@@ -127,4 +127,4 @@ echo ""
 info "=== 部署完成 ==="
 [ $HAS_FRONTEND -gt 0 ] && info "  前端: 已更新"
 [ $HAS_BACKEND -gt 0 ] && info "  后端: 已重启"
-info "  线上地址: https://www.moshang.xyz/ipaper/"
+info "  线上地址: https://59.110.154.252/ipaper/"

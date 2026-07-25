@@ -51,8 +51,14 @@ interface ChatScrollState {
 const CHAT_SCROLL_THRESHOLD = 80
 const chatScrollStateCache = new Map<string, ChatScrollState>()
 const LLM_PROVIDER_LABELS: Record<LLMProvider, string> = {
-  openrouter: 'OpenRouter',
+  llm_center_gpt_responses: 'GPT-5.5',
+  llm_center_anthropic: 'Opus 4.8',
   cursor_cli: 'Cursor CLI',
+}
+const LLM_PROVIDER_DESCRIPTIONS: Record<LLMProvider, string> = {
+  llm_center_gpt_responses: '云端 GPT-5.5，大 PDF 与多轮 reasoning',
+  llm_center_anthropic: '云端 Claude Opus 4.8，原生 thinking',
+  cursor_cli: '本机 Cursor Agent',
 }
 
 function getChatScrollStateKey(
@@ -337,7 +343,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const [showAddPaperPanel, setShowAddPaperPanel] = useState(false)
   const [addPaperSelected, setAddPaperSelected] = useState<string[]>([])
   const [addPaperNote, setAddPaperNote] = useState('')
-  const [llmProvider, setLlmProvider] = useState<LLMProvider>('openrouter')
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>('llm_center_gpt_responses')
   const [llmConfig, setLlmConfig] = useState<Config['llm'] | null>(null)
   const [showEngineMenu, setShowEngineMenu] = useState(false)
   const [engineSaving, setEngineSaving] = useState(false)
@@ -382,8 +388,8 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
       setEngineError('未检测到 Cursor CLI，请先确认本机已安装并登录')
       return
     }
-    if (provider === 'openrouter' && llmConfig && !llmConfig.api_key_configured) {
-      setEngineError('OpenRouter API Key 未配置，请先到设置中填写')
+    if (provider !== 'cursor_cli' && llmConfig && !llmConfig.api_key_configured) {
+      setEngineError('LLM Center API Key 未配置，请先到设置中填写')
       return
     }
 
@@ -694,7 +700,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
             </button>
             {showEngineMenu && (
               <div className="absolute left-1 top-7 z-30 w-56 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
-                {(['cursor_cli', 'openrouter'] as LLMProvider[]).map((provider) => {
+                {(['llm_center_gpt_responses', 'llm_center_anthropic', 'cursor_cli'] as LLMProvider[]).map((provider) => {
                   const isActive = provider === llmProvider
                   const isUnavailable =
                     provider === 'cursor_cli'
@@ -717,7 +723,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                         {isActive && <span className="text-[10px]">当前</span>}
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {provider === 'cursor_cli' ? '本机 Cursor Agent' : '云端 API 稳定兜底'}
+                        {LLM_PROVIDER_DESCRIPTIONS[provider]}
                         {isUnavailable ? ' · 未配置' : ''}
                       </div>
                     </button>

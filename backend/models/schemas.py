@@ -2,7 +2,7 @@
 Pydantic 数据模型定义
 """
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -79,6 +79,8 @@ class ChatMessage(BaseModel):
     role: str = Field(..., description="消息角色: user | assistant")
     content: str = Field(..., description="消息内容")
     quotes: Optional[List[Quote]] = Field(None, description="消息关联的引用片段")
+    content_blocks: Optional[List[Dict[str, Any]]] = Field(None, description="模型原始内容块（Anthropic thinking 或 GPT Responses output）")
+    response_id: Optional[str] = Field(None, description="OpenAI Responses response_id，用于 previous_response_id 多轮续接")
     reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
     truncated: Optional[bool] = Field(None, description="是否因 max_tokens 被截断（仅 assistant 消息）")
 
@@ -188,6 +190,22 @@ class CrossPaperChatRequest(BaseModel):
     page_selections: Optional[List[PaperPageSelection]] = Field(None, description="用户指定保留的各论文 PDF 页码范围")
 
 
+class CloudSingleChatRequest(BaseModel):
+    """本地后端委托云端生成单论文回复的内部请求"""
+    messages: List[ChatMessage]
+    quotes: Optional[List[Quote]] = None
+    page_selections: Optional[List[PaperPageSelection]] = None
+    paper_title: Optional[str] = None
+
+
+class CloudCrossPaperChatRequest(BaseModel):
+    """本地后端委托云端生成串讲回复的内部请求"""
+    paper_ids: List[str] = Field(..., min_length=2, max_length=5)
+    messages: List[ChatMessage]
+    quotes: Optional[List[Quote]] = None
+    page_selections: Optional[List[PaperPageSelection]] = None
+
+
 class CrossPaperChatHistory(BaseModel):
     """串讲对话历史"""
     session_id: str
@@ -204,6 +222,7 @@ class LLMConfigUpdate(BaseModel):
     provider: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
+    provider_id: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     cursor_command: Optional[str] = None

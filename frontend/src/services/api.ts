@@ -362,6 +362,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   quotes?: QuoteInput[]
+  content_blocks?: Record<string, unknown>[]
+  response_id?: string
   reasoning?: string
   truncated?: boolean
 }
@@ -764,10 +766,11 @@ export async function* sendCrossPaperMessage(
 
 export interface Config {
   llm: {
-    provider: 'openrouter' | 'cursor_cli'
+    provider: 'llm_center_gpt_responses' | 'llm_center_anthropic' | 'cursor_cli'
     api_base: string
     api_key_configured: boolean
     model: string
+    provider_id: string
     temperature: number
     max_tokens: number
     cursor_command: string
@@ -780,6 +783,7 @@ export interface Config {
   sync: {
     role: 'server' | 'client' | 'off'
     url: string
+    verify_ssl: boolean
     token_configured: boolean
   }
 }
@@ -793,9 +797,10 @@ export async function getConfig(): Promise<Config> {
 }
 
 export async function updateLLMConfig(config: {
-  provider?: 'openrouter' | 'cursor_cli'
+  provider?: 'llm_center_gpt_responses' | 'llm_center_anthropic' | 'cursor_cli'
   api_key?: string
   model?: string
+  provider_id?: string
   temperature?: number
   max_tokens?: number
   cursor_command?: string

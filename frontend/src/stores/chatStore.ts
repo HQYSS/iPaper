@@ -440,6 +440,38 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       })
     }
 
+    let pendingAssistantChunk = ''
+    let flushTimer: number | null = null
+    const flushAssistantChunk = () => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      if (!pendingAssistantChunk || !isStillActive()) {
+        pendingAssistantChunk = ''
+        return
+      }
+      const chunk = pendingAssistantChunk
+      pendingAssistantChunk = ''
+      set((state) => {
+        const newMessages = [...state.messages]
+        const lastMessage = newMessages[newMessages.length - 1]
+        if (lastMessage.role === 'assistant') {
+          newMessages[newMessages.length - 1] = {
+            ...lastMessage,
+            content: lastMessage.content + chunk,
+          }
+        }
+        return { messages: newMessages }
+      })
+    }
+    const enqueueAssistantChunk = (chunk: string) => {
+      pendingAssistantChunk += chunk
+      if (flushTimer === null) {
+        flushTimer = window.setTimeout(flushAssistantChunk, 50)
+      }
+    }
+
     const finalizeAssistantMessage = () => {
       // 把 UI 中最后一条 assistant 的 truncated 标记移除（正常完成）
       if (!isStillActive()) return
@@ -460,6 +492,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
 
         if (data.type === 'done') {
+          flushAssistantChunk()
           finalizeAssistantMessage()
           clearStreamingState()
           continue
@@ -467,11 +500,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
         if (data.type === 'stopped') {
           // 后端确认已停止；保留 UI 中已有 partial + truncated 标记
+          flushAssistantChunk()
           clearStreamingState()
           continue
         }
 
         if (data.type === 'error') {
+          flushAssistantChunk()
           clearStreamingState()
           if (!isStillActive()) continue
           set({ error: data.message || 'Unknown error' })
@@ -479,22 +514,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
 
         if (data.type === 'chunk' && data.content && isStillActive()) {
-          set((state) => {
-            const newMessages = [...state.messages]
-            const lastMessage = newMessages[newMessages.length - 1]
-            if (lastMessage.role === 'assistant') {
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: lastMessage.content + data.content,
-              }
-            }
-            return { messages: newMessages }
-          })
+          enqueueAssistantChunk(data.content)
         }
       }
+      flushAssistantChunk()
       finalizeAssistantMessage()
       clearStreamingState()
     } catch (error) {
+      flushAssistantChunk()
       if ((error as Error).name === 'AbortError') {
         // 用户点了"停止生成"或网络连接被强制断开。后端可能：
         // - 已经收到 POST /stop（stopStreaming() 中触发）→ task 已 cancel
@@ -882,6 +909,38 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       })
     }
 
+    let pendingAssistantChunk = ''
+    let flushTimer: number | null = null
+    const flushAssistantChunk = () => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      if (!pendingAssistantChunk || !isStillActive()) {
+        pendingAssistantChunk = ''
+        return
+      }
+      const chunk = pendingAssistantChunk
+      pendingAssistantChunk = ''
+      set((state) => {
+        const newMessages = [...state.messages]
+        const lastMessage = newMessages[newMessages.length - 1]
+        if (lastMessage.role === 'assistant') {
+          newMessages[newMessages.length - 1] = {
+            ...lastMessage,
+            content: lastMessage.content + chunk,
+          }
+        }
+        return { messages: newMessages }
+      })
+    }
+    const enqueueAssistantChunk = (chunk: string) => {
+      pendingAssistantChunk += chunk
+      if (flushTimer === null) {
+        flushTimer = window.setTimeout(flushAssistantChunk, 50)
+      }
+    }
+
     const finalizeAssistantMessage = () => {
       if (!isStillActive()) return
       set((state) => {
@@ -901,17 +960,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
 
         if (data.type === 'done') {
+          flushAssistantChunk()
           finalizeAssistantMessage()
           clearStreamingState()
           continue
         }
 
         if (data.type === 'stopped') {
+          flushAssistantChunk()
           clearStreamingState()
           continue
         }
 
         if (data.type === 'error') {
+          flushAssistantChunk()
           clearStreamingState()
           if (!isStillActive()) continue
           set({ error: data.message || 'Unknown error' })
@@ -919,22 +981,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
 
         if (data.type === 'chunk' && data.content && isStillActive()) {
-          set((state) => {
-            const newMessages = [...state.messages]
-            const lastMessage = newMessages[newMessages.length - 1]
-            if (lastMessage.role === 'assistant') {
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: lastMessage.content + data.content,
-              }
-            }
-            return { messages: newMessages }
-          })
+          enqueueAssistantChunk(data.content)
         }
       }
+      flushAssistantChunk()
       finalizeAssistantMessage()
       clearStreamingState()
     } catch (error) {
+      flushAssistantChunk()
       if ((error as Error).name === 'AbortError') {
         clearStreamingState()
         return

@@ -59,7 +59,8 @@ webPreferences: {
 - 主动同步职责完全下沉到本地后端；Electron 主进程不再保留第二套 `syncOnce()/startSyncLoops()` 逻辑
 - Electron 通过 `app.requestSingleInstanceLock()` 强制单实例运行；再次启动会聚焦已有窗口，而不是并行跑第二只旧主进程
 - 只要本地后端在跑，本地写操作就会自动推云端；关闭 Electron 时会一并结束本地后端
-- 当前默认云端固定为 `https://www.moshang.xyz/ipaper/api`
+- 当前默认云端固定为 `https://59.110.154.252/ipaper/api`
+- 当前云端为 IP + 自签名 HTTPS；本地后端通过 `sync_verify_ssl=false` 连接 Sync API，浏览器访问 Web/PWA 时需信任证书
 - 云端同步使用专用设备凭证，不再复用网页登录 JWT
 - 外部链接使用系统浏览器打开
 - `before-quit` 事件中杀死后端进程
@@ -224,7 +225,7 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
 | Vite Proxy → FastAPI | `/api` → `http://127.0.0.1:3000` |
 | Chrome 扩展 → FastAPI | `http://127.0.0.1:3000/api` |
 | FastAPI → arXiv | `https://arxiv.org/` (下载论文时) |
-| FastAPI → OpenRouter API | `https://openrouter.ai/api/v1` (LLM 对话时) |
+| FastAPI → LLM Center API | `https://llm-center.ali.modelbest.cn/llm` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。
 
@@ -267,7 +268,7 @@ host manifest 写入 Chrome 约定目录，并通过 `allowed_origins` 绑定固
 
 ---
 
-## PWA / 移动 Web (`https://www.moshang.xyz/ipaper/`)
+## PWA / 移动 Web (`https://59.110.154.252/ipaper/`)
 
 云端的 `/ipaper/` 同时是 Web 端 + PWA。iPhone Safari 打开后可"分享 → 添加到主屏幕"，独立窗口启动并应用 `MobileLayout`。
 

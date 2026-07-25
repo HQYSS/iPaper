@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key, ChevronDown, ChevronUp } from 'lucide-react'
-import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listCursorModels, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type CursorModelOption, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
+import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listCursorModels, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type Config, type CursorModelOption, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
@@ -8,6 +8,25 @@ import { env } from '../../services/env'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 type SettingsTab = 'general' | 'account' | 'admin'
+type LLMProvider = Config['llm']['provider']
+
+const CLOUD_MODEL_OPTIONS: Array<{ provider: LLMProvider; label: string; description: string }> = [
+  {
+    provider: 'llm_center_gpt_responses',
+    label: 'GPT-5.5（默认）',
+    description: 'Responses API，支持大 PDF、reasoning 和 previous_response_id 多轮续接',
+  },
+  {
+    provider: 'llm_center_anthropic',
+    label: 'Claude Opus 4.8',
+    description: 'Anthropic Messages API，保留 thinking signature，可手动切回',
+  },
+  {
+    provider: 'cursor_cli',
+    label: 'Cursor CLI',
+    description: '使用本机 Cursor Agent',
+  },
+]
 
 interface SettingsModalProps {
   open: boolean
@@ -24,6 +43,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [model, setModel] = useState('')
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>('llm_center_gpt_responses')
+  const [providerId, setProviderId] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
   const [cursorCommand, setCursorCommand] = useState('cursor')
   const [cursorModel, setCursorModel] = useState('')
@@ -47,6 +68,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     try {
       const config = await getConfig()
       setModel(config.llm.model)
+      setLlmProvider(config.llm.provider)
+      setProviderId(config.llm.provider_id || '')
       setIsConfigured(config.llm.api_key_configured)
       setCursorCommand(config.llm.cursor_command || 'cursor')
       setCursorModel(config.llm.cursor_model || '')
@@ -123,6 +146,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     setSaveSuccess(false)
     try {
       await updateLLMConfig({
+        provider: llmProvider,
         ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
         cursor_command: trimmedCursorCommand,
         cursor_model: trimmedCursorModel,
@@ -260,7 +284,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                         ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50'
                         : 'bg-amber-500 shadow-sm shadow-amber-500/50 animate-pulse'
                     )} />
-                    {isConfigured ? 'OpenRouter API Key 已配置' : 'OpenRouter API Key 未配置'}
+                    {isConfigured ? 'LLM Center API Key 已配置' : 'LLM Center API Key 未配置'}
                   </div>
                   {env.isElectron && (
                     <div className={cn(
@@ -293,7 +317,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-                      placeholder={isConfigured ? '输入新 Key 以更换' : 'sk-or-v1-...'}
+                      placeholder={isConfigured ? '输入新 Key 以更换' : 'sk-...'}
                       className="w-full pl-4 pr-12 py-3 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400"
                       autoFocus
                     />
@@ -306,25 +330,46 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     </button>
                   </div>
                   <a
-                    href="https://openrouter.ai/settings/keys"
+                    href="https://llm-center.ali.modelbest.cn/"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 mt-2 text-xs text-indigo-500 hover:text-indigo-600 transition-colors"
                   >
-                    获取 OpenRouter API Key
+                    获取 LLM Center API Key
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
 
-                {/* Model (read-only) */}
+                {/* Cloud model */}
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    模型
+                    讲解模型
                   </label>
-                  <div className="flex items-center px-4 py-3 text-sm rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
-                    <span className="font-mono text-xs">
-                      {model}
-                    </span>
+                  <div className="space-y-2">
+                    {CLOUD_MODEL_OPTIONS.map((option) => (
+                      <button
+                        key={option.provider}
+                        type="button"
+                        onClick={() => setLlmProvider(option.provider)}
+                        className={cn(
+                          'w-full rounded-xl border px-4 py-3 text-left transition-all',
+                          llmProvider === option.provider
+                            ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300'
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium">{option.label}</span>
+                          {llmProvider === option.provider && <CheckCircle className="w-4 h-4" />}
+                        </div>
+                        <p className="mt-1 text-xs opacity-75 leading-relaxed">{option.description}</p>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+                    <span>当前：</span>
+                    <span className="font-mono">{model}</span>
+                    {providerId && <span className="font-mono">providerId={providerId}</span>}
                   </div>
                 </div>
 

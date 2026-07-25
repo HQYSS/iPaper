@@ -17,10 +17,13 @@ from models import ChatMessage, Quote, PaperPageSelection
 from services.cursor_cli_service import cursor_cli_service
 from services.user_profile_service import user_profile_service
 from services.arxiv_service import arxiv_service
+from services import anthropic_service, gpt_responses_service
 
 logger = logging.getLogger(__name__)
 
-PDF_SIZE_THRESHOLD = 15 * 1024 * 1024  # 15MB
+ANTHROPIC_PDF_SIZE_THRESHOLD = 14 * 1024 * 1024  # Keep base64 JSON body below Anthropic path limits.
+GPT_RESPONSES_PDF_SIZE_THRESHOLD = 40 * 1024 * 1024  # Real PDFs above ~43MB failed in LLM Center providerId=64 tests.
+PDF_SIZE_THRESHOLD = ANTHROPIC_PDF_SIZE_THRESHOLD
 IMAGE_PAYLOAD_LIMIT = 20 * 1024 * 1024  # 20MB (base64 payload before data URL prefix)
 IMAGE_DPI = 150
 IMAGE_QUALITY = 85
@@ -63,6 +66,22 @@ class LLMService:
     @staticmethod
     def _is_cursor_cli_provider() -> bool:
         return settings.llm.provider == "cursor_cli"
+
+    @staticmethod
+    def _is_anthropic_provider() -> bool:
+        return anthropic_service.is_anthropic_provider()
+
+    @staticmethod
+    def _is_gpt_responses_provider() -> bool:
+        return gpt_responses_service.is_gpt_responses_provider()
+
+    @staticmethod
+    def _llm_request_extra_body() -> dict:
+        """旧 OpenAI 兼容路径的请求级 extra_body；GPT-5.5 Responses 不走这里。"""
+        model = (settings.llm.model or "").lower()
+        if "gpt-5.5" in model:
+            return {}
+        return {"reasoning": {"effort": "medium"}}
     
     async def chat(
         self,
@@ -82,14 +101,31 @@ class LLMService:
                 chunks.append(chunk)
             return "".join(chunks)
 
+        if self._is_anthropic_provider():
+            payload = self._build_anthropic_single_payload(messages, pdf_path, quotes)
+            return await anthropic_service.create_message(
+                system=payload["system"],
+                messages=payload["messages"],
+                thinking=True,
+            )
+
+        if self._is_gpt_responses_provider():
+            payload = self._build_gpt_responses_single_payload(messages, pdf_path, quotes)
+            return await gpt_responses_service.create_response(
+                instructions=payload["instructions"],
+                input_items=payload["input"],
+                previous_response_id=payload.get("previous_response_id"),
+            )
+
         api_messages = self._build_messages(messages, pdf_path, quotes)
         
+        extra_body = self._llm_request_extra_body()
         response = await self.client.chat.completions.create(
             model=settings.llm.model,
             messages=api_messages,
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
-            extra_body={"reasoning": {"effort": "medium"}}
+            **({"extra_body": extra_body} if extra_body else {}),
         )
         
         return response.choices[0].message.content
@@ -100,6 +136,8 @@ class LLMService:
         pdf_path: Optional[Path] = None,
         quotes: Optional[List[Quote]] = None,
         reasoning_collector: Optional[List[str]] = None,
+        content_blocks_collector: Optional[List[dict]] = None,
+        response_metadata_collector: Optional[Dict[str, str]] = None,
         prepared_api_messages: Optional[Any] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
@@ -126,6 +164,42 @@ class LLMService:
                 yield chunk
             return
 
+        if self._is_anthropic_provider():
+            payload = prepared_api_messages or self._build_anthropic_single_payload(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
+            async for chunk in anthropic_service.stream_message(
+                system=payload["system"],
+                messages=payload["messages"],
+                content_blocks_collector=content_blocks_collector,
+            ):
+                yield chunk
+            return
+
+        if self._is_gpt_responses_provider():
+            payload = prepared_api_messages or self._build_gpt_responses_single_payload(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
+            async for chunk in gpt_responses_service.stream_response(
+                instructions=payload["instructions"],
+                input_items=payload["input"],
+                previous_response_id=payload.get("previous_response_id"),
+                output_collector=content_blocks_collector,
+                metadata_collector=response_metadata_collector,
+            ):
+                yield chunk
+            return
+
         api_messages = prepared_api_messages or self._build_messages(
             messages,
             pdf_path,
@@ -135,13 +209,14 @@ class LLMService:
             paper_title=paper_title,
         )
         
+        extra_body = self._llm_request_extra_body()
         stream = await self.client.chat.completions.create(
             model=settings.llm.model,
             messages=api_messages,
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
             stream=True,
-            extra_body={"reasoning": {"effort": "medium"}}
+            **({"extra_body": extra_body} if extra_body else {}),
         )
         
         async for chunk in stream:
@@ -157,8 +232,8 @@ class LLMService:
     
     @staticmethod
     def _collect_reasoning(delta, collector: List[str]):
-        """从流式 delta 中提取 reasoning 文本"""
-        reasoning_str = getattr(delta, 'reasoning', None)
+        """从旧 OpenAI 兼容流式 delta 中提取 reasoning 文本"""
+        reasoning_str = getattr(delta, 'reasoning', None) or getattr(delta, 'reasoning_content', None)
         if reasoning_str:
             collector.append(reasoning_str)
             return
@@ -436,6 +511,24 @@ class LLMService:
                 paper_id=paper_id,
                 paper_title=paper_title,
             )
+        if self._is_anthropic_provider():
+            return self._build_anthropic_single_payload(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
+        if self._is_gpt_responses_provider():
+            return self._build_gpt_responses_single_payload(
+                messages=messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                page_selections=page_selections,
+                paper_id=paper_id,
+                paper_title=paper_title,
+            )
         return self._build_messages(
             messages=messages,
             pdf_path=pdf_path,
@@ -461,6 +554,22 @@ class LLMService:
                 quotes=quotes,
                 page_selections=page_selections,
             )
+        if self._is_anthropic_provider():
+            return self._build_anthropic_cross_paper_payload(
+                messages=messages,
+                user_id=user_id,
+                paper_ids=paper_ids,
+                quotes=quotes,
+                page_selections=page_selections,
+            )
+        if self._is_gpt_responses_provider():
+            return self._build_gpt_responses_cross_paper_payload(
+                messages=messages,
+                user_id=user_id,
+                paper_ids=paper_ids,
+                quotes=quotes,
+                page_selections=page_selections,
+            )
         return self._build_messages_cross_paper(
             messages=messages,
             user_id=user_id,
@@ -478,6 +587,388 @@ class LLMService:
             label = source_labels.get(q.source, q.source)
             parts.append(f"[{label}]\n\"{q.text}\"")
         return "用户引用了以下内容：\n\n" + "\n\n".join(parts)
+
+    @staticmethod
+    def _text_block(text: str) -> dict:
+        return {"type": "text", "text": text}
+
+    @staticmethod
+    def _anthropic_document_block(pdf_path: Path) -> dict:
+        with open(pdf_path, "rb") as f:
+            pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_base64,
+            },
+        }
+
+    @staticmethod
+    def _openai_image_blocks_to_anthropic(blocks: list) -> list:
+        converted = []
+        for block in blocks:
+            if block.get("type") == "image_url":
+                url = block.get("image_url", {}).get("url", "")
+                prefix = "data:image/jpeg;base64,"
+                if url.startswith(prefix):
+                    converted.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": url[len(prefix):],
+                        },
+                    })
+            elif block.get("type") == "text":
+                converted.append(block)
+        return converted
+
+    def _anthropic_pdf_blocks(
+        self,
+        pdf_path: Path,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+        page_selection: Optional[PaperPageSelection] = None,
+    ) -> list:
+        pdf_size = pdf_path.stat().st_size
+        if pdf_size <= PDF_SIZE_THRESHOLD:
+            return [self._anthropic_document_block(pdf_path)]
+
+        logger.info(
+            "PDF too large for direct Anthropic document upload (%.1fMB > %dMB), converting to page images",
+            pdf_size / 1024 / 1024,
+            PDF_SIZE_THRESHOLD // 1024 // 1024,
+        )
+        return self._openai_image_blocks_to_anthropic(
+            self._pdf_to_image_blocks(
+                pdf_path=pdf_path,
+                paper_id=paper_id or pdf_path.stem,
+                paper_title=paper_title or pdf_path.name,
+                page_selection=page_selection,
+            )
+        )
+
+    def _build_anthropic_user_content_with_pdf(
+        self,
+        text: str,
+        pdf_path: Path,
+        quotes: Optional[List[Quote]] = None,
+        page_selection: Optional[PaperPageSelection] = None,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+    ) -> list:
+        content = self._anthropic_pdf_blocks(
+            pdf_path=pdf_path,
+            paper_id=paper_id,
+            paper_title=paper_title,
+            page_selection=page_selection,
+        )
+        if quotes:
+            text = f"{self._format_quotes(quotes)}\n\n{text}"
+        content.append(self._text_block(text))
+        return content
+
+    @staticmethod
+    def _assistant_anthropic_content(msg: ChatMessage) -> list:
+        if (
+            msg.content_blocks
+            and not msg.truncated
+            and anthropic_service.has_valid_thinking_signatures(msg.content_blocks)
+        ):
+            return msg.content_blocks
+        return [{"type": "text", "text": msg.content}]
+
+    def _build_anthropic_single_payload(
+        self,
+        messages: List[ChatMessage],
+        pdf_path: Optional[Path] = None,
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+    ) -> dict:
+        api_messages = []
+        pdf_attached = False
+
+        for msg in messages:
+            if msg.role == "assistant":
+                api_messages.append({"role": "assistant", "content": self._assistant_anthropic_content(msg)})
+                continue
+
+            if msg.role == "user" and pdf_path and not pdf_attached:
+                content = self._build_anthropic_user_content_with_pdf(
+                    msg.content,
+                    pdf_path,
+                    quotes if msg == messages[-1] else None,
+                    page_selection=self._pick_page_selection(page_selections, paper_id),
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                )
+                pdf_attached = True
+            else:
+                text = msg.content
+                if quotes and msg == messages[-1] and msg.role == "user":
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content = [self._text_block(text)]
+            api_messages.append({"role": "user", "content": content})
+
+        return {"system": self.get_system_prompt(), "messages": api_messages}
+
+    def _build_anthropic_cross_paper_payload(
+        self,
+        messages: List[ChatMessage],
+        user_id: str,
+        paper_ids: List[str],
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+    ) -> dict:
+        selection_map = {
+            selection.paper_id: selection
+            for selection in (page_selections or [])
+            if selection.paper_id
+        }
+        api_messages = []
+        pdfs_attached = False
+
+        for msg in messages:
+            if msg.role == "assistant":
+                api_messages.append({"role": "assistant", "content": self._assistant_anthropic_content(msg)})
+                continue
+
+            if msg.role == "user" and not pdfs_attached:
+                content = []
+                for arxiv_id in paper_ids:
+                    meta = arxiv_service.get_paper(user_id, arxiv_id)
+                    title = meta.title if meta else arxiv_id
+                    content.append(self._text_block(f"=== 论文 [[{arxiv_id}]]: {title} ==="))
+                    pdf_path = arxiv_service.get_pdf_path(user_id, arxiv_id)
+                    if pdf_path:
+                        content.extend(self._anthropic_pdf_blocks(
+                            pdf_path=pdf_path,
+                            paper_id=arxiv_id,
+                            paper_title=title,
+                            page_selection=selection_map.get(arxiv_id),
+                        ))
+                    else:
+                        content.append(self._text_block(f"（论文 {arxiv_id} 的 PDF 不可用）"))
+                text = msg.content
+                if quotes and msg == messages[-1]:
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content.append(self._text_block(text))
+                pdfs_attached = True
+            else:
+                text = msg.content
+                if quotes and msg == messages[-1] and msg.role == "user":
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content = [self._text_block(text)]
+            api_messages.append({"role": "user", "content": content})
+
+        return {"system": self.get_cross_paper_system_prompt(), "messages": api_messages}
+
+    @staticmethod
+    def _latest_response_id(messages: List[ChatMessage]) -> Optional[str]:
+        for msg in reversed(messages):
+            if msg.role == "assistant" and msg.response_id and not msg.truncated:
+                return msg.response_id
+        return None
+
+    @staticmethod
+    def _response_text_part(text: str) -> dict:
+        return {"type": "input_text", "text": text}
+
+    @staticmethod
+    def _response_file_part(pdf_path: Path) -> dict:
+        with open(pdf_path, "rb") as f:
+            pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
+        return {
+            "type": "input_file",
+            "filename": pdf_path.name,
+            "file_data": f"data:application/pdf;base64,{pdf_base64}",
+        }
+
+    @staticmethod
+    def _openai_blocks_to_response_parts(blocks: list) -> list:
+        converted = []
+        for block in blocks:
+            block_type = block.get("type")
+            if block_type == "text":
+                converted.append({"type": "input_text", "text": block.get("text", "")})
+            elif block_type == "file":
+                file_info = block.get("file", {})
+                converted.append({
+                    "type": "input_file",
+                    "filename": file_info.get("filename") or "paper.pdf",
+                    "file_data": file_info.get("file_data", ""),
+                })
+            elif block_type == "image_url":
+                converted.append({
+                    "type": "input_image",
+                    "image_url": block.get("image_url", {}).get("url", ""),
+                })
+        return converted
+
+    def _gpt_responses_pdf_parts(
+        self,
+        pdf_path: Path,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+        page_selection: Optional[PaperPageSelection] = None,
+    ) -> list:
+        pdf_size = pdf_path.stat().st_size
+        if pdf_size <= GPT_RESPONSES_PDF_SIZE_THRESHOLD:
+            return [self._response_file_part(pdf_path)]
+
+        logger.info(
+            "PDF too large for GPT Responses direct upload (%.1fMB > %dMB), converting to page images",
+            pdf_size / 1024 / 1024,
+            GPT_RESPONSES_PDF_SIZE_THRESHOLD // 1024 // 1024,
+        )
+        return self._openai_blocks_to_response_parts(
+            self._pdf_to_image_blocks(
+                pdf_path=pdf_path,
+                paper_id=paper_id or pdf_path.stem,
+                paper_title=paper_title or pdf_path.name,
+                page_selection=page_selection,
+            )
+        )
+
+    def _build_gpt_responses_user_content_with_pdf(
+        self,
+        text: str,
+        pdf_path: Path,
+        quotes: Optional[List[Quote]] = None,
+        page_selection: Optional[PaperPageSelection] = None,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+    ) -> list:
+        content = self._gpt_responses_pdf_parts(
+            pdf_path=pdf_path,
+            paper_id=paper_id,
+            paper_title=paper_title,
+            page_selection=page_selection,
+        )
+        if quotes:
+            text = f"{self._format_quotes(quotes)}\n\n{text}"
+        content.append(self._response_text_part(text))
+        return content
+
+    def _build_gpt_responses_single_payload(
+        self,
+        messages: List[ChatMessage],
+        pdf_path: Optional[Path] = None,
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+        paper_id: Optional[str] = None,
+        paper_title: Optional[str] = None,
+    ) -> dict:
+        previous_response_id = self._latest_response_id(messages[:-1])
+        latest = messages[-1] if messages else None
+        if previous_response_id and latest and latest.role == "user":
+            text = latest.content
+            if quotes:
+                text = f"{self._format_quotes(quotes)}\n\n{text}"
+            return {
+                "instructions": self.get_system_prompt(),
+                "previous_response_id": previous_response_id,
+                "input": [{"role": "user", "content": [self._response_text_part(text)]}],
+            }
+
+        input_items = []
+        pdf_attached = False
+        for msg in messages:
+            if msg.role == "assistant":
+                input_items.append({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": msg.content}],
+                })
+                continue
+
+            if msg.role == "user" and pdf_path and not pdf_attached:
+                content = self._build_gpt_responses_user_content_with_pdf(
+                    msg.content,
+                    pdf_path,
+                    quotes if msg == messages[-1] else None,
+                    page_selection=self._pick_page_selection(page_selections, paper_id),
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                )
+                pdf_attached = True
+            else:
+                text = msg.content
+                if quotes and msg == messages[-1] and msg.role == "user":
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content = [self._response_text_part(text)]
+            input_items.append({"role": "user", "content": content})
+
+        return {"instructions": self.get_system_prompt(), "input": input_items}
+
+    def _build_gpt_responses_cross_paper_payload(
+        self,
+        messages: List[ChatMessage],
+        user_id: str,
+        paper_ids: List[str],
+        quotes: Optional[List[Quote]] = None,
+        page_selections: Optional[List[PaperPageSelection]] = None,
+    ) -> dict:
+        previous_response_id = self._latest_response_id(messages[:-1])
+        latest = messages[-1] if messages else None
+        if previous_response_id and latest and latest.role == "user":
+            text = latest.content
+            if quotes:
+                text = f"{self._format_quotes(quotes)}\n\n{text}"
+            return {
+                "instructions": self.get_cross_paper_system_prompt(),
+                "previous_response_id": previous_response_id,
+                "input": [{"role": "user", "content": [self._response_text_part(text)]}],
+            }
+
+        selection_map = {
+            selection.paper_id: selection
+            for selection in (page_selections or [])
+            if selection.paper_id
+        }
+        input_items = []
+        pdfs_attached = False
+
+        for msg in messages:
+            if msg.role == "assistant":
+                input_items.append({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": msg.content}],
+                })
+                continue
+
+            if msg.role == "user" and not pdfs_attached:
+                content = []
+                for arxiv_id in paper_ids:
+                    meta = arxiv_service.get_paper(user_id, arxiv_id)
+                    title = meta.title if meta else arxiv_id
+                    content.append(self._response_text_part(f"=== 论文 [[{arxiv_id}]]: {title} ==="))
+                    pdf_path = arxiv_service.get_pdf_path(user_id, arxiv_id)
+                    if pdf_path:
+                        content.extend(self._gpt_responses_pdf_parts(
+                            pdf_path=pdf_path,
+                            paper_id=arxiv_id,
+                            paper_title=title,
+                            page_selection=selection_map.get(arxiv_id),
+                        ))
+                    else:
+                        content.append(self._response_text_part(f"（论文 {arxiv_id} 的 PDF 不可用）"))
+                text = msg.content
+                if quotes and msg == messages[-1]:
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content.append(self._response_text_part(text))
+                pdfs_attached = True
+            else:
+                text = msg.content
+                if quotes and msg == messages[-1] and msg.role == "user":
+                    text = f"{self._format_quotes(quotes)}\n\n{text}"
+                content = [self._response_text_part(text)]
+            input_items.append({"role": "user", "content": content})
+
+        return {"instructions": self.get_cross_paper_system_prompt(), "input": input_items}
 
     def _build_messages(
         self,
@@ -904,6 +1395,8 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         reasoning_collector: Optional[List[str]] = None,
+        content_blocks_collector: Optional[List[dict]] = None,
+        response_metadata_collector: Optional[Dict[str, str]] = None,
         prepared_api_messages: Optional[Any] = None,
         user_id: Optional[str] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
@@ -928,6 +1421,48 @@ class LLMService:
                 yield chunk
             return
 
+        if self._is_anthropic_provider():
+            payload = prepared_api_messages
+            if payload is None:
+                if not user_id:
+                    raise ValueError("串讲模式缺少 user_id")
+                payload = self._build_anthropic_cross_paper_payload(
+                    messages=messages,
+                    user_id=user_id,
+                    paper_ids=paper_ids,
+                    quotes=quotes,
+                    page_selections=page_selections,
+                )
+            async for chunk in anthropic_service.stream_message(
+                system=payload["system"],
+                messages=payload["messages"],
+                content_blocks_collector=content_blocks_collector,
+            ):
+                yield chunk
+            return
+
+        if self._is_gpt_responses_provider():
+            payload = prepared_api_messages
+            if payload is None:
+                if not user_id:
+                    raise ValueError("串讲模式缺少 user_id")
+                payload = self._build_gpt_responses_cross_paper_payload(
+                    messages=messages,
+                    user_id=user_id,
+                    paper_ids=paper_ids,
+                    quotes=quotes,
+                    page_selections=page_selections,
+                )
+            async for chunk in gpt_responses_service.stream_response(
+                instructions=payload["instructions"],
+                input_items=payload["input"],
+                previous_response_id=payload.get("previous_response_id"),
+                output_collector=content_blocks_collector,
+                metadata_collector=response_metadata_collector,
+            ):
+                yield chunk
+            return
+
         api_messages = prepared_api_messages
         if api_messages is None:
             if not user_id:
@@ -940,13 +1475,14 @@ class LLMService:
                 page_selections=page_selections,
             )
 
+        extra_body = self._llm_request_extra_body()
         stream = await self.client.chat.completions.create(
             model=settings.llm.model,
             messages=api_messages,
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
             stream=True,
-            extra_body={"reasoning": {"effort": "medium"}}
+            **({"extra_body": extra_body} if extra_body else {}),
         )
 
         async for chunk in stream:

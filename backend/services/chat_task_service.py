@@ -29,11 +29,11 @@ PERSIST_INTERVAL_SECONDS = 0.5
 # 任务结束后保留在内存里的时间（秒）
 TASK_RETENTION_SECONDS = 300
 
-# 持久化回调签名：(content, reasoning, in_progress, finish_reason)
+# 持久化回调签名：(content, reasoning, content_blocks, response_id, in_progress, finish_reason)
 # 同步函数（内部走 storage_service 的同步文件 IO）；保持同步可以避免 finally 里再 await 时被二次取消
-PersistFn = Callable[[str, Optional[str], bool, Optional[str]], None]
-# 流提供者：传入 reasoning_collector，返回异步迭代器（chunk 字符串）
-StreamFactory = Callable[[List[str]], "AsyncGenerator[str, None]"]
+PersistFn = Callable[[str, Optional[str], Optional[List[dict]], Optional[str], bool, Optional[str]], None]
+# 流提供者：传入 reasoning_collector / content_blocks_collector / metadata_collector，返回异步迭代器（chunk 字符串）
+StreamFactory = Callable[[List[str], List[dict], Dict[str, str]], "AsyncGenerator[str, None]"]
 
 
 @dataclass
@@ -50,6 +50,8 @@ class ChatTask:
     started_at: float = field(default_factory=time.time)
     full_response: str = ""
     reasoning_parts: List[str] = field(default_factory=list)
+    content_blocks: List[dict] = field(default_factory=list)
+    response_metadata: Dict[str, str] = field(default_factory=dict)
     finished: bool = False
     finished_at: Optional[float] = None
     finish_reason: Optional[str] = None
@@ -144,8 +146,10 @@ class ChatTaskService:
                     return
             try:
                 reasoning = ''.join(task.reasoning_parts) if task.reasoning_parts else None
+                content_blocks = [block.copy() for block in task.content_blocks] if task.content_blocks else None
+                response_id = task.response_metadata.get("response_id")
                 in_progress = not task.finished
-                persist(task.full_response, reasoning, in_progress, task.finish_reason)
+                persist(task.full_response, reasoning, content_blocks, response_id, in_progress, task.finish_reason)
                 last_persist_at = now
                 dirty = False
             except Exception:
@@ -153,7 +157,7 @@ class ChatTaskService:
 
         try:
             logger.info("[chat-task %s:%s] run started", task.kind, task.session_id)
-            async for chunk in stream_factory(task.reasoning_parts):
+            async for chunk in stream_factory(task.reasoning_parts, task.content_blocks, task.response_metadata):
                 if not chunk:
                     continue
                 if first_chunk_at is None:

@@ -16,7 +16,7 @@
 #   1. 改源图（assets/m1-letter-i.png 等）
 #   2. 跑 /tmp/ipaper-icon-design/generate_icons.py（重新生成全套 PNG 到 frontend/public/icons/）
 #   3. 跑本脚本（自动加 macOS squircle，生成 .icns 并同步到 Electron 和 iPaper.app）
-#   4. ./scripts/deploy.sh 把 PWA 端的 PNG 推到 moshang.xyz
+#   4. ./scripts/deploy.sh 把 PWA 端的 PNG 推到 59.110.154.252
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

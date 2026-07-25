@@ -12,14 +12,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional, List
 
-from openai import AsyncOpenAI
-
 from config import settings
 from models import ChatMessage
+from services import anthropic_service
 
 logger = logging.getLogger(__name__)
 
-PDF_SIZE_THRESHOLD = 15 * 1024 * 1024
+PDF_SIZE_THRESHOLD = 14 * 1024 * 1024
 
 
 EVOLUTION_SYSTEM_PROMPT = """\
@@ -252,10 +251,11 @@ class EvolutionService:
             with open(pdf_path, "rb") as f:
                 pdf_base64 = base64.b64encode(f.read()).decode("utf-8")
             return [{
-                "type": "file",
-                "file": {
-                    "filename": pdf_path.name,
-                    "file_data": f"data:application/pdf;base64,{pdf_base64}",
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": pdf_base64,
                 },
             }]
         else:
@@ -289,23 +289,16 @@ class EvolutionService:
             yield "画像文件不存在，无法进行进化分析。"
             return
 
-        client = AsyncOpenAI(
-            api_key=settings.llm.api_key,
-            base_url=settings.llm.api_base,
-        )
         model = settings.profile_analysis.model
-        temperature = settings.profile_analysis.temperature
         max_tokens = settings.profile_analysis.max_tokens
-
-        api_messages = [{"role": "system", "content": EVOLUTION_SYSTEM_PROMPT}]
 
         first_user_content = self._build_initial_user_content(
             chat_messages, paper_title, paper_summary, current_profile, pdf_paths,
         )
-        api_messages.append({"role": "user", "content": first_user_content})
+        api_messages = [{"role": "user", "content": first_user_content}]
 
         if evolution_messages:
-            api_messages.extend(evolution_messages)
+            api_messages.extend(self._normalize_evolution_messages(evolution_messages))
 
         n_pdfs = len(pdf_paths) if pdf_paths else 0
         n_chat = len(chat_messages)
@@ -326,24 +319,28 @@ class EvolutionService:
             len(api_messages), "\n".join(msg_summary),
         )
 
-        stream = await client.chat.completions.create(
-            model=model,
-            messages=api_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
-
         chunk_count = 0
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
+        async for chunk in anthropic_service.stream_message(
+            system=EVOLUTION_SYSTEM_PROMPT,
+            messages=api_messages,
+            model=model,
+            max_tokens=max_tokens,
+        ):
             chunk_count += 1
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+            yield chunk
 
         logger.info("[Evolution] Stream finished: %d chunks received", chunk_count)
+
+    @staticmethod
+    def _normalize_evolution_messages(messages: List[dict]) -> List[dict]:
+        normalized = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            normalized.append({"role": role, "content": content})
+        return normalized
 
     def parse_edit_plan(self, text: str) -> Optional[dict]:
         """从 Agent 回复中提取 <edit_plan> JSON"""

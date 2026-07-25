@@ -11,12 +11,13 @@ VALID_SYNC_ROLES = {"server", "client", "off"}
 
 class LLMConfig(BaseSettings):
     """LLM 配置"""
-    provider: str = "openrouter"  # openrouter | cursor_cli
-    api_base: str = "https://openrouter.ai/api/v1"
+    provider: str = "llm_center_gpt_responses"  # llm_center_gpt_responses | llm_center_anthropic | cursor_cli
+    api_base: str = "https://llm-center.ali.modelbest.cn/llm"
     api_key: str = ""
-    model: str = "google/gemini-3.1-pro-preview"
+    model: str = "gpt-5.5"
+    provider_id: str = "64"
     temperature: float = 0.7
-    max_tokens: int = 8192
+    max_tokens: int = 32768
     cursor_command: str = "cursor"
     cursor_model: str = ""
     cursor_timeout_seconds: int = 600
@@ -27,14 +28,14 @@ class LLMConfig(BaseSettings):
 
 
 class ProfileAnalysisConfig(BaseSettings):
-    """画像分析专用模型配置（使用 Claude，指令跟随更好）"""
-    model: str = "anthropic/claude-opus-4.6"
+    """画像分析专用模型配置"""
+    model: str = "claude-opus-4-8"
     temperature: float = 0.2
     max_tokens: int = 16384
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DEFAULT_SYNC_URL = "https://www.moshang.xyz/ipaper/api"
+DEFAULT_SYNC_URL = "https://59.110.154.252/ipaper/api"
 
 
 class Settings(BaseSettings):
@@ -62,6 +63,7 @@ class Settings(BaseSettings):
     sync_role: str = ""                 # server | client | off
     sync_url: str = DEFAULT_SYNC_URL   # 固定云端 API 地址
     sync_token: str = ""               # 本机设备级同步 token
+    sync_verify_ssl: bool = True       # 自签名 IP 证书场景可在本机配置里关闭
     
     class Config:
         env_prefix = "IPAPER_"
@@ -96,6 +98,8 @@ class Settings(BaseSettings):
                     self.sync_url = data["sync_url"]
                 if "sync_token" in data:
                     self.sync_token = data["sync_token"]
+                if "sync_verify_ssl" in data:
+                    self.sync_verify_ssl = bool(data["sync_verify_ssl"])
 
     @staticmethod
     def _normalize_sync_role(value: str) -> str:
@@ -147,6 +151,7 @@ class Settings(BaseSettings):
                 "api_base": self.llm.api_base,
                 "api_key": self.llm.api_key,
                 "model": self.llm.model,
+                "provider_id": self.llm.provider_id,
                 "temperature": self.llm.temperature,
                 "max_tokens": self.llm.max_tokens,
                 "cursor_command": self.llm.cursor_command,
@@ -162,6 +167,7 @@ class Settings(BaseSettings):
             "sync_role": self.sync_role,
             "sync_url": self.sync_url,
             "sync_token": self.sync_token,
+            "sync_verify_ssl": self.sync_verify_ssl,
         })
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
