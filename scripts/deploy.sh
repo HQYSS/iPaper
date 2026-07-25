@@ -60,8 +60,14 @@ git push
 info "检查服务器工作树..."
 check_remote_worktree_clean
 
-info "服务器拉取代码..."
-ssh "$DEPLOY_HOST" "cd ~/iPaper && git pull --ff-only"
+info "上传代码 bundle 到服务器..."
+BUNDLE_PATH="/tmp/ipaper-deploy-${LOCAL_SHA}.bundle"
+git bundle create "$BUNDLE_PATH" HEAD
+scp "$BUNDLE_PATH" "$DEPLOY_HOST":/tmp/ipaper-deploy.bundle
+rm -f "$BUNDLE_PATH"
+
+info "服务器应用代码 bundle..."
+ssh "$DEPLOY_HOST" "cd ~/iPaper && git fetch /tmp/ipaper-deploy.bundle HEAD && git reset --hard FETCH_HEAD && rm -f /tmp/ipaper-deploy.bundle"
 REMOTE_SHA=$(ssh "$DEPLOY_HOST" "cd ~/iPaper && git rev-parse HEAD")
 if [[ "$REMOTE_SHA" != "$LOCAL_SHA" ]]; then
     error "服务器代码版本不一致：local=$LOCAL_SHA remote=$REMOTE_SHA"
