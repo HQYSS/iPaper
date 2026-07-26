@@ -400,8 +400,19 @@ class SyncService:
         self._wake_event.set()
         logger.warning("Scheduled local sync: %s paper=%s", reason, paper_id)
 
-    async def sync_now(self, reason: str = "manual", paper_id: Optional[str] = None) -> None:
+    def is_syncing(self) -> bool:
+        return self._sync_lock.locked()
+
+    async def sync_now(
+        self,
+        reason: str = "manual",
+        paper_id: Optional[str] = None,
+        wait_if_busy: bool = True,
+    ) -> None:
         if not self._client_role_required():
+            return
+        if self.is_syncing() and not wait_if_busy:
+            logger.info("skip immediate sync because another sync is running reason=%s paper=%s", reason, paper_id)
             return
         if paper_id:
             self._priority_paper_ids.add(paper_id)

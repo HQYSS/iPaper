@@ -316,7 +316,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
     try:
         if delegate_to_cloud:
             for pid in session.paper_ids:
-                await sync_service.sync_now("cloud-cross-chat-before-open", pid)
+                await sync_service.sync_now("cloud-cross-chat-before-open", pid, wait_if_busy=False)
             cloud_stream = await cloud_chat_service.open_cross_paper_stream(
                 paper_ids=session.paper_ids,
                 messages=captured_messages_for_stream,
@@ -596,7 +596,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
     cloud_stream = None
     try:
         if delegate_to_cloud:
-            await sync_service.sync_now("cloud-chat-before-open", paper_id)
+            await sync_service.sync_now("cloud-chat-before-open", paper_id, wait_if_busy=False)
             cloud_stream = await cloud_chat_service.open_single_stream(
                 paper_id=paper_id,
                 messages=captured_messages_for_stream,

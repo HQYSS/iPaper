@@ -90,7 +90,10 @@ async def create_response(
     if previous_response_id:
         payload["previous_response_id"] = previous_response_id
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0),
+        trust_env=False,
+    ) as client:
         resp = await client.post(responses_url(), headers=headers(), json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(_format_error(resp.status_code, resp.text))
@@ -120,7 +123,10 @@ async def stream_response(
     if previous_response_id:
         payload["previous_response_id"] = previous_response_id
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0),
+        trust_env=False,
+    ) as client:
         async with client.stream("POST", responses_url(), headers=headers(), json=payload) as resp:
             if resp.status_code >= 400:
                 text = await resp.aread()

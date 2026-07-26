@@ -100,7 +100,10 @@ async def create_message(
     elif temperature is not None:
         payload["temperature"] = temperature
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=60.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=60.0),
+        trust_env=False,
+    ) as client:
         resp = await client.post(messages_url(), headers=headers(), json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(_format_error(resp.status_code, resp.text))
@@ -133,7 +136,10 @@ async def stream_message(
             content_blocks_collector.clear()
             content_blocks_collector.extend(_snapshot_blocks(blocks_by_index))
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0),
+        trust_env=False,
+    ) as client:
         async with client.stream("POST", messages_url(), headers=headers(), json=payload) as resp:
             if resp.status_code >= 400:
                 text = await resp.aread()
