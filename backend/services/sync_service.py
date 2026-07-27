@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 LOCAL_SYNC_USER_ID = "441e2fb8d4a64409"
 LOCAL_SYNC_POLL_SECONDS = 1.0
 LOCAL_PUSH_DEBOUNCE_SECONDS = 2.0
-REMOTE_POLL_SECONDS = 15.0
+REMOTE_POLL_SECONDS = 300.0
 
 
 class SyncManifestItem:
@@ -92,7 +92,7 @@ class SyncService:
         self._priority_paper_ids = set()
         self._priority_chat_paper_ids = set()
         self._documents_dirty = False
-        self._last_remote_sync_at: float = 0.0
+        self._last_remote_sync_at: float = time.monotonic()
         self._sync_lock = asyncio.Lock()
         self._last_local_fingerprint = ""
         self._last_remote_fingerprint = ""
