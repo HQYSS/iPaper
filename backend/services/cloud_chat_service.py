@@ -178,8 +178,9 @@ class CloudChatService:
     @staticmethod
     async def _error_message(response: httpx.Response) -> str:
         body = await response.aread()
+        text = body.decode("utf-8", errors="replace")
         try:
-            data = json.loads(body.decode("utf-8", errors="replace") or "{}")
+            data = json.loads(text or "{}")
             detail = data.get("detail")
             if isinstance(detail, str):
                 return detail
@@ -187,7 +188,9 @@ class CloudChatService:
                 return detail.get("message") or json.dumps(detail, ensure_ascii=False)
         except Exception:
             pass
-        return body.decode("utf-8", errors="replace") or f"云端生成失败 ({response.status_code})"
+        if "<html" in text.lower() or "<!doctype" in text.lower():
+            return f"云端生成失败（HTTP {response.status_code}）。云端后端或上游网关暂时不可用，请稍后重试。"
+        return text or f"云端生成失败 ({response.status_code})"
 
 
 cloud_chat_service = CloudChatService()

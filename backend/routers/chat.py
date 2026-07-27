@@ -645,6 +645,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         messages,
         forks_raw,
         {"input": "", "quotes": None, "page_selections": request.page_selections},
+        trigger_sync=False,
     )
     logger.info("[chat single:%s] saved user message and assistant placeholder messages=%d", session_id, len(messages))
     storage_service.set_last_active_session(uid, paper_id, session_id)
@@ -688,7 +689,13 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         else:
             cur_messages.append(new_msg)
         storage_service.save_chat_history(
-            uid, paper_id, session_id, cur_messages, cur_forks, cur_draft
+            uid,
+            paper_id,
+            session_id,
+            cur_messages,
+            cur_forks,
+            cur_draft,
+            trigger_sync=not in_progress,
         )
 
     task = chat_task_service.start(
@@ -795,6 +802,7 @@ async def update_chat_draft(paper_id: str, session_id: str, request: ChatDraftUp
         messages,
         forks_raw,
         request.draft.model_dump(exclude_none=True),
+        trigger_sync=False,
     )
     storage_service.set_last_active_session(uid, paper_id, session_id)
     return {"message": "草稿已更新"}

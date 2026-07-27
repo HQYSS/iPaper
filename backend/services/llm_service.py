@@ -22,9 +22,12 @@ from services import anthropic_service, gpt_responses_service
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_PDF_SIZE_THRESHOLD = 14 * 1024 * 1024  # Keep base64 JSON body below Anthropic path limits.
-GPT_RESPONSES_PDF_SIZE_THRESHOLD = 40 * 1024 * 1024  # Real PDFs above ~43MB failed in LLM Center providerId=64 tests.
+ANTHROPIC_OPUS5_PDF_SIZE_THRESHOLD = 16 * 1024 * 1024  # Claude Opus 5 providerId=88 succeeds around 17.5MB but fails around 25.9MB.
+GPT_RESPONSES_PDF_SIZE_THRESHOLD = 43 * 1024 * 1024  # Real PDFs around 43MB succeeded; 46MB failed in providerId=64 tests.
 PDF_SIZE_THRESHOLD = ANTHROPIC_PDF_SIZE_THRESHOLD
 IMAGE_PAYLOAD_LIMIT = 20 * 1024 * 1024  # 20MB (base64 payload before data URL prefix)
+IMAGE_AUTO_RENDER_MAX_PAGES = 24
+IMAGE_AUTO_RENDER_MAX_PDF_SIZE = 30 * 1024 * 1024
 IMAGE_DPI = 150
 IMAGE_QUALITY = 85
 
@@ -82,6 +85,13 @@ class LLMService:
         if "gpt-5.5" in model:
             return {}
         return {"reasoning": {"effort": "medium"}}
+
+    @staticmethod
+    def _anthropic_pdf_size_threshold() -> int:
+        model = (settings.llm.model or "").lower()
+        if "claude-opus-5" in model:
+            return ANTHROPIC_OPUS5_PDF_SIZE_THRESHOLD
+        return ANTHROPIC_PDF_SIZE_THRESHOLD
     
     async def chat(
         self,
@@ -633,13 +643,14 @@ class LLMService:
         page_selection: Optional[PaperPageSelection] = None,
     ) -> list:
         pdf_size = pdf_path.stat().st_size
-        if pdf_size <= PDF_SIZE_THRESHOLD:
+        pdf_size_threshold = self._anthropic_pdf_size_threshold()
+        if pdf_size <= pdf_size_threshold:
             return [self._anthropic_document_block(pdf_path)]
 
         logger.info(
             "PDF too large for direct Anthropic document upload (%.1fMB > %dMB), converting to page images",
             pdf_size / 1024 / 1024,
-            PDF_SIZE_THRESHOLD // 1024 // 1024,
+            pdf_size_threshold // 1024 // 1024,
         )
         return self._openai_image_blocks_to_anthropic(
             self._pdf_to_image_blocks(
@@ -1129,6 +1140,7 @@ class LLMService:
         page_selection: Optional[PaperPageSelection] = None,
     ) -> list:
         """将 PDF 渲染为 JPEG；超限时要求用户明确指定保留页码。"""
+        pdf_size = pdf_path.stat().st_size
         doc = fitz.open(pdf_path)
         try:
             total_pages = len(doc)
@@ -1141,6 +1153,20 @@ class LLMService:
                     for page_num in range(start - 1, end)
                 ]
             else:
+                if total_pages > IMAGE_AUTO_RENDER_MAX_PAGES or pdf_size > IMAGE_AUTO_RENDER_MAX_PDF_SIZE:
+                    raise PageSelectionRequiredError(
+                        requirements=[
+                            self._build_page_selection_requirement(
+                                paper_id=paper_id,
+                                paper_title=paper_title,
+                                total_pages=total_pages,
+                            )
+                        ],
+                        message=(
+                            f"《{paper_title}》较大（{pdf_size / 1024 / 1024:.1f}MB，{total_pages} 页），"
+                            "为避免云端整篇转图占用过多内存，请先选择要保留的页码范围。"
+                        ),
+                    )
                 target_pages = list(range(total_pages))
 
             blocks = []

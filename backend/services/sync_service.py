@@ -25,14 +25,27 @@ REMOTE_POLL_SECONDS = 15.0
 
 
 class SyncManifestItem:
-    __slots__ = ("arxiv_id", "updated_at")
+    __slots__ = ("arxiv_id", "updated_at", "paper_updated_at", "chats_updated_at")
 
-    def __init__(self, arxiv_id: str, updated_at: str):
+    def __init__(
+        self,
+        arxiv_id: str,
+        updated_at: str,
+        paper_updated_at: Optional[str] = None,
+        chats_updated_at: Optional[str] = None,
+    ):
         self.arxiv_id = arxiv_id
         self.updated_at = updated_at
+        self.paper_updated_at = paper_updated_at or updated_at
+        self.chats_updated_at = chats_updated_at
 
     def to_dict(self) -> dict:
-        return {"arxiv_id": self.arxiv_id, "updated_at": self.updated_at}
+        return {
+            "arxiv_id": self.arxiv_id,
+            "updated_at": self.updated_at,
+            "paper_updated_at": self.paper_updated_at,
+            "chats_updated_at": self.chats_updated_at,
+        }
 
 
 class SyncDeletedItem:
@@ -77,6 +90,8 @@ class SyncService:
         self._stop_event = asyncio.Event()
         self._wake_event = asyncio.Event()
         self._priority_paper_ids = set()
+        self._priority_chat_paper_ids = set()
+        self._documents_dirty = False
         self._last_remote_sync_at: float = 0.0
         self._sync_lock = asyncio.Lock()
         self._last_local_fingerprint = ""
@@ -101,10 +116,14 @@ class SyncService:
                 # 只把下载完成的论文放进 manifest，避免把"下载中/失败"的空架子同步到云端
                 if not self._paper_ready_for_sync(paper_dir, meta_file):
                     continue
-                updated_at = self._get_paper_bundle_updated_at(paper_dir)
+                paper_updated_at = self._get_paper_content_updated_at(paper_dir)
+                chats_updated_at = self._get_paper_chats_updated_at(paper_dir)
+                updated_at = self._max_timestamp(paper_updated_at, chats_updated_at)
                 items.append(SyncManifestItem(
                     arxiv_id=paper_dir.name,
                     updated_at=updated_at,
+                    paper_updated_at=paper_updated_at,
+                    chats_updated_at=chats_updated_at,
                 ))
 
         active_deletions = self._get_active_paper_tombstones(user_id)
@@ -178,6 +197,42 @@ class SyncService:
 
         self.clear_paper_tombstone(user_id, paper_id)
         self._rebuild_papers_index(user_id)
+        return True
+
+    def create_paper_chats_bundle(self, user_id: str, paper_id: str) -> Optional[bytes]:
+        chats_dir = settings.get_user_papers_dir(user_id) / paper_id / "chats"
+        if not chats_dir.exists():
+            return None
+
+        files = [path for path in chats_dir.rglob("*") if path.is_file()]
+        if not files:
+            return None
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in files:
+                arcname = str(file_path.relative_to(chats_dir))
+                zf.write(file_path, arcname)
+        return buf.getvalue()
+
+    def extract_paper_chats_bundle(self, user_id: str, paper_id: str, bundle_bytes: bytes) -> bool:
+        chats_dir = settings.get_user_papers_dir(user_id) / paper_id / "chats"
+        chats_dir.mkdir(parents=True, exist_ok=True)
+
+        buf = io.BytesIO(bundle_bytes)
+        try:
+            with zipfile.ZipFile(buf, "r") as zf:
+                for member in zf.namelist():
+                    if member.startswith("..") or member.startswith("/") or "/.." in member:
+                        continue
+                    target = chats_dir / member
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        dst.write(src.read())
+        except zipfile.BadZipFile:
+            logger.error("Invalid chats zip bundle for paper %s", paper_id)
+            return False
+
         return True
 
     def delete_paper(self, user_id: str, paper_id: str, deleted_at: Optional[str] = None) -> bool:
@@ -287,6 +342,18 @@ class SyncService:
             return -1
         return 0
 
+    def _max_timestamp(self, *values: Optional[str]) -> str:
+        latest = datetime.min
+        for value in values:
+            if not value:
+                continue
+            candidate = datetime.fromisoformat(value)
+            if candidate > latest:
+                latest = candidate
+        if latest == datetime.min:
+            return datetime.min.isoformat()
+        return latest.isoformat()
+
     def _paper_fingerprint(self, manifest: SyncManifest) -> str:
         return json.dumps(
             {
@@ -305,10 +372,12 @@ class SyncService:
             sort_keys=True,
         )
 
-    def _get_paper_bundle_updated_at(self, paper_dir: Path) -> str:
+    def _get_paper_content_updated_at(self, paper_dir: Path) -> str:
         latest = datetime.min
         for file_path in paper_dir.rglob("*"):
             if not file_path.is_file():
+                continue
+            if "chats" in file_path.relative_to(paper_dir).parts:
                 continue
             if file_path.suffix != ".json":
                 continue
@@ -335,6 +404,33 @@ class SyncService:
             else:
                 latest = datetime.fromtimestamp(paper_dir.stat().st_mtime)
         return latest.isoformat()
+
+    def _get_paper_chats_updated_at(self, paper_dir: Path) -> Optional[str]:
+        chats_dir = paper_dir / "chats"
+        if not chats_dir.exists():
+            return None
+
+        latest = datetime.min
+        for file_path in chats_dir.rglob("*"):
+            if not file_path.is_file() or file_path.suffix != ".json":
+                continue
+            try:
+                data = self._read_json(file_path)
+            except Exception:
+                data = {}
+            candidates = []
+            if data.get("updated_at"):
+                candidates.append(data.get("updated_at"))
+            for session in data.get("sessions", []) or []:
+                if isinstance(session, dict) and session.get("updated_at"):
+                    candidates.append(session.get("updated_at"))
+            if candidates:
+                candidate_dt = max(datetime.fromisoformat(value) for value in candidates)
+            else:
+                candidate_dt = datetime.fromtimestamp(file_path.stat().st_mtime)
+            if candidate_dt > latest:
+                latest = candidate_dt
+        return latest.isoformat() if latest != datetime.min else None
 
     def _rebuild_papers_index(self, user_id: str) -> None:
         papers_dir = settings.get_user_papers_dir(user_id)
@@ -385,20 +481,31 @@ class SyncService:
 
         self._write_json(index_file, {"papers": papers})
 
-    def request_sync(self, reason: str = "local-change", paper_id: Optional[str] = None) -> None:
+    def request_sync(
+        self,
+        reason: str = "local-change",
+        paper_id: Optional[str] = None,
+        scope: str = "paper",
+    ) -> None:
         if not self._client_role_required():
             return
         if paper_id:
-            self._priority_paper_ids.add(paper_id)
+            if scope == "chats":
+                self._priority_chat_paper_ids.add(paper_id)
+            else:
+                self._priority_paper_ids.add(paper_id)
+        else:
+            self._documents_dirty = True
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if self._debounced_task and not self._debounced_task.done():
+        if self._debounced_task and not self._debounced_task.done() and not self.is_syncing():
             self._debounced_task.cancel()
-        self._debounced_task = loop.create_task(self._debounced_sync(reason))
+        if not self._debounced_task or self._debounced_task.done() or self.is_syncing():
+            self._debounced_task = loop.create_task(self._debounced_sync(reason))
         self._wake_event.set()
-        logger.warning("Scheduled local sync: %s paper=%s", reason, paper_id)
+        logger.warning("Scheduled local sync: %s paper=%s scope=%s", reason, paper_id, scope)
 
     def is_syncing(self) -> bool:
         return self._sync_lock.locked()
@@ -408,6 +515,7 @@ class SyncService:
         reason: str = "manual",
         paper_id: Optional[str] = None,
         wait_if_busy: bool = True,
+        scope: str = "paper",
     ) -> None:
         if not self._client_role_required():
             return
@@ -415,11 +523,15 @@ class SyncService:
             logger.info("skip immediate sync because another sync is running reason=%s paper=%s", reason, paper_id)
             return
         if paper_id:
-            self._priority_paper_ids.add(paper_id)
+            if scope == "chats":
+                self._priority_chat_paper_ids.add(paper_id)
+            else:
+                self._priority_paper_ids.add(paper_id)
         await self._sync_once(
             LOCAL_SYNC_USER_ID,
             reason,
-            target_paper_ids={paper_id} if paper_id else None,
+            target_paper_ids={paper_id} if paper_id and scope != "chats" else set() if scope == "chats" else None,
+            target_chat_paper_ids={paper_id} if paper_id and scope == "chats" else set(),
             sync_documents=paper_id is None,
         )
 
@@ -469,7 +581,21 @@ class SyncService:
         try:
             await asyncio.sleep(LOCAL_PUSH_DEBOUNCE_SECONDS)
             logger.warning("Running debounced local sync: %s", reason)
-            await self._sync_once(LOCAL_SYNC_USER_ID, reason)
+            target_paper_ids = set(self._priority_paper_ids)
+            target_chat_paper_ids = set(self._priority_chat_paper_ids)
+            sync_documents = self._documents_dirty
+            self._priority_paper_ids.difference_update(target_paper_ids)
+            self._priority_chat_paper_ids.difference_update(target_chat_paper_ids)
+            self._documents_dirty = False
+            if not target_paper_ids and not target_chat_paper_ids and not sync_documents:
+                return
+            await self._sync_once(
+                LOCAL_SYNC_USER_ID,
+                reason,
+                target_paper_ids=target_paper_ids,
+                target_chat_paper_ids=target_chat_paper_ids,
+                sync_documents=sync_documents,
+            )
         except asyncio.CancelledError:
             logger.warning("Cancelled debounced local sync: %s", reason)
             return
@@ -491,6 +617,7 @@ class SyncService:
         user_id: str,
         reason: str,
         target_paper_ids: Optional[set[str]] = None,
+        target_chat_paper_ids: Optional[set[str]] = None,
         sync_documents: bool = True,
     ) -> None:
         if not self._client_role_required():
@@ -525,6 +652,16 @@ class SyncService:
                     remote_manifest,
                     sync_run_id,
                     target_paper_ids=target_paper_ids,
+                )
+                await self._sync_chats(
+                    client,
+                    sync_base,
+                    sync_token,
+                    user_id,
+                    local_manifest.to_dict(),
+                    remote_manifest,
+                    sync_run_id,
+                    target_paper_ids=target_chat_paper_ids,
                 )
                 if sync_documents:
                     await self._sync_document(
@@ -584,8 +721,8 @@ class SyncService:
         ]
 
         for paper_id in ordered_paper_ids:
-            local_updated = local_papers.get(paper_id, {}).get("updated_at")
-            remote_updated = remote_papers.get(paper_id, {}).get("updated_at")
+            local_updated = local_papers.get(paper_id, {}).get("paper_updated_at") or local_papers.get(paper_id, {}).get("updated_at")
+            remote_updated = remote_papers.get(paper_id, {}).get("paper_updated_at") or remote_papers.get(paper_id, {}).get("updated_at")
             local_deleted_at = local_deleted.get(paper_id, {}).get("deleted_at")
             remote_deleted_at = remote_deleted.get(paper_id, {}).get("deleted_at")
 
@@ -631,6 +768,57 @@ class SyncService:
             logger.debug("sync paper run=%s action=skip paper=%s reason=up-to-date", sync_run_id, paper_id)
 
         self._priority_paper_ids.difference_update(ordered_paper_ids)
+
+    async def _sync_chats(
+        self,
+        client: httpx.AsyncClient,
+        sync_base: str,
+        sync_token: str,
+        user_id: str,
+        local_manifest: dict,
+        remote_manifest: dict,
+        sync_run_id: str,
+        target_paper_ids: Optional[set[str]] = None,
+    ) -> None:
+        local_papers = {paper["arxiv_id"]: paper for paper in local_manifest.get("papers", [])}
+        remote_papers = {paper["arxiv_id"]: paper for paper in remote_manifest.get("papers", [])}
+        paper_ids = set(local_papers) | set(remote_papers)
+        if target_paper_ids is not None:
+            paper_ids &= target_paper_ids
+
+        for paper_id in sorted(paper_ids):
+            local_updated = local_papers.get(paper_id, {}).get("chats_updated_at")
+            remote_updated = remote_papers.get(paper_id, {}).get("chats_updated_at")
+
+            if self._compare_timestamps(remote_updated, local_updated) > 0:
+                resp = await client.get(
+                    f"{sync_base}/papers/{paper_id}/chats/bundle",
+                    headers={"Authorization": f"Bearer {sync_token}"},
+                )
+                if resp.status_code == 404:
+                    logger.info("sync chats run=%s action=skip paper=%s reason=remote-no-chats", sync_run_id, paper_id)
+                    continue
+                resp.raise_for_status()
+                self.extract_paper_chats_bundle(user_id, paper_id, resp.content)
+                logger.info("sync chats run=%s action=pull paper=%s bytes=%d remote_updated=%s local_updated=%s", sync_run_id, paper_id, len(resp.content), remote_updated, local_updated)
+                continue
+
+            if self._compare_timestamps(local_updated, remote_updated) > 0:
+                bundle = self.create_paper_chats_bundle(user_id, paper_id)
+                if bundle is None:
+                    logger.info("sync chats run=%s action=skip paper=%s reason=no-local-chats", sync_run_id, paper_id)
+                    continue
+                files = {"file": (f"{paper_id}-chats.zip", bundle, "application/zip")}
+                resp = await client.put(
+                    f"{sync_base}/papers/{paper_id}/chats/bundle",
+                    headers={"Authorization": f"Bearer {sync_token}"},
+                    files=files,
+                )
+                resp.raise_for_status()
+                logger.info("sync chats run=%s action=push paper=%s bytes=%d local_updated=%s remote_updated=%s", sync_run_id, paper_id, len(bundle), local_updated, remote_updated)
+                continue
+
+            logger.debug("sync chats run=%s action=skip paper=%s reason=up-to-date", sync_run_id, paper_id)
 
     async def _sync_document(self, client: httpx.AsyncClient, name: str, local_updated: Optional[str], remote_updated: Optional[str], get_local_data, apply_remote_data, remote_url: str, sync_token: str, sync_run_id: str) -> None:
         if self._compare_timestamps(remote_updated, local_updated) > 0:

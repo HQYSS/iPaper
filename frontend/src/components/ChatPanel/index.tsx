@@ -43,6 +43,16 @@ import type { QuoteItem } from '../../stores/chatStore'
 
 type LLMProvider = Config['llm']['provider']
 
+interface LLMEngineOption {
+  id: string
+  provider: LLMProvider
+  model?: string
+  providerId?: string
+  maxTokens?: number
+  label: string
+  description: string
+}
+
 interface ChatScrollState {
   scrollTop: number
   isNearBottom: boolean
@@ -50,15 +60,51 @@ interface ChatScrollState {
 
 const CHAT_SCROLL_THRESHOLD = 80
 const chatScrollStateCache = new Map<string, ChatScrollState>()
-const LLM_PROVIDER_LABELS: Record<LLMProvider, string> = {
-  llm_center_gpt_responses: 'GPT-5.5',
-  llm_center_anthropic: 'Opus 4.8',
-  cursor_cli: 'Cursor CLI',
+const LLM_ENGINE_OPTIONS: LLMEngineOption[] = [
+  {
+    id: 'gpt-5.5',
+    provider: 'llm_center_gpt_responses',
+    model: 'gpt-5.5',
+    providerId: '64',
+    maxTokens: 32768,
+    label: 'GPT-5.5',
+    description: '大 PDF 与 previous_response_id 多轮 reasoning',
+  },
+  {
+    id: 'claude-opus-4-8',
+    provider: 'llm_center_anthropic',
+    model: 'claude-opus-4-8',
+    providerId: '52',
+    maxTokens: 32768,
+    label: 'Opus 4.8',
+    description: 'Anthropic signed thinking，可手动切回',
+  },
+  {
+    id: 'claude-opus-5',
+    provider: 'llm_center_anthropic',
+    model: 'claude-opus-5',
+    providerId: '88',
+    maxTokens: 32768,
+    label: 'Opus 5',
+    description: 'Anthropic signed thinking，PDF 直传约 16MB',
+  },
+  {
+    id: 'cursor-cli',
+    provider: 'cursor_cli',
+    label: 'Cursor CLI',
+    description: '本机 Cursor Agent',
+  },
+]
+
+function isLLMEngineActive(option: LLMEngineOption, config: Config['llm'] | null): boolean {
+  if (!config || option.provider !== config.provider) return false
+  return option.model ? option.model === config.model : option.provider === 'cursor_cli'
 }
-const LLM_PROVIDER_DESCRIPTIONS: Record<LLMProvider, string> = {
-  llm_center_gpt_responses: '云端 GPT-5.5，大 PDF 与多轮 reasoning',
-  llm_center_anthropic: '云端 Claude Opus 4.8，原生 thinking',
-  cursor_cli: '本机 Cursor Agent',
+
+function getLLMEngineOption(config: Config['llm'] | null): LLMEngineOption | undefined {
+  if (!config) return undefined
+  return LLM_ENGINE_OPTIONS.find((option) => isLLMEngineActive(option, config))
+    || LLM_ENGINE_OPTIONS.find((option) => option.provider === config.provider)
 }
 
 function getChatScrollStateKey(
@@ -355,6 +401,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const activeSessionId = isCrossMode ? crossPaperSessionId : currentSessionId
   const activeSessionKey = getChatScrollStateKey(paperId, crossPaperSessionId, activeSessionId)
   const isStreaming = activeSessionKey ? Boolean(streamingByConversation[activeSessionKey]) : false
+  const currentEngineOption = getLLMEngineOption(llmConfig)
   const pendingRestoreSessionKeyRef = useRef<string | null>(null)
   const isRestoringScrollRef = useRef(false)
   const hasHydratedSessionRef = useRef(false)
@@ -379,16 +426,16 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     }
   }, [])
 
-  const switchLLMProvider = async (provider: LLMProvider) => {
-    if (provider === llmProvider || isStreaming || engineSaving) {
+  const switchLLMEngine = async (option: LLMEngineOption) => {
+    if (isLLMEngineActive(option, llmConfig) || isStreaming || engineSaving) {
       setShowEngineMenu(false)
       return
     }
-    if (provider === 'cursor_cli' && llmConfig && !llmConfig.cursor_cli_available) {
+    if (option.provider === 'cursor_cli' && llmConfig && !llmConfig.cursor_cli_available) {
       setEngineError('未检测到 Cursor CLI，请先确认本机已安装并登录')
       return
     }
-    if (provider !== 'cursor_cli' && llmConfig && !llmConfig.api_key_configured) {
+    if (option.provider !== 'cursor_cli' && llmConfig && !llmConfig.api_key_configured) {
       setEngineError('LLM Center API Key 未配置，请先到设置中填写')
       return
     }
@@ -396,7 +443,12 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
     setEngineSaving(true)
     setEngineError(null)
     try {
-      await updateLLMConfig({ provider })
+      await updateLLMConfig({
+        provider: option.provider,
+        ...(option.model ? { model: option.model } : {}),
+        ...(option.providerId ? { provider_id: option.providerId } : {}),
+        ...(option.maxTokens ? { max_tokens: option.maxTokens } : {}),
+      })
       const config = await getConfig()
       setLlmProvider(config.llm.provider)
       setLlmConfig(config.llm)
@@ -695,22 +747,22 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
               title={isStreaming ? '生成中不能切换讲解引擎' : '切换讲解引擎'}
             >
               {engineSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-              <span>{LLM_PROVIDER_LABELS[llmProvider]}</span>
+              <span>{currentEngineOption?.label ?? llmConfig?.model ?? llmProvider}</span>
               <ChevronDown className="w-3 h-3" />
             </button>
             {showEngineMenu && (
               <div className="absolute left-1 top-7 z-30 w-56 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
-                {(['llm_center_gpt_responses', 'llm_center_anthropic', 'cursor_cli'] as LLMProvider[]).map((provider) => {
-                  const isActive = provider === llmProvider
+                {LLM_ENGINE_OPTIONS.map((option) => {
+                  const isActive = isLLMEngineActive(option, llmConfig)
                   const isUnavailable =
-                    provider === 'cursor_cli'
+                    option.provider === 'cursor_cli'
                       ? llmConfig?.cursor_cli_available === false
                       : llmConfig?.api_key_configured === false
                   return (
                     <button
-                      key={provider}
+                      key={option.id}
                       type="button"
-                      onClick={() => switchLLMProvider(provider)}
+                      onClick={() => switchLLMEngine(option)}
                       disabled={engineSaving || isStreaming}
                       className={`w-full rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                         isActive
@@ -719,11 +771,11 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium">{LLM_PROVIDER_LABELS[provider]}</span>
+                        <span className="font-medium">{option.label}</span>
                         {isActive && <span className="text-[10px]">当前</span>}
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {LLM_PROVIDER_DESCRIPTIONS[provider]}
+                        {option.description}
                         {isUnavailable ? ' · 未配置' : ''}
                       </div>
                     </button>

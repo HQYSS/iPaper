@@ -10,23 +10,61 @@ type ThemeMode = 'light' | 'dark' | 'system'
 type SettingsTab = 'general' | 'account' | 'admin'
 type LLMProvider = Config['llm']['provider']
 
-const CLOUD_MODEL_OPTIONS: Array<{ provider: LLMProvider; label: string; description: string }> = [
+interface CloudModelOption {
+  id: string
+  provider: LLMProvider
+  model?: string
+  providerId?: string
+  maxTokens?: number
+  label: string
+  description: string
+}
+
+const CLOUD_MODEL_OPTIONS: CloudModelOption[] = [
   {
+    id: 'gpt-5.5',
     provider: 'llm_center_gpt_responses',
+    model: 'gpt-5.5',
+    providerId: '64',
+    maxTokens: 32768,
     label: 'GPT-5.5（默认）',
     description: 'Responses API，支持大 PDF、reasoning 和 previous_response_id 多轮续接',
   },
   {
+    id: 'claude-opus-4-8',
     provider: 'llm_center_anthropic',
+    model: 'claude-opus-4-8',
+    providerId: '52',
+    maxTokens: 32768,
     label: 'Claude Opus 4.8',
     description: 'Anthropic Messages API，保留 thinking signature，可手动切回',
   },
   {
+    id: 'claude-opus-5',
+    provider: 'llm_center_anthropic',
+    model: 'claude-opus-5',
+    providerId: '88',
+    maxTokens: 32768,
+    label: 'Claude Opus 5',
+    description: 'Anthropic Messages API，支持 signed thinking，PDF 直传阈值约 16MB',
+  },
+  {
+    id: 'cursor-cli',
     provider: 'cursor_cli',
     label: 'Cursor CLI',
     description: '使用本机 Cursor Agent',
   },
 ]
+
+function isCloudModelOptionActive(option: CloudModelOption, provider: LLMProvider, model: string): boolean {
+  if (option.provider !== provider) return false
+  return option.model ? option.model === model : provider === 'cursor_cli'
+}
+
+function findCloudModelOption(provider: LLMProvider, model: string): CloudModelOption | undefined {
+  return CLOUD_MODEL_OPTIONS.find((option) => isCloudModelOptionActive(option, provider, model))
+    || CLOUD_MODEL_OPTIONS.find((option) => option.provider === provider)
+}
 
 interface SettingsModalProps {
   open: boolean
@@ -45,6 +83,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [model, setModel] = useState('')
   const [llmProvider, setLlmProvider] = useState<LLMProvider>('llm_center_gpt_responses')
   const [providerId, setProviderId] = useState('')
+  const [maxTokens, setMaxTokens] = useState(32768)
   const [isConfigured, setIsConfigured] = useState(false)
   const [cursorCommand, setCursorCommand] = useState('cursor')
   const [cursorModel, setCursorModel] = useState('')
@@ -70,6 +109,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setModel(config.llm.model)
       setLlmProvider(config.llm.provider)
       setProviderId(config.llm.provider_id || '')
+      setMaxTokens(config.llm.max_tokens || 32768)
       setIsConfigured(config.llm.api_key_configured)
       setCursorCommand(config.llm.cursor_command || 'cursor')
       setCursorModel(config.llm.cursor_model || '')
@@ -145,8 +185,12 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     setIsSaving(true)
     setSaveSuccess(false)
     try {
+      const selectedOption = findCloudModelOption(llmProvider, model)
       await updateLLMConfig({
-        provider: llmProvider,
+        provider: selectedOption?.provider ?? llmProvider,
+        ...(selectedOption?.model ? { model: selectedOption.model } : {}),
+        ...(selectedOption?.providerId ? { provider_id: selectedOption.providerId } : {}),
+        ...(selectedOption?.maxTokens ? { max_tokens: selectedOption.maxTokens } : { max_tokens: maxTokens }),
         ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
         cursor_command: trimmedCursorCommand,
         cursor_model: trimmedCursorModel,
@@ -346,25 +390,32 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     讲解模型
                   </label>
                   <div className="space-y-2">
-                    {CLOUD_MODEL_OPTIONS.map((option) => (
+                    {CLOUD_MODEL_OPTIONS.map((option) => {
+                      const isActive = isCloudModelOptionActive(option, llmProvider, model)
+                      return (
                       <button
-                        key={option.provider}
+                        key={option.id}
                         type="button"
-                        onClick={() => setLlmProvider(option.provider)}
+                        onClick={() => {
+                          setLlmProvider(option.provider)
+                          if (option.model) setModel(option.model)
+                          if (option.providerId) setProviderId(option.providerId)
+                          if (option.maxTokens) setMaxTokens(option.maxTokens)
+                        }}
                         className={cn(
                           'w-full rounded-xl border px-4 py-3 text-left transition-all',
-                          llmProvider === option.provider
+                          isActive
                             ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300'
                             : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300'
                         )}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-medium">{option.label}</span>
-                          {llmProvider === option.provider && <CheckCircle className="w-4 h-4" />}
+                          {isActive && <CheckCircle className="w-4 h-4" />}
                         </div>
                         <p className="mt-1 text-xs opacity-75 leading-relaxed">{option.description}</p>
                       </button>
-                    ))}
+                    )})}
                   </div>
                   <div className="mt-2 flex items-center gap-2 px-3 py-2 text-xs rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
                     <span>当前：</span>

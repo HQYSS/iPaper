@@ -46,6 +46,35 @@ async def upload_paper_bundle(
     return {"status": "ok"}
 
 
+@router.get("/papers/{paper_id}/chats/bundle")
+async def download_paper_chats_bundle(paper_id: str, user: dict = Depends(get_sync_user)):
+    """下载某篇论文的聊天数据包（仅 chats/，不含 PDF）"""
+    bundle = sync_service.create_paper_chats_bundle(user["id"], paper_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="聊天数据不存在")
+    return Response(
+        content=bundle,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={paper_id}-chats.zip"},
+    )
+
+
+@router.put("/papers/{paper_id}/chats/bundle")
+async def upload_paper_chats_bundle(
+    paper_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_sync_user),
+):
+    """上传某篇论文的聊天数据包（仅 chats/）"""
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="聊天数据过大（上限 20MB）")
+    ok = sync_service.extract_paper_chats_bundle(user["id"], paper_id, content)
+    if not ok:
+        raise HTTPException(status_code=400, detail="无效的聊天 zip 文件")
+    return {"status": "ok"}
+
+
 @router.delete("/papers/{paper_id}")
 async def delete_paper_bundle(paper_id: str, user: dict = Depends(get_sync_user)):
     """按 tombstone 删除某篇论文"""
