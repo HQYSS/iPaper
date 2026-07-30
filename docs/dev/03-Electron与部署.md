@@ -119,6 +119,16 @@ window.electronAPI = {
 
 前端可通过 `window.electronAPI` 检测是否在 Electron 环境中运行。
 
+## Electron 自动化测试
+
+Electron 专属回归位于 `e2e/tests/electron/`，使用 Playwright `_electron` API 和隔离 bootstrap：
+
+```bash
+./scripts/test.sh e2e:electron
+```
+
+当前冒烟测试验证窗口创建、preload 加载、`electronAPI.isElectron`、平台和 Electron 版本。共享 React UI 由 Web E2E 覆盖，不在 Electron 中重复执行。Dock 图标、真实 GPU/PDF canvas、打包后端进程和 macOS 单实例聚焦仍属于平台验收项，不作为跨平台 PR 门禁。
+
 ---
 
 ## 一键启动器 (`iPaper.app`)

@@ -6,28 +6,30 @@ from typing import AsyncGenerator, List, Optional
 
 import httpx
 
-from config import settings
+from services.llm_runtime_config import LLMRuntimeConfig
 
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_PROVIDER = "llm_center_anthropic"
 DEFAULT_THINKING_BUDGET = 2048
 
 
-def is_anthropic_provider() -> bool:
-    return settings.llm.provider == ANTHROPIC_PROVIDER
+def is_anthropic_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
+    return (runtime_config or LLMRuntimeConfig.current()).provider == ANTHROPIC_PROVIDER
 
 
-def messages_url() -> str:
-    return f"{settings.llm.api_base.rstrip('/')}/v1/messages"
+def messages_url(runtime_config: Optional[LLMRuntimeConfig] = None) -> str:
+    config = runtime_config or LLMRuntimeConfig.current()
+    return f"{config.api_base.rstrip('/')}/v1/messages"
 
 
-def headers() -> dict:
+def headers(runtime_config: Optional[LLMRuntimeConfig] = None) -> dict:
+    config = runtime_config or LLMRuntimeConfig.current()
     result = {
         "Content-Type": "application/json",
-        "x-api-key": settings.llm.api_key,
+        "x-api-key": config.api_key,
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    provider_id = (settings.llm.provider_id or "").strip()
+    provider_id = (config.provider_id or "").strip()
     if provider_id:
         result["providerId"] = provider_id
     return result
@@ -79,6 +81,15 @@ def _format_error(status_code: int, text: str) -> str:
     return f"LLM Center Anthropic API 错误 ({status_code})：{detail}"
 
 
+def _stream_error_message(event: dict) -> Optional[str]:
+    error = event.get("error")
+    if not error and event.get("type") != "error":
+        return None
+    if isinstance(error, dict):
+        return error.get("message") or error.get("code") or json.dumps(error, ensure_ascii=False)
+    return str(error) if error else event.get("message") or "流式响应失败"
+
+
 async def create_message(
     *,
     system: str,
@@ -87,10 +98,12 @@ async def create_message(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     thinking: bool = False,
+    runtime_config: Optional[LLMRuntimeConfig] = None,
 ) -> str:
-    token_limit = max_tokens or settings.llm.max_tokens
+    config = runtime_config or LLMRuntimeConfig.current()
+    token_limit = max_tokens or config.max_tokens
     payload = {
-        "model": model or settings.llm.model,
+        "model": model or config.model,
         "max_tokens": token_limit,
         "system": system,
         "messages": messages,
@@ -104,10 +117,16 @@ async def create_message(
         timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=60.0),
         trust_env=False,
     ) as client:
-        resp = await client.post(messages_url(), headers=headers(), json=payload)
+        resp = await client.post(
+            messages_url(config),
+            headers=headers(config),
+            json=payload,
+        )
         if resp.status_code >= 400:
             raise RuntimeError(_format_error(resp.status_code, resp.text))
         data = resp.json()
+        if data.get("error"):
+            raise RuntimeError(_format_error(200, json.dumps(data, ensure_ascii=False)))
     return visible_text_from_blocks(data.get("content", []))
 
 
@@ -118,10 +137,12 @@ async def stream_message(
     content_blocks_collector: Optional[List[dict]] = None,
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    runtime_config: Optional[LLMRuntimeConfig] = None,
 ) -> AsyncGenerator[str, None]:
-    token_limit = max_tokens or settings.llm.max_tokens
+    config = runtime_config or LLMRuntimeConfig.current()
+    token_limit = max_tokens or config.max_tokens
     payload = {
-        "model": model or settings.llm.model,
+        "model": model or config.model,
         "max_tokens": token_limit,
         "system": system,
         "messages": messages,
@@ -140,7 +161,12 @@ async def stream_message(
         timeout=httpx.Timeout(connect=30.0, read=900.0, write=900.0, pool=60.0),
         trust_env=False,
     ) as client:
-        async with client.stream("POST", messages_url(), headers=headers(), json=payload) as resp:
+        async with client.stream(
+            "POST",
+            messages_url(config),
+            headers=headers(config),
+            json=payload,
+        ) as resp:
             if resp.status_code >= 400:
                 text = await resp.aread()
                 raise RuntimeError(_format_error(resp.status_code, text.decode("utf-8", errors="replace")))
@@ -156,6 +182,14 @@ async def stream_message(
                     break
                 event = json.loads(raw)
                 event_type = event.get("type")
+                stream_error = _stream_error_message(event)
+                if stream_error:
+                    raise RuntimeError(
+                        _format_error(
+                            200,
+                            json.dumps({"error": {"message": stream_error}}, ensure_ascii=False),
+                        )
+                    )
 
                 if event_type == "content_block_start":
                     index = int(event["index"])

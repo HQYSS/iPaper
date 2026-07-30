@@ -65,7 +65,6 @@ const LLM_ENGINE_OPTIONS: LLMEngineOption[] = [
     id: 'gpt-5.5',
     provider: 'llm_center_gpt_responses',
     model: 'gpt-5.5',
-    providerId: '64',
     maxTokens: 32768,
     label: 'GPT-5.5',
     description: '大 PDF 与 previous_response_id 多轮 reasoning',

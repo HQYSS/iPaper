@@ -18,7 +18,7 @@ router = APIRouter()
 
 VALID_LLM_PROVIDERS = {"llm_center_gpt_responses", "llm_center_anthropic", "cursor_cli"}
 PROVIDER_DEFAULTS = {
-    "llm_center_gpt_responses": {"model": "gpt-5.5", "provider_id": "64", "max_tokens": 32768},
+    "llm_center_gpt_responses": {"model": "gpt-5.5", "provider_id": "", "max_tokens": 32768},
     "llm_center_anthropic": {"model": "claude-opus-4-8", "provider_id": "52", "max_tokens": 32768},
 }
 

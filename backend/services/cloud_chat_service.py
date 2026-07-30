@@ -77,6 +77,7 @@ class CloudChatService:
     def should_delegate(self) -> bool:
         return (
             settings.is_sync_client
+            and settings.llm.provider != "cursor_cli"
             and bool((settings.sync_url or "").strip())
             and bool((settings.sync_token or "").strip())
         )
@@ -102,6 +103,19 @@ class CloudChatService:
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _execution_payload() -> dict:
+        provider_id = (settings.llm.provider_id or "").strip()
+        # 64 号 GPT 渠道已停用；留空让 LLM Center 自动选择健康渠道。
+        if settings.llm.provider == "llm_center_gpt_responses" and provider_id == "64":
+            provider_id = ""
+        return {
+            "provider": settings.llm.provider,
+            "model": settings.llm.model,
+            "provider_id": provider_id,
+            "max_tokens": settings.llm.max_tokens,
+        }
+
     async def open_single_stream(
         self,
         *,
@@ -119,6 +133,7 @@ class CloudChatService:
                 for selection in (page_selections or [])
             ] or None,
             "paper_title": paper_title,
+            "llm": self._execution_payload(),
         }
         return await self._open_stream(f"/chat/_cloud/single/{paper_id}/stream", payload)
 
@@ -138,6 +153,7 @@ class CloudChatService:
                 selection.model_dump(mode="json", exclude_none=True)
                 for selection in (page_selections or [])
             ] or None,
+            "llm": self._execution_payload(),
         }
         return await self._open_stream("/chat/_cloud/cross-paper/stream", payload)
 

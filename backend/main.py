@@ -42,69 +42,70 @@ def configure_logging():
 
 configure_logging()
 
-# 创建 FastAPI 应用
-app = FastAPI(
-    title="iPaper API",
-    description="论文阅读助手后端 API",
-    version="0.1.0"
-)
 
-# CORS 配置（允许 Electron 前端访问）
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.add_middleware(RequestLoggingMiddleware)
-
-# 注册路由
-app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(preferences.router, prefix="/api/preferences", tags=["preferences"])
-app.include_router(papers.router, prefix="/api/papers", tags=["papers"])
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-app.include_router(config.router, prefix="/api/config", tags=["config"])
-app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
-app.include_router(translation.router, prefix="/api/papers", tags=["translation"])
-app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
-
-
-@app.get("/")
-async def root():
-    """健康检查"""
-    return {"status": "ok", "message": "iPaper API is running"}
-
-
-@app.get("/api/health/runtime")
-async def runtime_health():
-    """Return runtime version and process metadata for deployment/debug checks."""
-    return get_runtime_info()
-
-
-@app.post("/api/client-logs")
-async def client_logs(payload: dict, user: dict = Depends(get_current_user)):
-    """Receive browser/Electron renderer diagnostics."""
-    logging.getLogger("client").log(
-        logging.WARNING if payload.get("level") in {"error", "warning"} else logging.INFO,
-        "client event level=%s message=%s context=%s",
-        payload.get("level", "info"),
-        payload.get("message", ""),
-        {**payload.get("context", {}), "client_user_id": user["id"]},
+def create_app() -> FastAPI:
+    """创建应用实例，便于测试在隔离配置下构造完整 ASGI 应用。"""
+    application = FastAPI(
+        title="iPaper API",
+        description="论文阅读助手后端 API",
+        version="0.1.0",
     )
-    return {"status": "ok"}
+
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    application.add_middleware(RequestLoggingMiddleware)
+
+    application.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+    application.include_router(preferences.router, prefix="/api/preferences", tags=["preferences"])
+    application.include_router(papers.router, prefix="/api/papers", tags=["papers"])
+    application.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+    application.include_router(config.router, prefix="/api/config", tags=["config"])
+    application.include_router(profile.router, prefix="/api/profile", tags=["profile"])
+    application.include_router(translation.router, prefix="/api/papers", tags=["translation"])
+    application.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+
+    @application.get("/")
+    async def root():
+        """健康检查"""
+        return {"status": "ok", "message": "iPaper API is running"}
+
+    @application.get("/api/health/runtime")
+    async def runtime_health():
+        """Return runtime version and process metadata for deployment/debug checks."""
+        return get_runtime_info()
+
+    @application.post("/api/client-logs")
+    async def client_logs(payload: dict, user: dict = Depends(get_current_user)):
+        """Receive browser/Electron renderer diagnostics."""
+        logging.getLogger("client").log(
+            logging.WARNING if payload.get("level") in {"error", "warning"} else logging.INFO,
+            "client event level=%s message=%s context=%s",
+            payload.get("level", "info"),
+            payload.get("message", ""),
+            {**payload.get("context", {}), "client_user_id": user["id"]},
+        )
+        return {"status": "ok"}
+
+    @application.on_event("startup")
+    async def startup_event():
+        logging.getLogger(__name__).info("backend startup runtime=%s", get_runtime_info())
+        await sync_service.startup()
+        arxiv_service.recover_incomplete_downloads()
+
+    @application.on_event("shutdown")
+    async def shutdown_event():
+        await sync_service.shutdown()
+
+    return application
 
 
-@app.on_event("startup")
-async def startup_event():
-    logging.getLogger(__name__).info("backend startup runtime=%s", get_runtime_info())
-    await sync_service.startup()
-    arxiv_service.recover_incomplete_downloads()
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await sync_service.shutdown()
+# 保持 ``uvicorn main:app`` 和现有导入方式兼容。
+app = create_app()
 
 
 

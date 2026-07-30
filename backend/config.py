@@ -15,7 +15,7 @@ class LLMConfig(BaseSettings):
     api_base: str = "https://llm-center.ali.modelbest.cn/llm"
     api_key: str = ""
     model: str = "gpt-5.5"
-    provider_id: str = "64"
+    provider_id: str = ""
     temperature: float = 0.7
     max_tokens: int = 32768
     cursor_command: str = "cursor"

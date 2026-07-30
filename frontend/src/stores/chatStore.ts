@@ -8,6 +8,11 @@ import {
   updateChatHistoryOffline,
   updateCrossPaperChatHistoryOffline,
 } from '../services/offlineApi'
+import {
+  forkEditedMessage,
+  sanitizeLoadedMessages,
+  switchMessageFork,
+} from './chatHelpers'
 
 export type QuoteSource = 'pdf' | 'chat'
 
@@ -113,39 +118,6 @@ const getConversationSelectionKey = (
   sessionId: string,
   isCrossMode: boolean
 ) => (isCrossMode ? `cross:${sessionId}` : `paper:${paperId}:${sessionId}`)
-
-function cloneChatMessage(message: api.ChatMessage): api.ChatMessage {
-  return {
-    ...message,
-    quotes: message.quotes ? message.quotes.map((quote) => ({ ...quote })) : undefined,
-  }
-}
-
-function cloneChatMessages(messages: api.ChatMessage[]): api.ChatMessage[] {
-  return messages.map(cloneChatMessage)
-}
-
-function removeTrailingEmptyAssistant(messages: api.ChatMessage[]): api.ChatMessage[] {
-  const nextMessages = cloneChatMessages(messages)
-  const lastMessage = nextMessages[nextMessages.length - 1]
-  // truncated=true 的空 assistant 占位代表 "后端 task 仍在跑、首个 chunk 还没到"
-  // （如果 task 已死，后端 GET /history 会清掉它），保留这个占位以便 UI 显示"生成中"
-  if (lastMessage?.role === 'assistant' && !lastMessage.content && !lastMessage.truncated) {
-    nextMessages.pop()
-  }
-  return nextMessages
-}
-
-function sanitizeLoadedMessages(messages: api.ChatMessage[]): {
-  messages: api.ChatMessage[]
-  removedTrailingEmptyAssistant: boolean
-} {
-  const sanitizedMessages = removeTrailingEmptyAssistant(messages)
-  return {
-    messages: sanitizedMessages,
-    removedTrailingEmptyAssistant: sanitizedMessages.length !== messages.length,
-  }
-}
 
 async function ensureInitialSession(paperId: string): Promise<api.SessionMeta> {
   const existingPromise = initialSessionBootstrapPromises.get(paperId)
@@ -652,42 +624,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   editMessage: async (paperId: string, sessionId: string, messageIndex: number, newContent: string) => {
     const { messages, forks } = get()
-    const oldMessage = messages[messageIndex]
-    if (!oldMessage || oldMessage.role !== 'user') return
-
-    const tailFromIndex = messages.slice(messageIndex)
-    const newForks = { ...forks }
-    const key = String(messageIndex)
-
-    if (newForks[key]) {
-      // Already has forks at this index — save current tail as another alternative
-      const currentActive = newForks[key].active
-      newForks[key] = {
-        alternatives: [...newForks[key].alternatives],
-        active: currentActive,
-      }
-      // Update the currently active alternative with the latest tail
-      newForks[key].alternatives[currentActive] = tailFromIndex
-      // Add the new branch
-      newForks[key].alternatives.push([{ role: 'user', content: newContent }])
-      newForks[key].active = newForks[key].alternatives.length - 1
-    } else {
-      // First fork at this index
-      newForks[key] = {
-        alternatives: [
-          tailFromIndex,
-          [{ role: 'user', content: newContent }],
-        ],
-        active: 1,
-      }
-    }
-
-    // Truncate messages to before the fork point (sendMessage will add the user message)
-    const newMessages = messages.slice(0, messageIndex)
-    set({ messages: newMessages, forks: newForks })
+    const forked = forkEditedMessage(messages, forks, messageIndex, newContent)
+    if (!forked) return
+    set(forked)
 
     try {
-      await updateChatHistoryOffline(paperId, sessionId, newMessages, newForks)
+      await updateChatHistoryOffline(paperId, sessionId, forked.messages, forked.forks)
     } catch {
       // Best effort save
     }
@@ -697,24 +639,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   switchFork: async (paperId: string, sessionId: string, messageIndex: number, forkIndex: number) => {
     const { messages, forks } = get()
-    const key = String(messageIndex)
-    const fork = forks[key]
-    if (!fork || forkIndex < 0 || forkIndex >= fork.alternatives.length) return
-
-    const currentTail = messages.slice(messageIndex)
-    const newForks = { ...forks }
-    newForks[key] = {
-      alternatives: [...fork.alternatives],
-      active: forkIndex,
-    }
-    newForks[key].alternatives[fork.active] = currentTail
-
-    const targetBranch = newForks[key].alternatives[forkIndex]
-    const newMessages = [...messages.slice(0, messageIndex), ...targetBranch]
-    set({ messages: newMessages, forks: newForks })
+    const switched = switchMessageFork(messages, forks, messageIndex, forkIndex)
+    if (!switched) return
+    set(switched)
 
     try {
-      await updateChatHistoryOffline(paperId, sessionId, newMessages, newForks)
+      await updateChatHistoryOffline(paperId, sessionId, switched.messages, switched.forks)
     } catch {
       // Best effort save
     }
@@ -1052,37 +982,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   editCrossPaperMessage: async (sessionId: string, messageIndex: number, newContent: string) => {
     const { messages, forks } = get()
-    const oldMessage = messages[messageIndex]
-    if (!oldMessage || oldMessage.role !== 'user') return
-
-    const tailFromIndex = messages.slice(messageIndex)
-    const newForks = { ...forks }
-    const key = String(messageIndex)
-
-    if (newForks[key]) {
-      const currentActive = newForks[key].active
-      newForks[key] = {
-        alternatives: [...newForks[key].alternatives],
-        active: currentActive,
-      }
-      newForks[key].alternatives[currentActive] = tailFromIndex
-      newForks[key].alternatives.push([{ role: 'user', content: newContent }])
-      newForks[key].active = newForks[key].alternatives.length - 1
-    } else {
-      newForks[key] = {
-        alternatives: [
-          tailFromIndex,
-          [{ role: 'user', content: newContent }],
-        ],
-        active: 1,
-      }
-    }
-
-    const newMessages = messages.slice(0, messageIndex)
-    set({ messages: newMessages, forks: newForks })
+    const forked = forkEditedMessage(messages, forks, messageIndex, newContent)
+    if (!forked) return
+    set(forked)
 
     try {
-      await updateCrossPaperChatHistoryOffline(sessionId, newMessages, newForks)
+      await updateCrossPaperChatHistoryOffline(sessionId, forked.messages, forked.forks)
     } catch {
       // best effort
     }
@@ -1092,24 +997,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   switchCrossPaperFork: async (sessionId: string, messageIndex: number, forkIndex: number) => {
     const { messages, forks } = get()
-    const key = String(messageIndex)
-    const fork = forks[key]
-    if (!fork || forkIndex < 0 || forkIndex >= fork.alternatives.length) return
-
-    const currentTail = messages.slice(messageIndex)
-    const newForks = { ...forks }
-    newForks[key] = {
-      alternatives: [...fork.alternatives],
-      active: forkIndex,
-    }
-    newForks[key].alternatives[fork.active] = currentTail
-
-    const targetBranch = newForks[key].alternatives[forkIndex]
-    const newMessages = [...messages.slice(0, messageIndex), ...targetBranch]
-    set({ messages: newMessages, forks: newForks })
+    const switched = switchMessageFork(messages, forks, messageIndex, forkIndex)
+    if (!switched) return
+    set(switched)
 
     try {
-      await updateCrossPaperChatHistoryOffline(sessionId, newMessages, newForks)
+      await updateCrossPaperChatHistoryOffline(sessionId, switched.messages, switched.forks)
     } catch {
       // best effort
     }

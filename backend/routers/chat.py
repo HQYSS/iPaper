@@ -41,6 +41,7 @@ from services.arxiv_service import arxiv_service
 from services.chat_task_service import chat_task_service
 from services.cloud_chat_service import cloud_chat_service
 from services.llm_service import PageSelectionRequiredError, llm_service
+from services.llm_runtime_config import LLMRuntimeConfig
 from services.storage_service import storage_service
 from services.sync_service import sync_service
 
@@ -138,7 +139,8 @@ async def cloud_single_chat_stream(
     pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
     if not pdf_path:
         raise HTTPException(status_code=404, detail="云端还没有这篇论文 PDF，请等待同步完成后重试")
-    if not llm_service.is_configured():
+    runtime_config = LLMRuntimeConfig.from_execution(request.llm)
+    if not llm_service.is_configured(runtime_config):
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
     try:
@@ -149,6 +151,7 @@ async def cloud_single_chat_stream(
             page_selections=request.page_selections,
             paper_id=paper_id,
             paper_title=request.paper_title or paper.title,
+            runtime_config=runtime_config,
         )
     except PageSelectionRequiredError as exc:
         raise _page_selection_http_exception(exc)
@@ -156,11 +159,14 @@ async def cloud_single_chat_stream(
         raise HTTPException(status_code=400, detail=str(exc))
 
     logger.info(
-        "[chat cloud single] user=%s paper=%s messages=%d delegated_pdf=%s",
+        "[chat cloud single] user=%s paper=%s messages=%d delegated_pdf=%s provider=%s model=%s provider_id=%s",
         uid,
         paper_id,
         len(request.messages),
         bool(pdf_path),
+        runtime_config.provider,
+        runtime_config.model,
+        runtime_config.provider_id or "auto",
     )
 
     async def stream(reasoning_collector, content_blocks_collector, response_metadata_collector):
@@ -172,6 +178,7 @@ async def cloud_single_chat_stream(
             content_blocks_collector=content_blocks_collector,
             response_metadata_collector=response_metadata_collector,
             prepared_api_messages=prepared_api_messages,
+            runtime_config=runtime_config,
         ):
             yield chunk
 
@@ -193,7 +200,8 @@ async def cloud_cross_paper_chat_stream(
         _check_paper(uid, pid)
         if not arxiv_service.get_pdf_path(uid, pid):
             raise HTTPException(status_code=404, detail=f"云端还没有论文 {pid} 的 PDF，请等待同步完成后重试")
-    if not llm_service.is_configured():
+    runtime_config = LLMRuntimeConfig.from_execution(request.llm)
+    if not llm_service.is_configured(runtime_config):
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
 
     try:
@@ -203,6 +211,7 @@ async def cloud_cross_paper_chat_stream(
             paper_ids=request.paper_ids,
             quotes=request.quotes,
             page_selections=request.page_selections,
+            runtime_config=runtime_config,
         )
     except PageSelectionRequiredError as exc:
         raise _page_selection_http_exception(exc)
@@ -210,10 +219,13 @@ async def cloud_cross_paper_chat_stream(
         raise HTTPException(status_code=400, detail=str(exc))
 
     logger.info(
-        "[chat cloud cross] user=%s papers=%s messages=%d",
+        "[chat cloud cross] user=%s papers=%s messages=%d provider=%s model=%s provider_id=%s",
         uid,
         ",".join(request.paper_ids),
         len(request.messages),
+        runtime_config.provider,
+        runtime_config.model,
+        runtime_config.provider_id or "auto",
     )
 
     async def stream(reasoning_collector, content_blocks_collector, response_metadata_collector):
@@ -225,6 +237,7 @@ async def cloud_cross_paper_chat_stream(
             content_blocks_collector=content_blocks_collector,
             response_metadata_collector=response_metadata_collector,
             prepared_api_messages=prepared_api_messages,
+            runtime_config=runtime_config,
         ):
             yield chunk
 

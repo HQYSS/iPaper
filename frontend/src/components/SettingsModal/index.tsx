@@ -25,7 +25,6 @@ const CLOUD_MODEL_OPTIONS: CloudModelOption[] = [
     id: 'gpt-5.5',
     provider: 'llm_center_gpt_responses',
     model: 'gpt-5.5',
-    providerId: '64',
     maxTokens: 32768,
     label: 'GPT-5.5（默认）',
     description: 'Responses API，支持大 PDF、reasoning 和 previous_response_id 多轮续接',

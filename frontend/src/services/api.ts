@@ -1,3 +1,5 @@
+import { parseSseStream } from './sseParser'
+
 const API_BASE = (import.meta.env.BASE_URL.replace(/\/$/, '')) + '/api'
 
 const TOKEN_STORAGE_KEY = 'ipaper.auth.token'
@@ -524,42 +526,14 @@ export async function* sendMessage(
     throw new Error(error.detail || 'Failed to send message')
   }
 
-  const reader = response.body?.getReader()
-  if (!reader) {
+  const stream = response.body
+  if (!stream) {
     throw new Error('No response body')
   }
 
   yield { type: 'open' }
 
-  const decoder = new TextDecoder()
-  let buffer = ''
-  const flushBuffer = function* (rawBuffer: string) {
-    for (const rawLine of rawBuffer.split('\n')) {
-      const line = rawLine.trim()
-      if (!line.startsWith('data: ')) continue
-      try {
-        yield JSON.parse(line.slice(6))
-      } catch {
-        // 跳过格式异常的 SSE 行
-      }
-    }
-  }
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const data of flushBuffer(lines.join('\n'))) {
-      yield data
-    }
-  }
-
-  buffer += decoder.decode()
-  for (const data of flushBuffer(buffer)) {
+  for await (const data of parseSseStream<ChatStreamEvent>(stream)) {
     yield data
   }
 }
@@ -722,42 +696,14 @@ export async function* sendCrossPaperMessage(
     throw new Error(error.detail || 'Failed to send cross-paper message')
   }
 
-  const reader = response.body?.getReader()
-  if (!reader) {
+  const stream = response.body
+  if (!stream) {
     throw new Error('No response body')
   }
 
   yield { type: 'open' }
 
-  const decoder = new TextDecoder()
-  let buffer = ''
-  const flushBuffer = function* (rawBuffer: string) {
-    for (const rawLine of rawBuffer.split('\n')) {
-      const line = rawLine.trim()
-      if (!line.startsWith('data: ')) continue
-      try {
-        yield JSON.parse(line.slice(6))
-      } catch {
-        // skip malformed SSE lines
-      }
-    }
-  }
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const data of flushBuffer(lines.join('\n'))) {
-      yield data
-    }
-  }
-
-  buffer += decoder.decode()
-  for (const data of flushBuffer(buffer)) {
+  for await (const data of parseSseStream<ChatStreamEvent>(stream)) {
     yield data
   }
 }
@@ -919,29 +865,17 @@ export async function* sendEvolutionMessage(
     throw new Error(error.detail || 'Failed to send evolution message')
   }
 
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('No response body')
+  const stream = response.body
+  if (!stream) throw new Error('No response body')
 
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          yield JSON.parse(line.slice(6))
-        } catch {
-          // skip malformed SSE
-        }
-      }
-    }
+  for await (const data of parseSseStream<{
+    type: string
+    content?: string
+    full_response?: string
+    message?: string
+    edit_plan?: { edits: ProfileEdit[]; changelog_summary: string }
+  }>(stream)) {
+    yield data
   }
 }
 

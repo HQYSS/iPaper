@@ -2,8 +2,8 @@
 Pydantic 数据模型定义
 """
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============ 论文相关模型 ============
@@ -190,12 +190,33 @@ class CrossPaperChatRequest(BaseModel):
     page_selections: Optional[List[PaperPageSelection]] = Field(None, description="用户指定保留的各论文 PDF 页码范围")
 
 
+class LLMExecutionConfig(BaseModel):
+    """委托云端时使用的逐请求模型配置（不包含凭证）。"""
+    provider: Literal["llm_center_gpt_responses", "llm_center_anthropic"]
+    model: str
+    provider_id: str = ""
+    max_tokens: int = Field(32768, ge=1024, le=65536)
+
+    @model_validator(mode="after")
+    def validate_model_route(self):
+        allowed_routes = {
+            ("llm_center_gpt_responses", "gpt-5.5"): {"", "64"},
+            ("llm_center_anthropic", "claude-opus-4-8"): {"52"},
+            ("llm_center_anthropic", "claude-opus-5"): {"88"},
+        }
+        allowed_provider_ids = allowed_routes.get((self.provider, self.model))
+        if allowed_provider_ids is None or self.provider_id not in allowed_provider_ids:
+            raise ValueError("不支持的云端 LLM 模型或渠道组合")
+        return self
+
+
 class CloudSingleChatRequest(BaseModel):
     """本地后端委托云端生成单论文回复的内部请求"""
     messages: List[ChatMessage]
     quotes: Optional[List[Quote]] = None
     page_selections: Optional[List[PaperPageSelection]] = None
     paper_title: Optional[str] = None
+    llm: Optional[LLMExecutionConfig] = None
 
 
 class CloudCrossPaperChatRequest(BaseModel):
@@ -204,6 +225,7 @@ class CloudCrossPaperChatRequest(BaseModel):
     messages: List[ChatMessage]
     quotes: Optional[List[Quote]] = None
     page_selections: Optional[List[PaperPageSelection]] = None
+    llm: Optional[LLMExecutionConfig] = None
 
 
 class CrossPaperChatHistory(BaseModel):

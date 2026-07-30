@@ -18,6 +18,7 @@ from services.cursor_cli_service import cursor_cli_service
 from services.user_profile_service import user_profile_service
 from services.arxiv_service import arxiv_service
 from services import anthropic_service, gpt_responses_service
+from services.llm_runtime_config import LLMRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,23 +61,24 @@ class LLMService:
             )
         return self._client
     
-    def is_configured(self) -> bool:
+    def is_configured(self, runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
         """检查当前 LLM Provider 是否可用"""
-        if self._is_cursor_cli_provider():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if self._is_cursor_cli_provider(config):
             return cursor_cli_service.is_configured()
-        return bool(settings.llm.api_key)
+        return bool(config.api_key)
 
     @staticmethod
-    def _is_cursor_cli_provider() -> bool:
-        return settings.llm.provider == "cursor_cli"
+    def _is_cursor_cli_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
+        return (runtime_config or LLMRuntimeConfig.current()).provider == "cursor_cli"
 
     @staticmethod
-    def _is_anthropic_provider() -> bool:
-        return anthropic_service.is_anthropic_provider()
+    def _is_anthropic_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
+        return anthropic_service.is_anthropic_provider(runtime_config)
 
     @staticmethod
-    def _is_gpt_responses_provider() -> bool:
-        return gpt_responses_service.is_gpt_responses_provider()
+    def _is_gpt_responses_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
+        return gpt_responses_service.is_gpt_responses_provider(runtime_config)
 
     @staticmethod
     def _llm_request_extra_body() -> dict:
@@ -87,8 +89,10 @@ class LLMService:
         return {"reasoning": {"effort": "medium"}}
 
     @staticmethod
-    def _anthropic_pdf_size_threshold() -> int:
-        model = (settings.llm.model or "").lower()
+    def _anthropic_pdf_size_threshold(
+        runtime_config: Optional[LLMRuntimeConfig] = None,
+    ) -> int:
+        model = ((runtime_config or LLMRuntimeConfig.current()).model or "").lower()
         if "claude-opus-5" in model:
             return ANTHROPIC_OPUS5_PDF_SIZE_THRESHOLD
         return ANTHROPIC_PDF_SIZE_THRESHOLD
@@ -97,34 +101,48 @@ class LLMService:
         self,
         messages: List[ChatMessage],
         pdf_path: Optional[Path] = None,
-        quotes: Optional[List[Quote]] = None
+        quotes: Optional[List[Quote]] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> str:
         """
         非流式对话
         """
-        if not self.is_configured():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if not self.is_configured(config):
             raise ValueError(self.configured_error_message())
 
-        if self._is_cursor_cli_provider():
+        if self._is_cursor_cli_provider(config):
             chunks = []
-            async for chunk in self.chat_stream(messages, pdf_path=pdf_path, quotes=quotes):
+            async for chunk in self.chat_stream(
+                messages,
+                pdf_path=pdf_path,
+                quotes=quotes,
+                runtime_config=config,
+            ):
                 chunks.append(chunk)
             return "".join(chunks)
 
-        if self._is_anthropic_provider():
-            payload = self._build_anthropic_single_payload(messages, pdf_path, quotes)
+        if self._is_anthropic_provider(config):
+            payload = self._build_anthropic_single_payload(
+                messages,
+                pdf_path,
+                quotes,
+                runtime_config=config,
+            )
             return await anthropic_service.create_message(
                 system=payload["system"],
                 messages=payload["messages"],
                 thinking=True,
+                runtime_config=config,
             )
 
-        if self._is_gpt_responses_provider():
+        if self._is_gpt_responses_provider(config):
             payload = self._build_gpt_responses_single_payload(messages, pdf_path, quotes)
             return await gpt_responses_service.create_response(
                 instructions=payload["instructions"],
                 input_items=payload["input"],
                 previous_response_id=payload.get("previous_response_id"),
+                runtime_config=config,
             )
 
         api_messages = self._build_messages(messages, pdf_path, quotes)
@@ -152,16 +170,18 @@ class LLMService:
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> AsyncGenerator[str, None]:
         """
         流式对话。
         reasoning_collector: 可选的可变列表，用于在流式过程中累积 reasoning 片段。
         调用方在流结束后通过 ''.join(reasoning_collector) 获取完整 reasoning。
         """
-        if not self.is_configured():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if not self.is_configured(config):
             raise ValueError(self.configured_error_message())
 
-        if self._is_cursor_cli_provider():
+        if self._is_cursor_cli_provider(config):
             prompt = prepared_api_messages or self._build_cursor_single_prompt(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -174,7 +194,7 @@ class LLMService:
                 yield chunk
             return
 
-        if self._is_anthropic_provider():
+        if self._is_anthropic_provider(config):
             payload = prepared_api_messages or self._build_anthropic_single_payload(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -182,16 +202,18 @@ class LLMService:
                 page_selections=page_selections,
                 paper_id=paper_id,
                 paper_title=paper_title,
+                runtime_config=config,
             )
             async for chunk in anthropic_service.stream_message(
                 system=payload["system"],
                 messages=payload["messages"],
                 content_blocks_collector=content_blocks_collector,
+                runtime_config=config,
             ):
                 yield chunk
             return
 
-        if self._is_gpt_responses_provider():
+        if self._is_gpt_responses_provider(config):
             payload = prepared_api_messages or self._build_gpt_responses_single_payload(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -206,6 +228,7 @@ class LLMService:
                 previous_response_id=payload.get("previous_response_id"),
                 output_collector=content_blocks_collector,
                 metadata_collector=response_metadata_collector,
+                runtime_config=config,
             ):
                 yield chunk
             return
@@ -511,8 +534,10 @@ class LLMService:
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> Any:
-        if self._is_cursor_cli_provider():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if self._is_cursor_cli_provider(config):
             return self._build_cursor_single_prompt(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -521,7 +546,7 @@ class LLMService:
                 paper_id=paper_id,
                 paper_title=paper_title,
             )
-        if self._is_anthropic_provider():
+        if self._is_anthropic_provider(config):
             return self._build_anthropic_single_payload(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -529,8 +554,9 @@ class LLMService:
                 page_selections=page_selections,
                 paper_id=paper_id,
                 paper_title=paper_title,
+                runtime_config=config,
             )
-        if self._is_gpt_responses_provider():
+        if self._is_gpt_responses_provider(config):
             return self._build_gpt_responses_single_payload(
                 messages=messages,
                 pdf_path=pdf_path,
@@ -555,8 +581,10 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> Any:
-        if self._is_cursor_cli_provider():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if self._is_cursor_cli_provider(config):
             return self._build_cursor_cross_paper_prompt(
                 messages=messages,
                 user_id=user_id,
@@ -564,15 +592,16 @@ class LLMService:
                 quotes=quotes,
                 page_selections=page_selections,
             )
-        if self._is_anthropic_provider():
+        if self._is_anthropic_provider(config):
             return self._build_anthropic_cross_paper_payload(
                 messages=messages,
                 user_id=user_id,
                 paper_ids=paper_ids,
                 quotes=quotes,
                 page_selections=page_selections,
+                runtime_config=config,
             )
-        if self._is_gpt_responses_provider():
+        if self._is_gpt_responses_provider(config):
             return self._build_gpt_responses_cross_paper_payload(
                 messages=messages,
                 user_id=user_id,
@@ -641,9 +670,10 @@ class LLMService:
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
         page_selection: Optional[PaperPageSelection] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> list:
         pdf_size = pdf_path.stat().st_size
-        pdf_size_threshold = self._anthropic_pdf_size_threshold()
+        pdf_size_threshold = self._anthropic_pdf_size_threshold(runtime_config)
         if pdf_size <= pdf_size_threshold:
             return [self._anthropic_document_block(pdf_path)]
 
@@ -669,12 +699,14 @@ class LLMService:
         page_selection: Optional[PaperPageSelection] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> list:
         content = self._anthropic_pdf_blocks(
             pdf_path=pdf_path,
             paper_id=paper_id,
             paper_title=paper_title,
             page_selection=page_selection,
+            runtime_config=runtime_config,
         )
         if quotes:
             text = f"{self._format_quotes(quotes)}\n\n{text}"
@@ -699,6 +731,7 @@ class LLMService:
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> dict:
         api_messages = []
         pdf_attached = False
@@ -716,6 +749,7 @@ class LLMService:
                     page_selection=self._pick_page_selection(page_selections, paper_id),
                     paper_id=paper_id,
                     paper_title=paper_title,
+                    runtime_config=runtime_config,
                 )
                 pdf_attached = True
             else:
@@ -734,6 +768,7 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> dict:
         selection_map = {
             selection.paper_id: selection
@@ -761,6 +796,7 @@ class LLMService:
                             paper_id=arxiv_id,
                             paper_title=title,
                             page_selection=selection_map.get(arxiv_id),
+                            runtime_config=runtime_config,
                         ))
                     else:
                         content.append(self._text_block(f"（论文 {arxiv_id} 的 PDF 不可用）"))
@@ -1426,12 +1462,14 @@ class LLMService:
         prepared_api_messages: Optional[Any] = None,
         user_id: Optional[str] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
+        runtime_config: Optional[LLMRuntimeConfig] = None,
     ) -> AsyncGenerator[str, None]:
         """串讲模式的流式对话"""
-        if not self.is_configured():
+        config = runtime_config or LLMRuntimeConfig.current()
+        if not self.is_configured(config):
             raise ValueError(self.configured_error_message())
 
-        if self._is_cursor_cli_provider():
+        if self._is_cursor_cli_provider(config):
             prompt = prepared_api_messages
             if prompt is None:
                 if not user_id:
@@ -1447,7 +1485,7 @@ class LLMService:
                 yield chunk
             return
 
-        if self._is_anthropic_provider():
+        if self._is_anthropic_provider(config):
             payload = prepared_api_messages
             if payload is None:
                 if not user_id:
@@ -1458,16 +1496,18 @@ class LLMService:
                     paper_ids=paper_ids,
                     quotes=quotes,
                     page_selections=page_selections,
+                    runtime_config=config,
                 )
             async for chunk in anthropic_service.stream_message(
                 system=payload["system"],
                 messages=payload["messages"],
                 content_blocks_collector=content_blocks_collector,
+                runtime_config=config,
             ):
                 yield chunk
             return
 
-        if self._is_gpt_responses_provider():
+        if self._is_gpt_responses_provider(config):
             payload = prepared_api_messages
             if payload is None:
                 if not user_id:
@@ -1485,6 +1525,7 @@ class LLMService:
                 previous_response_id=payload.get("previous_response_id"),
                 output_collector=content_blocks_collector,
                 metadata_collector=response_metadata_collector,
+                runtime_config=config,
             ):
                 yield chunk
             return

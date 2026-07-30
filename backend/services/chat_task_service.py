@@ -174,7 +174,11 @@ class ChatTaskService:
                 _do_persist()
             # 正常结束
             if task.finish_reason is None:
-                task.finish_reason = "stop"
+                if task.full_response.strip():
+                    task.finish_reason = "stop"
+                else:
+                    task.finish_reason = "error"
+                    task.error_message = "AI 服务返回了空响应"
         except asyncio.CancelledError:
             # 用户停止 / 进程关停 → 不再向上抛，让 finally 自然走完
             if task.finish_reason is None:
