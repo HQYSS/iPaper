@@ -1,4 +1,7 @@
+import pytest
+
 from models import ChatMessage
+from services import gpt_responses_service
 from services.llm_service import llm_service
 from services.llm_runtime_config import LLMRuntimeConfig
 
@@ -90,3 +93,45 @@ def test_anthropic_cross_paper_uses_only_one_cache_breakpoint(tmp_path, monkeypa
         if block.get("cache_control")
     ]
     assert len(cache_breakpoints) == 1
+
+
+@pytest.mark.asyncio
+async def test_gpt_stream_falls_back_when_channel_rejects_previous_response_id(
+    tmp_path,
+    monkeypatch,
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-test")
+    messages = [
+        ChatMessage(role="user", content="first"),
+        ChatMessage(role="assistant", content="answer", response_id="resp_1", truncated=False),
+        ChatMessage(role="user", content="follow up"),
+    ]
+    calls = []
+
+    async def fake_stream_response(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("previous_response_id"):
+            raise RuntimeError(
+                "previous_response_id is only supported on Responses WebSocket v2"
+            )
+        yield "fallback-ok"
+
+    monkeypatch.setattr(gpt_responses_service, "stream_response", fake_stream_response)
+    chunks = [
+        chunk
+        async for chunk in llm_service.chat_stream(
+            messages,
+            pdf_path=pdf,
+            runtime_config=_runtime(
+                "llm_center_gpt_responses",
+                "gpt-5.5",
+                "",
+            ),
+        )
+    ]
+
+    assert chunks == ["fallback-ok"]
+    assert calls[0]["previous_response_id"] == "resp_1"
+    assert calls[1].get("previous_response_id") is None
+    assert calls[1]["input_items"][0]["content"][0]["type"] == "input_file"

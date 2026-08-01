@@ -222,15 +222,45 @@ class LLMService:
                 paper_id=paper_id,
                 paper_title=paper_title,
             )
-            async for chunk in gpt_responses_service.stream_response(
-                instructions=payload["instructions"],
-                input_items=payload["input"],
-                previous_response_id=payload.get("previous_response_id"),
-                output_collector=content_blocks_collector,
-                metadata_collector=response_metadata_collector,
-                runtime_config=config,
-            ):
-                yield chunk
+            yielded = False
+            try:
+                async for chunk in gpt_responses_service.stream_response(
+                    instructions=payload["instructions"],
+                    input_items=payload["input"],
+                    previous_response_id=payload.get("previous_response_id"),
+                    output_collector=content_blocks_collector,
+                    metadata_collector=response_metadata_collector,
+                    runtime_config=config,
+                ):
+                    yielded = True
+                    yield chunk
+            except RuntimeError as exc:
+                if (
+                    yielded
+                    or not payload.get("previous_response_id")
+                    or "previous_response_id is only supported" not in str(exc)
+                ):
+                    raise
+                logger.warning(
+                    "GPT channel rejected HTTP previous_response_id; retrying with stateless history"
+                )
+                fallback = self._build_gpt_responses_single_payload(
+                    messages=messages,
+                    pdf_path=pdf_path,
+                    quotes=quotes,
+                    page_selections=page_selections,
+                    paper_id=paper_id,
+                    paper_title=paper_title,
+                    use_previous_response_id=False,
+                )
+                async for chunk in gpt_responses_service.stream_response(
+                    instructions=fallback["instructions"],
+                    input_items=fallback["input"],
+                    output_collector=content_blocks_collector,
+                    metadata_collector=response_metadata_collector,
+                    runtime_config=config,
+                ):
+                    yield chunk
             return
 
         api_messages = prepared_api_messages or self._build_messages(
@@ -923,8 +953,13 @@ class LLMService:
         page_selections: Optional[List[PaperPageSelection]] = None,
         paper_id: Optional[str] = None,
         paper_title: Optional[str] = None,
+        use_previous_response_id: bool = True,
     ) -> dict:
-        previous_response_id = self._latest_response_id(messages[:-1])
+        previous_response_id = (
+            self._latest_response_id(messages[:-1])
+            if use_previous_response_id
+            else None
+        )
         latest = messages[-1] if messages else None
         if previous_response_id and latest and latest.role == "user":
             text = latest.content
@@ -972,8 +1007,13 @@ class LLMService:
         paper_ids: List[str],
         quotes: Optional[List[Quote]] = None,
         page_selections: Optional[List[PaperPageSelection]] = None,
+        use_previous_response_id: bool = True,
     ) -> dict:
-        previous_response_id = self._latest_response_id(messages[:-1])
+        previous_response_id = (
+            self._latest_response_id(messages[:-1])
+            if use_previous_response_id
+            else None
+        )
         latest = messages[-1] if messages else None
         if previous_response_id and latest and latest.role == "user":
             text = latest.content
@@ -1533,15 +1573,45 @@ class LLMService:
                     quotes=quotes,
                     page_selections=page_selections,
                 )
-            async for chunk in gpt_responses_service.stream_response(
-                instructions=payload["instructions"],
-                input_items=payload["input"],
-                previous_response_id=payload.get("previous_response_id"),
-                output_collector=content_blocks_collector,
-                metadata_collector=response_metadata_collector,
-                runtime_config=config,
-            ):
-                yield chunk
+            yielded = False
+            try:
+                async for chunk in gpt_responses_service.stream_response(
+                    instructions=payload["instructions"],
+                    input_items=payload["input"],
+                    previous_response_id=payload.get("previous_response_id"),
+                    output_collector=content_blocks_collector,
+                    metadata_collector=response_metadata_collector,
+                    runtime_config=config,
+                ):
+                    yielded = True
+                    yield chunk
+            except RuntimeError as exc:
+                if (
+                    yielded
+                    or not payload.get("previous_response_id")
+                    or "previous_response_id is only supported" not in str(exc)
+                    or not user_id
+                ):
+                    raise
+                logger.warning(
+                    "GPT cross-paper channel rejected HTTP previous_response_id; retrying stateless"
+                )
+                fallback = self._build_gpt_responses_cross_paper_payload(
+                    messages=messages,
+                    user_id=user_id,
+                    paper_ids=paper_ids,
+                    quotes=quotes,
+                    page_selections=page_selections,
+                    use_previous_response_id=False,
+                )
+                async for chunk in gpt_responses_service.stream_response(
+                    instructions=fallback["instructions"],
+                    input_items=fallback["input"],
+                    output_collector=content_blocks_collector,
+                    metadata_collector=response_metadata_collector,
+                    runtime_config=config,
+                ):
+                    yield chunk
             return
 
         api_messages = prepared_api_messages

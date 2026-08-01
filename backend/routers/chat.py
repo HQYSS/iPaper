@@ -316,6 +316,7 @@ async def cloud_cross_paper_chat_stream(
             content_blocks_collector=content_blocks_collector,
             response_metadata_collector=response_metadata_collector,
             prepared_api_messages=prepared_api_messages,
+            user_id=uid,
             runtime_config=runtime_config,
         ):
             yield chunk
@@ -532,6 +533,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
                     content_blocks_collector=content_blocks_collector,
                     response_metadata_collector=response_metadata_collector,
                     prepared_api_messages=prepared_api_messages,
+                    user_id=uid,
                 ):
                     yield chunk
         except (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError, APIError) as e:
