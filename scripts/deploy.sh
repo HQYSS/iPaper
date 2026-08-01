@@ -114,7 +114,16 @@ if [[ "$HAS_BACKEND" -gt 0 ]]; then
 fi
 
 info "验证线上运行版本..."
-RUNTIME_JSON=$(curl -k -fsS https://59.110.154.252/ipaper/api/health/runtime)
+RUNTIME_JSON=""
+for attempt in $(seq 1 30); do
+    if RUNTIME_JSON=$(curl -k -fsS https://59.110.154.252/ipaper/api/health/runtime 2>/dev/null); then
+        break
+    fi
+    if [[ "$attempt" -eq 30 ]]; then
+        error "线上健康检查在 30 秒内未恢复，请检查 systemd/journal"
+    fi
+    sleep 1
+done
 RUNTIME_SHA=$(RUNTIME_JSON="$RUNTIME_JSON" python3 - <<'PY'
 import json
 import os
