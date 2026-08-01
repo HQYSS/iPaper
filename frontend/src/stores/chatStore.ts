@@ -569,6 +569,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       clearStreamingState()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
+      window.setTimeout(() => {
+        const store = get()
+        if (store.currentPaperId === paperId && store.currentSessionId === sessionId) {
+          void store.loadHistory(paperId, sessionId)
+        }
+      }, 500)
     }
   },
 
@@ -993,6 +999,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       clearStreamingState()
       if (!isStillActive()) return
       set({ error: (error as Error).message })
+      window.setTimeout(() => {
+        const store = get()
+        if (store.isCrossPaperMode && store.currentSessionId === sessionId) {
+          void store.loadCrossPaperSession(sessionId)
+        }
+      }, 500)
     }
   },
 

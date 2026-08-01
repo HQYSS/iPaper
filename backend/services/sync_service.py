@@ -409,6 +409,7 @@ class SyncService:
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            included_files = []
             for file_path in paper_dir.rglob("*"):
                 if file_path.is_file():
                     relative_path = file_path.relative_to(paper_dir)
@@ -420,6 +421,11 @@ class SyncService:
                         continue
                     arcname = str(relative_path)
                     zf.write(file_path, arcname)
+                    included_files.append(arcname)
+            zf.writestr(
+                ".sync-metadata-manifest.json",
+                json.dumps({"files": sorted(included_files)}, ensure_ascii=False),
+            )
         return buf.getvalue()
 
     def create_paper_bundle(self, user_id: str, paper_id: str) -> Optional[bytes]:
@@ -438,9 +444,43 @@ class SyncService:
                 zf.write(file_path, str(relative_path))
         return buf.getvalue()
 
+    @staticmethod
+    def _is_metadata_relative_path(path: Path) -> bool:
+        return (
+            "chats" not in path.parts
+            and path.suffix.lower() != ".pdf"
+            and not path.name.endswith(".part")
+            and path.name != ".sync-metadata-manifest.json"
+        )
+
+    def _recover_metadata_install(self, paper_dir: Path, paper_id: str) -> None:
+        parent = paper_dir.parent
+        for backup in parent.glob(f".paper-metadata-backup-{paper_id}-*"):
+            journal_path = backup / "journal.json"
+            data_dir = backup / "data"
+            if not journal_path.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+                continue
+            try:
+                journal = self._read_json(journal_path)
+                for relative in journal.get("incoming", []):
+                    target = paper_dir / relative
+                    if target.is_file():
+                        target.unlink()
+                if data_dir.exists():
+                    for source in data_dir.rglob("*"):
+                        if not source.is_file():
+                            continue
+                        target = paper_dir / source.relative_to(data_dir)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        source.replace(target)
+            finally:
+                shutil.rmtree(backup, ignore_errors=True)
+
     def extract_paper_bundle(self, user_id: str, paper_id: str, bundle_bytes: bytes) -> bool:
         paper_dir = self._paper_dir(user_id, paper_id)
         paper_dir.mkdir(parents=True, exist_ok=True)
+        self._recover_metadata_install(paper_dir, paper_id)
         temp_dir = paper_dir.parent / f".paper-sync-{paper_id}-{uuid.uuid4().hex}"
         buf = io.BytesIO(bundle_bytes)
         try:
@@ -463,18 +503,75 @@ class SyncService:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return False
 
+        manifest_path = temp_dir / ".sync-metadata-manifest.json"
+        has_metadata_manifest = manifest_path.exists()
+        if has_metadata_manifest:
+            try:
+                declared = set(self._read_json(manifest_path).get("files", []))
+                staged = {
+                    str(path.relative_to(temp_dir))
+                    for path in temp_dir.rglob("*")
+                    if path.is_file() and path != manifest_path
+                }
+                if declared != staged:
+                    raise ValueError("metadata manifest does not match bundle")
+            except Exception:
+                logger.exception("Invalid metadata manifest for paper %s", paper_id)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return False
+            manifest_path.unlink()
+
+        incoming_files = [
+            path for path in temp_dir.rglob("*") if path.is_file()
+        ]
+        existing_files = [
+            path
+            for path in paper_dir.rglob("*")
+            if path.is_file()
+            and self._is_metadata_relative_path(path.relative_to(paper_dir))
+        ]
+        if not has_metadata_manifest:
+            incoming_relative = {
+                path.relative_to(temp_dir) for path in incoming_files
+            }
+            existing_files = [
+                path
+                for path in paper_dir.rglob("*")
+                if path.is_file()
+                and "chats" not in path.relative_to(paper_dir).parts
+                and path.relative_to(paper_dir) in incoming_relative
+            ]
+
+        backup_dir = (
+            paper_dir.parent
+            / f".paper-metadata-backup-{paper_id}-{uuid.uuid4().hex}"
+        )
+        backup_data = backup_dir / "data"
+        backup_data.mkdir(parents=True, exist_ok=False)
+        self._write_json_atomic(
+            backup_dir / "journal.json",
+            {
+                "incoming": [
+                    str(path.relative_to(temp_dir)) for path in incoming_files
+                ]
+            },
+        )
         try:
-            for source in temp_dir.rglob("*"):
-                if not source.is_file():
-                    continue
+            for source in existing_files:
+                target = backup_data / source.relative_to(paper_dir)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(target)
+            for source in incoming_files:
                 target = paper_dir / source.relative_to(temp_dir)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source.replace(target)
         except Exception:
             logger.exception("Failed to install paper bundle %s", paper_id)
             shutil.rmtree(temp_dir, ignore_errors=True)
+            self._recover_metadata_install(paper_dir, paper_id)
             return False
         shutil.rmtree(temp_dir, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
         self.clear_paper_tombstone(user_id, paper_id)
         self._rebuild_papers_index(user_id)

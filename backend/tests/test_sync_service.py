@@ -82,17 +82,23 @@ def test_paper_bundle_round_trip_uses_only_local_files(isolated_settings):
 
     assert bundle is not None
     with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
-        assert set(archive.namelist()) == {"meta.json", "notes/note.txt"}
+        assert set(archive.namelist()) == {
+            ".sync-metadata-manifest.json",
+            "meta.json",
+            "notes/note.txt",
+        }
 
     restored_dir = isolated_settings.get_user_papers_dir(user_id) / "2401.00002"
     _write_json(
         restored_dir / "chats" / "session.json",
         {"updated_at": "2026-01-03T00:00:00", "messages": [{"role": "user", "content": "keep"}]},
     )
+    (restored_dir / "stale-note.txt").write_text("remove me", encoding="utf-8")
     assert service.extract_paper_bundle(user_id, "2401.00002", bundle) is True
     restored = isolated_settings.get_user_papers_dir(user_id) / "2401.00002"
     assert not (restored / "paper.pdf").exists()
     assert (restored / "notes" / "note.txt").read_text(encoding="utf-8") == "本地笔记"
+    assert not (restored / "stale-note.txt").exists()
     assert json.loads((restored / "chats" / "session.json").read_text(encoding="utf-8"))[
         "messages"
     ][0]["content"] == "keep"
