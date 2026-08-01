@@ -145,6 +145,7 @@ class SyncService:
         self._last_sync_error: Optional[str] = None
         self._outbox_generation = 0
         self._entity_locks: Dict[str, asyncio.Lock] = {}
+        self._pdf_hash_cache: Dict[str, tuple[int, int, str]] = {}
 
     @staticmethod
     def _client_role_required() -> bool:
@@ -213,15 +214,21 @@ class SyncService:
             raise ValueError("session path escapes chats directory")
         return path
 
-    @staticmethod
-    def _file_sha256(path: Path) -> Optional[str]:
+    def _file_sha256(self, path: Path) -> Optional[str]:
         if not path.exists():
             return None
+        stat = path.stat()
+        cache_key = str(path.resolve())
+        cached = self._pdf_hash_cache.get(cache_key)
+        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+            return cached[2]
         digest = hashlib.sha256()
         with open(path, "rb") as file:
             for chunk in iter(lambda: file.read(1024 * 1024), b""):
                 digest.update(chunk)
-        return digest.hexdigest()
+        value = digest.hexdigest()
+        self._pdf_hash_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, value)
+        return value
 
     @staticmethod
     def _file_mtime(path: Path) -> Optional[str]:

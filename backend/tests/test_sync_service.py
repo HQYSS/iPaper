@@ -145,6 +145,9 @@ def test_pdf_asset_round_trip(isolated_settings):
     paper_manifest = service.get_manifest(user_id).papers[0].to_dict()
     assert paper_manifest["pdf_hash"] == service._file_sha256(source_dir / "paper.pdf")
     assert paper_manifest["pdf_updated_at"]
+    assert len(service._pdf_hash_cache) == 1
+    (source_dir / "paper.pdf").write_bytes(b"%PDF-asset-updated")
+    assert service._file_sha256(source_dir / "paper.pdf") != paper_manifest["pdf_hash"]
 
 
 def test_chat_bundle_replaces_snapshot_and_removes_deleted_sessions(isolated_settings):
