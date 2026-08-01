@@ -9,6 +9,8 @@ LLM 生成任务架构：
 """
 import json
 import logging
+import re
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from openai import APIConnectionError, APIError, APIStatusError, AuthenticationError, RateLimitError
 
 logger = logging.getLogger(__name__)
+_CLOUD_TASK_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 from config import settings
 from middleware.auth import get_current_user, get_sync_user
@@ -40,6 +43,7 @@ from models import (
 from services.arxiv_service import arxiv_service
 from services.chat_task_service import chat_task_service
 from services.cloud_chat_service import cloud_chat_service
+from services.cloud_generation_service import CloudCapacityError, cloud_generation_service
 from services.llm_service import PageSelectionRequiredError, llm_service
 from services.llm_runtime_config import LLMRuntimeConfig
 from services.storage_service import storage_service
@@ -101,6 +105,64 @@ def _cloud_chat_forbidden_if_not_server():
         raise HTTPException(status_code=403, detail="该接口仅允许云端后端执行")
 
 
+def _validate_cloud_task_id(task_id: str) -> None:
+    if not _CLOUD_TASK_ID_PATTERN.fullmatch(task_id):
+        raise HTTPException(status_code=400, detail="无效的云端任务 ID")
+
+
+async def _cancel_cloud_generation(generation_id: Optional[str]) -> None:
+    if not generation_id or not _CLOUD_TASK_ID_PATTERN.fullmatch(generation_id):
+        return
+    try:
+        await cloud_chat_service.cancel_task(generation_id)
+    except Exception:
+        logger.warning(
+            "failed to propagate cloud task cancellation task=%s",
+            generation_id,
+            exc_info=True,
+        )
+
+
+async def _refresh_cloud_generation(messages: list[ChatMessage]) -> bool:
+    if (
+        not messages
+        or messages[-1].role != "assistant"
+        or not messages[-1].generation_id
+        or not messages[-1].truncated
+        or not settings.is_sync_client
+        or settings.llm.execution_mode != "cloud"
+    ):
+        return False
+    generation_id = messages[-1].generation_id
+    if not _CLOUD_TASK_ID_PATTERN.fullmatch(generation_id):
+        return False
+    try:
+        snapshot = await cloud_chat_service.get_task(generation_id)
+    except Exception:
+        logger.warning(
+            "failed to refresh cloud generation task=%s",
+            generation_id,
+            exc_info=True,
+        )
+        return False
+    if not snapshot or snapshot.get("state") in {"accepted", "streaming"}:
+        return False
+    state = snapshot.get("state")
+    content = snapshot.get("content") or ""
+    if state != "completed" and not content:
+        content = f"生成失败：{snapshot.get('error') or '云端生成中断'}"
+    messages[-1] = ChatMessage(
+        role="assistant",
+        content=content,
+        content_blocks=snapshot.get("content_blocks"),
+        response_id=snapshot.get("response_id"),
+        generation_id=generation_id,
+        reasoning=snapshot.get("reasoning"),
+        truncated=state != "completed",
+    )
+    return True
+
+
 async def _cloud_generate_events(stream):
     reasoning_collector: list[str] = []
     content_blocks_collector: list[dict] = []
@@ -127,6 +189,11 @@ async def _cloud_generate_events(stream):
         yield f"data: {json.dumps({'type': 'error', 'message': str(e) or '云端生成失败'}, ensure_ascii=False)}\n\n"
 
 
+async def _cloud_task_events(task, offset: int = 0):
+    async for event in cloud_generation_service.subscribe(task, offset=offset):
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
 @router.post("/_cloud/single/{paper_id}/stream")
 async def cloud_single_chat_stream(
     paper_id: str,
@@ -134,11 +201,13 @@ async def cloud_single_chat_stream(
     user: dict = Depends(get_sync_user),
 ):
     _cloud_chat_forbidden_if_not_server()
+    if request.task_id:
+        _validate_cloud_task_id(request.task_id)
     uid = user["id"]
     paper = _check_paper(uid, paper_id)
-    pdf_path = arxiv_service.get_pdf_path(uid, paper_id)
+    pdf_path = await arxiv_service.ensure_pdf_available(uid, paper_id)
     if not pdf_path:
-        raise HTTPException(status_code=404, detail="云端还没有这篇论文 PDF，请等待同步完成后重试")
+        raise HTTPException(status_code=503, detail="云端准备论文 PDF 超时，请稍后重试")
     runtime_config = LLMRuntimeConfig.from_execution(request.llm)
     if not llm_service.is_configured(runtime_config):
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
@@ -182,8 +251,16 @@ async def cloud_single_chat_stream(
         ):
             yield chunk
 
+    try:
+        task = cloud_generation_service.start(
+            uid,
+            request.task_id or uuid.uuid4().hex,
+            stream,
+        )
+    except CloudCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     return StreamingResponse(
-        _cloud_generate_events(stream),
+        _cloud_task_events(task),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -195,11 +272,13 @@ async def cloud_cross_paper_chat_stream(
     user: dict = Depends(get_sync_user),
 ):
     _cloud_chat_forbidden_if_not_server()
+    if request.task_id:
+        _validate_cloud_task_id(request.task_id)
     uid = user["id"]
     for pid in request.paper_ids:
         _check_paper(uid, pid)
-        if not arxiv_service.get_pdf_path(uid, pid):
-            raise HTTPException(status_code=404, detail=f"云端还没有论文 {pid} 的 PDF，请等待同步完成后重试")
+        if not await arxiv_service.ensure_pdf_available(uid, pid):
+            raise HTTPException(status_code=503, detail=f"云端准备论文 {pid} 超时，请稍后重试")
     runtime_config = LLMRuntimeConfig.from_execution(request.llm)
     if not llm_service.is_configured(runtime_config):
         raise HTTPException(status_code=400, detail=llm_service.configured_error_message())
@@ -241,11 +320,55 @@ async def cloud_cross_paper_chat_stream(
         ):
             yield chunk
 
+    try:
+        task = cloud_generation_service.start(
+            uid,
+            request.task_id or uuid.uuid4().hex,
+            stream,
+        )
+    except CloudCapacityError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     return StreamingResponse(
-        _cloud_generate_events(stream),
+        _cloud_task_events(task),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/_cloud/tasks/{task_id}/stream")
+async def cloud_task_stream(
+    task_id: str,
+    offset: int = 0,
+    user: dict = Depends(get_sync_user),
+):
+    _cloud_chat_forbidden_if_not_server()
+    _validate_cloud_task_id(task_id)
+    task = cloud_generation_service.get(user["id"], task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="云端生成任务不存在")
+    return StreamingResponse(
+        _cloud_task_events(task, offset=max(0, offset)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/_cloud/tasks/{task_id}")
+async def get_cloud_task(task_id: str, user: dict = Depends(get_sync_user)):
+    _cloud_chat_forbidden_if_not_server()
+    _validate_cloud_task_id(task_id)
+    task = cloud_generation_service.get(user["id"], task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="云端生成任务不存在")
+    return cloud_generation_service.task_snapshot(task)
+
+
+@router.post("/_cloud/tasks/{task_id}/cancel")
+async def cancel_cloud_task(task_id: str, user: dict = Depends(get_sync_user)):
+    _cloud_chat_forbidden_if_not_server()
+    _validate_cloud_task_id(task_id)
+    stopped = await cloud_generation_service.stop(user["id"], task_id)
+    return {"stopped": stopped}
 
 
 # ==================== Cross-Paper (串讲) — 必须在 {paper_id} 路由前 ====================
@@ -274,6 +397,11 @@ async def create_cross_paper_session(request: CrossPaperSessionCreate, user: dic
 @router.delete("/cross-paper/sessions/{session_id}")
 async def delete_cross_paper_session(session_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
+    if chat_task_service.is_running("cross", session_id):
+        messages, _, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
+        generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+        await _cancel_cloud_generation(generation_id)
+        await chat_task_service.stop("cross", session_id)
     success = storage_service.delete_cross_paper_session(uid, session_id)
     if not success:
         raise HTTPException(status_code=404, detail="串讲会话不存在")
@@ -360,12 +488,18 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         logger.exception("[chat cross:%s] cloud delegation failed before start", session_id)
         raise HTTPException(status_code=502, detail=f"云端生成准备失败：{exc}")
 
+    generation_id = cloud_stream.task_id if cloud_stream is not None else uuid.uuid4().hex
     user_message = ChatMessage(
         role="user",
         content=request.message,
         quotes=request.quotes,
     )
-    placeholder = ChatMessage(role="assistant", content="", truncated=True)
+    placeholder = ChatMessage(
+        role="assistant",
+        content="",
+        generation_id=generation_id,
+        truncated=True,
+    )
     messages.append(user_message)
     messages.append(placeholder)
 
@@ -411,6 +545,7 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
             content=content,
             content_blocks=content_blocks,
             response_id=response_id,
+            generation_id=generation_id,
             reasoning=reasoning,
             truncated=truncated,
         )
@@ -419,7 +554,13 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
         else:
             cur_messages.append(new_msg)
         storage_service.save_cross_paper_chat_history(
-            uid, session_id, session.paper_ids, cur_messages, cur_forks, cur_draft
+            uid,
+            session_id,
+            session.paper_ids,
+            cur_messages,
+            cur_forks,
+            cur_draft,
+            trigger_sync=not in_progress,
         )
 
     task = chat_task_service.start(
@@ -459,6 +600,9 @@ async def cross_paper_chat(session_id: str, request: CrossPaperChatRequest, user
 async def stop_cross_paper_chat(session_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
     _check_cross_paper_session(uid, session_id)
+    messages, _, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
+    generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+    await _cancel_cloud_generation(generation_id)
     stopped = await chat_task_service.stop("cross", session_id)
     return {"stopped": stopped}
 
@@ -469,6 +613,16 @@ async def get_cross_paper_chat_history(session_id: str, user: dict = Depends(get
     session = _check_cross_paper_session(uid, session_id)
     messages, forks_raw, draft_raw = storage_service.get_cross_paper_chat_history(uid, session_id)
     storage_service.set_last_active_cross_paper_session(uid, session_id)
+    if await _refresh_cloud_generation(messages):
+        storage_service.save_cross_paper_chat_history(
+            uid,
+            session_id,
+            session.paper_ids,
+            messages,
+            forks_raw,
+            draft_raw,
+            trigger_sync=True,
+        )
 
     # 清理死掉的空 assistant 占位（任务已不存在但 truncated=True 且 content 为空 → 残留尸体）
     if (
@@ -476,6 +630,7 @@ async def get_cross_paper_chat_history(session_id: str, user: dict = Depends(get
         and messages[-1].role == "assistant"
         and messages[-1].truncated
         and not (messages[-1].content or "").strip()
+        and not messages[-1].generation_id
         and not chat_task_service.is_running("cross", session_id)
     ):
         messages = messages[:-1]
@@ -503,7 +658,13 @@ async def update_cross_paper_chat_history(session_id: str, request: ChatHistoryU
     if request.forks:
         forks_dict = {k: v.model_dump() for k, v in request.forks.items()}
     storage_service.save_cross_paper_chat_history(
-        uid, session_id, session.paper_ids, request.messages, forks_dict, draft_raw
+        uid,
+        session_id,
+        session.paper_ids,
+        request.messages,
+        forks_dict,
+        draft_raw,
+        trigger_sync=True,
     )
     return {"message": "对话历史已更新"}
 
@@ -530,6 +691,9 @@ async def clear_cross_paper_chat_history(session_id: str, user: dict = Depends(g
     uid = user["id"]
     _check_cross_paper_session(uid, session_id)
     if chat_task_service.is_running("cross", session_id):
+        messages, _, _ = storage_service.get_cross_paper_chat_history(uid, session_id)
+        generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+        await _cancel_cloud_generation(generation_id)
         await chat_task_service.stop("cross", session_id)
     storage_service.clear_cross_paper_chat_history(uid, session_id)
     return {"message": "对话历史已清空"}
@@ -561,6 +725,9 @@ async def delete_session(paper_id: str, session_id: str, user: dict = Depends(ge
     if len(session_list.sessions) <= 1:
         raise HTTPException(status_code=400, detail="至少保留一个会话")
     if chat_task_service.is_running("single", session_id):
+        messages, _, _ = storage_service.get_chat_history(uid, paper_id, session_id)
+        generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+        await _cancel_cloud_generation(generation_id)
         await chat_task_service.stop("single", session_id)
     success = storage_service.delete_session(uid, paper_id, session_id)
     if not success:
@@ -642,12 +809,18 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         logger.exception("[chat single:%s] cloud delegation failed before start", session_id)
         raise HTTPException(status_code=502, detail=f"云端生成准备失败：{exc}")
 
+    generation_id = cloud_stream.task_id if cloud_stream is not None else uuid.uuid4().hex
     user_message = ChatMessage(
         role="user",
         content=request.message,
         quotes=request.quotes,
     )
-    placeholder = ChatMessage(role="assistant", content="", truncated=True)
+    placeholder = ChatMessage(
+        role="assistant",
+        content="",
+        generation_id=generation_id,
+        truncated=True,
+    )
     messages.append(user_message)
     messages.append(placeholder)
 
@@ -694,6 +867,7 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
             content=content,
             content_blocks=content_blocks,
             response_id=response_id,
+            generation_id=generation_id,
             reasoning=reasoning,
             truncated=truncated,
         )
@@ -749,6 +923,9 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
 async def stop_chat(paper_id: str, session_id: str, user: dict = Depends(get_current_user)):
     uid = user["id"]
     _check_paper(uid, paper_id)
+    messages, _, _ = storage_service.get_chat_history(uid, paper_id, session_id)
+    generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+    await _cancel_cloud_generation(generation_id)
     stopped = await chat_task_service.stop("single", session_id)
     return {"stopped": stopped}
 
@@ -759,6 +936,16 @@ async def get_chat_history(paper_id: str, session_id: str, user: dict = Depends(
     _check_paper(uid, paper_id)
     messages, forks_raw, draft_raw = storage_service.get_chat_history(uid, paper_id, session_id)
     storage_service.set_last_active_session(uid, paper_id, session_id)
+    if await _refresh_cloud_generation(messages):
+        storage_service.save_chat_history(
+            uid,
+            paper_id,
+            session_id,
+            messages,
+            forks_raw,
+            draft_raw,
+            trigger_sync=True,
+        )
 
     # 清理死掉的空 assistant 占位（任务已不存在但 truncated=True 且 content 为空 → 残留尸体）
     if (
@@ -766,6 +953,7 @@ async def get_chat_history(paper_id: str, session_id: str, user: dict = Depends(
         and messages[-1].role == "assistant"
         and messages[-1].truncated
         and not (messages[-1].content or "").strip()
+        and not messages[-1].generation_id
         and not chat_task_service.is_running("single", session_id)
     ):
         messages = messages[:-1]
@@ -826,6 +1014,9 @@ async def clear_chat_history(paper_id: str, session_id: str, user: dict = Depend
     uid = user["id"]
     _check_paper(uid, paper_id)
     if chat_task_service.is_running("single", session_id):
+        messages, _, _ = storage_service.get_chat_history(uid, paper_id, session_id)
+        generation_id = messages[-1].generation_id if messages and messages[-1].role == "assistant" else None
+        await _cancel_cloud_generation(generation_id)
         await chat_task_service.stop("single", session_id)
     storage_service.clear_chat_history(uid, paper_id, session_id)
     return {"message": "对话历史已清空"}

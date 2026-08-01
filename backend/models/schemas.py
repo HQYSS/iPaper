@@ -81,6 +81,7 @@ class ChatMessage(BaseModel):
     quotes: Optional[List[Quote]] = Field(None, description="消息关联的引用片段")
     content_blocks: Optional[List[Dict[str, Any]]] = Field(None, description="模型原始内容块（Anthropic thinking 或 GPT Responses output）")
     response_id: Optional[str] = Field(None, description="OpenAI Responses response_id，用于 previous_response_id 多轮续接")
+    generation_id: Optional[str] = Field(None, description="本地或云端生成任务 ID")
     reasoning: Optional[str] = Field(None, description="模型思考过程（仅 assistant 消息）")
     truncated: Optional[bool] = Field(None, description="是否因 max_tokens 被截断（仅 assistant 消息）")
 
@@ -217,6 +218,7 @@ class CloudSingleChatRequest(BaseModel):
     page_selections: Optional[List[PaperPageSelection]] = None
     paper_title: Optional[str] = None
     llm: Optional[LLMExecutionConfig] = None
+    task_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{32}$")
 
 
 class CloudCrossPaperChatRequest(BaseModel):
@@ -226,6 +228,7 @@ class CloudCrossPaperChatRequest(BaseModel):
     quotes: Optional[List[Quote]] = None
     page_selections: Optional[List[PaperPageSelection]] = None
     llm: Optional[LLMExecutionConfig] = None
+    task_id: Optional[str] = Field(None, pattern=r"^[a-f0-9]{32}$")
 
 
 class CrossPaperChatHistory(BaseModel):
@@ -245,6 +248,7 @@ class LLMConfigUpdate(BaseModel):
     api_key: Optional[str] = None
     model: Optional[str] = None
     provider_id: Optional[str] = None
+    execution_mode: Optional[Literal["cloud", "local"]] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     cursor_command: Optional[str] = None

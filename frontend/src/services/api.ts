@@ -366,6 +366,7 @@ export interface ChatMessage {
   quotes?: QuoteInput[]
   content_blocks?: Record<string, unknown>[]
   response_id?: string
+  generation_id?: string
   reasoning?: string
   truncated?: boolean
 }
@@ -717,6 +718,7 @@ export interface Config {
     api_key_configured: boolean
     model: string
     provider_id: string
+    execution_mode: 'cloud' | 'local'
     temperature: number
     max_tokens: number
     cursor_command: string
@@ -747,6 +749,7 @@ export async function updateLLMConfig(config: {
   api_key?: string
   model?: string
   provider_id?: string
+  execution_mode?: 'cloud' | 'local'
   temperature?: number
   max_tokens?: number
   cursor_command?: string

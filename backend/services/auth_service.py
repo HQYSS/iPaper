@@ -2,6 +2,7 @@
 用户认证服务 — 注册、登录、JWT 管理
 """
 import json
+import os
 import secrets
 import uuid
 import logging
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 TOKEN_EXPIRE_DAYS = 30
 JWT_ALGORITHM = "HS256"
 SYNC_TOKEN_TYPE = "sync_device"
+SYNC_TOKEN_EXPIRE_DAYS = 90
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -37,6 +39,7 @@ class AuthService:
         secret = secrets.token_hex(32)
         self._secret_file.parent.mkdir(parents=True, exist_ok=True)
         self._secret_file.write_text(secret)
+        os.chmod(self._secret_file, 0o600)
         return secret
 
     def _load_users(self) -> List[dict]:
@@ -170,6 +173,7 @@ class AuthService:
                 "sid": device_id,
                 "typ": SYNC_TOKEN_TYPE,
                 "iat": int(now_dt.timestamp()),
+                "exp": now_dt + timedelta(days=SYNC_TOKEN_EXPIRE_DAYS),
             },
             self._jwt_secret,
             algorithm=JWT_ALGORITHM,

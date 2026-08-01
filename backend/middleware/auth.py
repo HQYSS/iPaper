@@ -19,13 +19,16 @@ LOCAL_USERNAME = "lingxi"
 
 
 def _is_local_mode() -> bool:
-    return settings.host == "127.0.0.1"
+    return (
+        settings.local_auth_bypass
+        and not settings.is_sync_server
+        and settings.host == "127.0.0.1"
+    )
 
 
 def _is_loopback_request(request: Request) -> bool:
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
-    hostname = host.split(",")[0].strip().split(":")[0].lower()
-    return hostname in {"127.0.0.1", "localhost"}
+    client_host = request.client.host if request.client else ""
+    return client_host in {"127.0.0.1", "::1"}
 
 
 def _make_user_dict(user: dict) -> dict:

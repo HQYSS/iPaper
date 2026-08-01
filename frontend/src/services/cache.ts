@@ -39,6 +39,8 @@ export interface PendingOperation {
   headers: Record<string, string>
   body?: string
   createdAt: number
+  retryCount?: number
+  lastError?: string
 }
 
 let dbPromise: Promise<IDBPDatabase<IPaperDB>> | null = null
@@ -181,6 +183,28 @@ export async function drainPendingOps(): Promise<PendingOperation[]> {
   await tx.store.clear()
   await tx.done
   return all
+}
+
+export async function listPendingOps(): Promise<Array<{ key: number; op: PendingOperation }>> {
+  const db = await getDB()
+  const tx = db.transaction('pendingOps', 'readonly')
+  const store = tx.store
+  const [keys, values] = await Promise.all([
+    store.index('by-created').getAllKeys(),
+    store.index('by-created').getAll(),
+  ])
+  await tx.done
+  return values.map((op, index) => ({ key: Number(keys[index]), op }))
+}
+
+export async function deletePendingOp(key: number): Promise<void> {
+  const db = await getDB()
+  await db.delete('pendingOps', key)
+}
+
+export async function updatePendingOp(key: number, op: PendingOperation): Promise<void> {
+  const db = await getDB()
+  await db.put('pendingOps', op, key)
 }
 
 export async function getPendingOpsCount(): Promise<number> {

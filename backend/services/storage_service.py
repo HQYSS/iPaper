@@ -57,6 +57,7 @@ class StorageService:
         )
 
         index = self._load_session_index(user_id, paper_id)
+        index.setdefault("deleted_sessions", {}).pop(session_id, None)
         index.setdefault("sessions", []).append(meta.model_dump(mode="json"))
         self._save_session_index(user_id, paper_id, index)
         self._request_sync("session-created", paper_id, scope="chats")
@@ -75,6 +76,7 @@ class StorageService:
             index["last_active_session_id"] = (
                 index["sessions"][0]["id"] if index["sessions"] else None
             )
+        index.setdefault("deleted_sessions", {})[session_id] = datetime.now().isoformat()
 
         self._save_session_index(user_id, paper_id, index)
 
@@ -204,6 +206,7 @@ class StorageService:
     def _save_cross_paper_index(self, user_id: str, index: dict):
         index_file = self._get_cross_paper_index_file(user_id)
         index_file.parent.mkdir(parents=True, exist_ok=True)
+        index["updated_at"] = datetime.now().isoformat()
         with open(index_file, "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2, ensure_ascii=False, default=str)
 
@@ -232,8 +235,10 @@ class StorageService:
         )
 
         index = self._load_cross_paper_index(user_id)
+        index.setdefault("deleted_sessions", {}).pop(session_id, None)
         index.setdefault("sessions", []).append(meta.model_dump(mode="json"))
         self._save_cross_paper_index(user_id, index)
+        self._request_sync("cross-session-created", scope="cross_paper")
         return meta
 
     def delete_cross_paper_session(self, user_id: str, session_id: str) -> bool:
@@ -248,11 +253,13 @@ class StorageService:
             index["last_active_session_id"] = (
                 index["sessions"][0]["id"] if index["sessions"] else None
             )
+        index.setdefault("deleted_sessions", {})[session_id] = datetime.now().isoformat()
         self._save_cross_paper_index(user_id, index)
 
         chat_file = self._get_cross_paper_chat_file(user_id, session_id)
         if chat_file.exists():
             chat_file.unlink()
+        self._request_sync("cross-session-deleted", scope="cross_paper")
         return True
 
     def set_last_active_cross_paper_session(self, user_id: str, session_id: str):
@@ -273,6 +280,7 @@ class StorageService:
                 s["paper_ids"] = existing
                 s["updated_at"] = datetime.now().isoformat()
                 self._save_cross_paper_index(user_id, index)
+                self._request_sync("cross-session-papers-updated", scope="cross_paper")
                 return CrossPaperSessionMeta(**s)
         return None
 
@@ -324,11 +332,14 @@ class StorageService:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
         self._update_cross_paper_session_timestamp(user_id, session_id)
+        if trigger_sync:
+            self._request_sync("cross-chat-history", scope="cross_paper")
 
     def clear_cross_paper_chat_history(self, user_id: str, session_id: str) -> bool:
         chat_file = self._get_cross_paper_chat_file(user_id, session_id)
         if chat_file.exists():
             chat_file.unlink()
+            self._request_sync("cross-chat-cleared", scope="cross_paper")
             return True
         return False
 

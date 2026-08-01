@@ -34,6 +34,7 @@ async def get_config(user: dict = Depends(get_current_user)):
             "api_key_configured": bool(settings.llm.api_key),
             "model": settings.llm.model,
             "provider_id": settings.llm.provider_id,
+            "execution_mode": settings.llm.execution_mode,
             "temperature": settings.llm.temperature,
             "max_tokens": settings.llm.max_tokens,
             "cursor_command": settings.llm.cursor_command,
@@ -70,6 +71,8 @@ async def update_llm_config(update: LLMConfigUpdate, user: dict = Depends(get_cu
         settings.llm.model = update.model
     if update.provider_id is not None:
         settings.llm.provider_id = update.provider_id.strip()
+    if update.execution_mode is not None:
+        settings.llm.execution_mode = update.execution_mode
     if update.temperature is not None:
         settings.llm.temperature = update.temperature
     if update.max_tokens is not None:

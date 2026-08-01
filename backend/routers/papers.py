@@ -63,6 +63,7 @@ async def add_paper(request: PaperCreate, user: dict = Depends(get_current_user)
     if getattr(meta, "source_type", "arxiv") == "arxiv":
         await translation_service.ensure_translation(uid, meta.arxiv_id)
     sync_service.request_sync("paper-added", meta.arxiv_id)
+    await sync_service.announce_paper_metadata(uid, meta.arxiv_id)
     logger.info("add paper accepted paper=%s status=%s", meta.arxiv_id, meta.download_status)
 
     return meta

@@ -682,7 +682,7 @@ class LLMService:
             pdf_size / 1024 / 1024,
             pdf_size_threshold // 1024 // 1024,
         )
-        return self._openai_image_blocks_to_anthropic(
+        blocks = self._openai_image_blocks_to_anthropic(
             self._pdf_to_image_blocks(
                 pdf_path=pdf_path,
                 paper_id=paper_id or pdf_path.stem,
@@ -690,6 +690,16 @@ class LLMService:
                 page_selection=page_selection,
             )
         )
+        return blocks
+
+    @staticmethod
+    def _set_anthropic_cache_breakpoint(blocks: list) -> None:
+        for block in blocks:
+            block.pop("cache_control", None)
+        for block in reversed(blocks):
+            if block.get("type") in {"document", "image"}:
+                block["cache_control"] = {"type": "ephemeral"}
+                return
 
     def _build_anthropic_user_content_with_pdf(
         self,
@@ -708,6 +718,7 @@ class LLMService:
             page_selection=page_selection,
             runtime_config=runtime_config,
         )
+        self._set_anthropic_cache_breakpoint(content)
         if quotes:
             text = f"{self._format_quotes(quotes)}\n\n{text}"
         content.append(self._text_block(text))
@@ -800,6 +811,7 @@ class LLMService:
                         ))
                     else:
                         content.append(self._text_block(f"（论文 {arxiv_id} 的 PDF 不可用）"))
+                self._set_anthropic_cache_breakpoint(content)
                 text = msg.content
                 if quotes and msg == messages[-1]:
                     text = f"{self._format_quotes(quotes)}\n\n{text}"
@@ -816,9 +828,11 @@ class LLMService:
 
     @staticmethod
     def _latest_response_id(messages: List[ChatMessage]) -> Optional[str]:
-        for msg in reversed(messages):
-            if msg.role == "assistant" and msg.response_id and not msg.truncated:
-                return msg.response_id
+        if not messages:
+            return None
+        msg = messages[-1]
+        if msg.role == "assistant" and msg.response_id and not msg.truncated:
+            return msg.response_id
         return None
 
     @staticmethod

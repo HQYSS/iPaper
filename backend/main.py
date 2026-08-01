@@ -2,9 +2,11 @@
 iPaper Backend - FastAPI 入口
 """
 import logging
+import os
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import settings
 from routers import papers, chat, config, profile, translation, auth, preferences, sync
@@ -14,6 +16,9 @@ from services.arxiv_service import arxiv_service
 from services.log_context import RequestContextFilter
 from services.runtime_info import get_runtime_info
 from services.sync_service import sync_service
+from services.chat_task_service import chat_task_service
+from services.cloud_generation_service import cloud_generation_service
+from services.cloud_chat_service import cloud_chat_service
 
 
 def configure_logging():
@@ -79,6 +84,30 @@ def create_app() -> FastAPI:
         """Return runtime version and process metadata for deployment/debug checks."""
         return get_runtime_info()
 
+    @application.get("/api/health/live")
+    async def live_health():
+        return {"status": "live"}
+
+    @application.get("/api/health/ready")
+    async def ready_health():
+        data_dir_ready = settings.data_dir.exists() and os.access(settings.data_dir, os.W_OK)
+        payload = {
+            "status": "ready" if data_dir_ready else "not_ready",
+            "data_dir_writable": data_dir_ready,
+            "sync_role": settings.sync_role,
+        }
+        return JSONResponse(payload, status_code=200 if data_dir_ready else 503)
+
+    @application.get("/api/health/tasks")
+    async def task_health(user: dict = Depends(get_current_user)):
+        return {
+            "user_id": user["id"],
+            "chat": chat_task_service.get_status(user["id"]),
+            "cloud_generation": cloud_generation_service.get_status(user["id"]),
+            "cloud_chat_circuit": cloud_chat_service.get_status(),
+            "sync": sync_service.get_status(),
+        }
+
     @application.post("/api/client-logs")
     async def client_logs(payload: dict, user: dict = Depends(get_current_user)):
         """Receive browser/Electron renderer diagnostics."""
@@ -93,6 +122,8 @@ def create_app() -> FastAPI:
 
     @application.on_event("startup")
     async def startup_event():
+        if settings.is_sync_server and int(os.environ.get("WEB_CONCURRENCY", "1")) != 1:
+            raise RuntimeError("CloudGenerationService 当前要求 WEB_CONCURRENCY=1")
         logging.getLogger(__name__).info("backend startup runtime=%s", get_runtime_info())
         await sync_service.startup()
         arxiv_service.recover_incomplete_downloads()

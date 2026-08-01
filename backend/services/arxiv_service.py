@@ -332,6 +332,58 @@ class ArxivService:
         self._download_tasks[key] = task
         logger.info("download task scheduled user=%s paper=%s", user_id, meta.arxiv_id)
 
+    def ensure_pdf_for_synced_metadata(self, user_id: str, paper_id: str) -> None:
+        """Ensure a metadata-only sync record starts acquiring its local PDF."""
+        paper_dir = self.get_paper_dir(user_id, paper_id)
+        meta_file = paper_dir / "meta.json"
+        pdf_path = paper_dir / "paper.pdf"
+        if not meta_file.exists():
+            return
+        meta = self._load_meta(meta_file)
+        if pdf_path.exists() and self._path_looks_like_pdf(pdf_path):
+            if meta.download_status != "ready" or meta.download_error:
+                meta.download_status = "ready"
+                meta.download_error = None
+                self._save_meta(meta_file, meta)
+                self._update_index(user_id, meta)
+            return
+        meta.download_status = "downloading"
+        meta.download_error = None
+        self._save_meta(meta_file, meta)
+        self._update_index(user_id, meta)
+        if settings.is_sync_server and getattr(meta, "source_type", "arxiv") == "pdf_url":
+            # Electron will upload URL/private PDFs through the dedicated asset endpoint.
+            return
+        self._ensure_download_task(user_id, meta)
+        if getattr(meta, "source_type", "arxiv") == "arxiv":
+            self._ensure_metadata_task(user_id, meta.arxiv_id)
+
+    async def ensure_pdf_available(
+        self,
+        user_id: str,
+        paper_id: str,
+        timeout_seconds: float = 120.0,
+    ) -> Optional[Path]:
+        """Wait for an existing acquisition job or uploaded asset to become ready."""
+        existing = self.get_pdf_path(user_id, paper_id)
+        if existing:
+            return existing
+        self.ensure_pdf_for_synced_metadata(user_id, paper_id)
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            existing = self.get_pdf_path(user_id, paper_id)
+            if existing:
+                return existing
+            task = self._download_tasks.get(self._task_key(user_id, paper_id))
+            if task and task.done():
+                try:
+                    task.result()
+                except Exception:
+                    logger.exception("PDF acquisition task failed for %s", paper_id)
+                return self.get_pdf_path(user_id, paper_id)
+            await asyncio.sleep(0.25)
+        return None
+
     def _has_active_download_task(self, user_id: str, arxiv_id: str) -> bool:
         existing = self._download_tasks.get(self._task_key(user_id, arxiv_id))
         return bool(existing and not existing.done())

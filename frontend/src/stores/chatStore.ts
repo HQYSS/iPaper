@@ -104,6 +104,32 @@ interface ChatStore {
 
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
 const initialSessionBootstrapPromises = new Map<string, Promise<api.SessionMeta>>()
+const cloudGenerationPollTimers = new Map<string, number>()
+
+function updateCloudGenerationPoll(
+  key: string,
+  messages: api.ChatMessage[],
+  callback: () => void,
+): void {
+  const last = messages[messages.length - 1]
+  const pending = Boolean(
+    last?.role === 'assistant'
+    && last.generation_id
+    && last.truncated
+  )
+  const existing = cloudGenerationPollTimers.get(key)
+  if (!pending) {
+    if (existing !== undefined) window.clearTimeout(existing)
+    cloudGenerationPollTimers.delete(key)
+    return
+  }
+  if (existing !== undefined) return
+  const timer = window.setTimeout(() => {
+    cloudGenerationPollTimers.delete(key)
+    callback()
+  }, 1000)
+  cloudGenerationPollTimers.set(key, timer)
+}
 const buildDraft = (
   input: string,
   quotes: QuoteItem[],
@@ -345,6 +371,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           quotes: history.draft?.quotes || [],
           isLoading: false,
           pageSelectionsByConversation: nextSelections,
+        }
+      })
+      updateCloudGenerationPoll(selectionKey, sanitizedMessages, () => {
+        const store = get()
+        if (store.currentPaperId === paperId && store.currentSessionId === sessionId) {
+          void store.loadHistory(paperId, sessionId)
         }
       })
     } catch (error) {
@@ -741,6 +773,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           crossPaperIds: history.paper_ids,
           currentSessionId: sessionId,
           pageSelectionsByConversation: nextSelections,
+        }
+      })
+      updateCloudGenerationPoll(selectionKey, sanitizedMessages, () => {
+        const store = get()
+        if (store.isCrossPaperMode && store.currentSessionId === sessionId) {
+          void store.loadCrossPaperSession(sessionId)
         }
       })
     } catch (error) {

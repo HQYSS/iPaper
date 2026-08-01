@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from config import settings
 from models import LLMExecutionConfig
 from services import anthropic_service, gpt_responses_service
-from services.cloud_chat_service import CloudChatService
+from services.cloud_chat_service import CloudChatService, CloudChatStream
 from services.llm_runtime_config import LLMRuntimeConfig
 
 
@@ -32,8 +32,8 @@ async def test_cloud_payload_carries_effective_execution_config(
     captured = {}
     service = CloudChatService()
 
-    async def fake_open(path, payload):
-        captured.update({"path": path, "payload": payload})
+    async def fake_open(path, payload, task_id):
+        captured.update({"path": path, "payload": payload, "task_id": task_id})
         return "stream"
 
     monkeypatch.setattr(service, "_open_stream", fake_open)
@@ -52,6 +52,105 @@ async def test_cloud_payload_carries_effective_execution_config(
         "provider_id": expected_provider_id,
         "max_tokens": 32768,
     }
+    assert captured["payload"]["task_id"] == captured["task_id"]
+
+
+class FakeStreamResponse:
+    def __init__(self, events):
+        self.events = events
+
+    async def aiter_lines(self):
+        for event in self.events:
+            yield f"data: {__import__('json').dumps(event)}"
+
+    async def aclose(self):
+        return None
+
+
+class FakeStreamClient:
+    async def aclose(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cloud_stream_reconnects_from_character_offset_after_eof():
+    reconnect_calls = []
+
+    async def reconnect(task_id, offset):
+        reconnect_calls.append((task_id, offset))
+        return (
+            FakeStreamClient(),
+            FakeStreamResponse([
+                {"type": "chunk", "content": "lo"},
+                {"type": "done", "response_id": "resp_1"},
+            ]),
+        )
+
+    stream = CloudChatStream(
+        FakeStreamClient(),
+        FakeStreamResponse([{"type": "chunk", "content": "hel"}]),
+        "a" * 32,
+        lambda: None,
+        lambda: None,
+        reconnect,
+    )
+    metadata = {}
+    chunks = [
+        chunk
+        async for chunk in stream.aiter_chunks(
+            response_metadata_collector=metadata,
+        )
+    ]
+
+    assert chunks == ["hel", "lo"]
+    assert reconnect_calls == [("a" * 32, 3)]
+    assert metadata["response_id"] == "resp_1"
+
+
+@pytest.mark.asyncio
+async def test_cloud_stream_retries_when_first_reconnect_attempt_fails():
+    attempts = 0
+
+    async def reconnect(task_id, offset):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary network error")
+        return (
+            FakeStreamClient(),
+            FakeStreamResponse([{"type": "done"}]),
+        )
+
+    stream = CloudChatStream(
+        FakeStreamClient(),
+        FakeStreamResponse([]),
+        "d" * 32,
+        lambda: None,
+        lambda: None,
+        reconnect,
+    )
+
+    assert [chunk async for chunk in stream.aiter_chunks()] == []
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_cloud_stream_maps_stopped_terminal_to_cancellation():
+    async def reconnect(task_id, offset):
+        raise AssertionError("stopped stream must not reconnect")
+
+    stream = CloudChatStream(
+        FakeStreamClient(),
+        FakeStreamResponse([{"type": "stopped"}]),
+        "e" * 32,
+        lambda: None,
+        lambda: None,
+        reconnect,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in stream.aiter_chunks():
+            pass
 
 
 def test_execution_config_rejects_mismatched_model_route():
@@ -62,6 +161,20 @@ def test_execution_config_rejects_mismatched_model_route():
             provider_id="64",
             max_tokens=32768,
         )
+
+
+def test_cloud_chat_circuit_opens_after_repeated_failures(monkeypatch):
+    service = CloudChatService()
+    monkeypatch.setattr(service, "CIRCUIT_COOLDOWN_SECONDS", 60)
+
+    for _ in range(service.CIRCUIT_FAILURE_THRESHOLD):
+        service._record_failure()
+
+    assert service.get_status()["state"] == "open"
+    with pytest.raises(RuntimeError, match="云端生成暂时熔断"):
+        service._check_circuit()
+    service._record_success()
+    assert service.get_status()["state"] == "closed"
 
 
 def test_runtime_config_uses_server_credentials_without_mutating_global_settings(monkeypatch):

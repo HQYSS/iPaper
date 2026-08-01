@@ -87,6 +87,27 @@ class ChatTaskService:
         t = self.get(kind, session_id)
         return t is not None and t.is_running()
 
+    def get_status(self, user_id: Optional[str] = None) -> dict:
+        visible = [
+            task
+            for task in self._tasks.values()
+            if user_id is None or task.user_id == user_id
+        ]
+        running = [task for task in visible if task.is_running()]
+        return {
+            "running": len(running),
+            "retained": len(visible),
+            "tasks": [
+                {
+                    "kind": task.kind,
+                    "session_id": task.session_id,
+                    "paper_id": task.paper_id,
+                    "started_at": task.started_at,
+                }
+                for task in running
+            ],
+        }
+
     async def stop(self, kind: str, session_id: str) -> bool:
         """主动停止任务（用户点'停止生成'）。返回 True 表示找到了在跑的任务并已发出取消"""
         task = self.get(kind, session_id)

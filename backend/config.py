@@ -2,6 +2,7 @@
 iPaper 配置管理
 """
 import json
+import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -16,6 +17,7 @@ class LLMConfig(BaseSettings):
     api_key: str = ""
     model: str = "gpt-5.5"
     provider_id: str = ""
+    execution_mode: str = "cloud"  # cloud | local
     temperature: float = 0.7
     max_tokens: int = 32768
     cursor_command: str = "cursor"
@@ -64,6 +66,7 @@ class Settings(BaseSettings):
     sync_url: str = DEFAULT_SYNC_URL   # 固定云端 API 地址
     sync_token: str = ""               # 本机设备级同步 token
     sync_verify_ssl: bool = True       # 自签名 IP 证书场景可在本机配置里关闭
+    local_auth_bypass: bool = True      # 仅非 server 角色可启用
     
     class Config:
         env_prefix = "IPAPER_"
@@ -100,6 +103,9 @@ class Settings(BaseSettings):
                     self.sync_token = data["sync_token"]
                 if "sync_verify_ssl" in data:
                     self.sync_verify_ssl = bool(data["sync_verify_ssl"])
+                if "local_auth_bypass" in data:
+                    self.local_auth_bypass = bool(data["local_auth_bypass"])
+            os.chmod(config_file, 0o600)
 
     @staticmethod
     def _normalize_sync_role(value: str) -> str:
@@ -135,8 +141,18 @@ class Settings(BaseSettings):
         user_dir = self.get_user_data_dir(user_id)
         user_dir.mkdir(parents=True, exist_ok=True)
         config_file = user_dir / "config.json"
-        with open(config_file, "w", encoding="utf-8") as f:
+        temp_file = user_dir / ".config.json.tmp"
+        descriptor = os.open(
+            temp_file,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_file.replace(config_file)
+        os.chmod(config_file, 0o600)
 
     def save_config(self):
         """保存全局配置到文件"""
@@ -152,6 +168,7 @@ class Settings(BaseSettings):
                 "api_key": self.llm.api_key,
                 "model": self.llm.model,
                 "provider_id": self.llm.provider_id,
+                "execution_mode": self.llm.execution_mode,
                 "temperature": self.llm.temperature,
                 "max_tokens": self.llm.max_tokens,
                 "cursor_command": self.llm.cursor_command,
@@ -168,9 +185,20 @@ class Settings(BaseSettings):
             "sync_url": self.sync_url,
             "sync_token": self.sync_token,
             "sync_verify_ssl": self.sync_verify_ssl,
+            "local_auth_bypass": self.local_auth_bypass,
         })
-        with open(config_file, "w", encoding="utf-8") as f:
+        temp_file = self.data_dir / ".config.json.tmp"
+        descriptor = os.open(
+            temp_file,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_file.replace(config_file)
+        os.chmod(config_file, 0o600)
 
     def get_user_data_dir(self, user_id: str) -> Path:
         return self.data_dir / "data" / user_id

@@ -2,11 +2,14 @@
 LLM Center Anthropic Messages API helper.
 """
 import json
+import logging
 from typing import AsyncGenerator, List, Optional
 
 import httpx
 
 from services.llm_runtime_config import LLMRuntimeConfig
+
+logger = logging.getLogger(__name__)
 
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_PROVIDER = "llm_center_anthropic"
@@ -151,6 +154,7 @@ async def stream_message(
     }
 
     blocks_by_index: dict[int, dict] = {}
+    last_cache_usage: Optional[tuple] = None
 
     def update_collector():
         if content_blocks_collector is not None:
@@ -190,6 +194,24 @@ async def stream_message(
                             json.dumps({"error": {"message": stream_error}}, ensure_ascii=False),
                         )
                     )
+
+                usage = (event.get("message") or {}).get("usage") or event.get("usage")
+                cache_usage = (
+                    usage.get("cache_creation_input_tokens", 0),
+                    usage.get("cache_read_input_tokens", 0),
+                    usage.get("input_tokens", 0),
+                ) if isinstance(usage, dict) else None
+                if cache_usage and cache_usage != last_cache_usage and (
+                    usage.get("cache_creation_input_tokens") is not None
+                    or usage.get("cache_read_input_tokens") is not None
+                ):
+                    logger.info(
+                        "anthropic prompt cache creation_tokens=%s read_tokens=%s input_tokens=%s",
+                        usage.get("cache_creation_input_tokens", 0),
+                        usage.get("cache_read_input_tokens", 0),
+                        usage.get("input_tokens", 0),
+                    )
+                    last_cache_usage = cache_usage
 
                 if event_type == "content_block_start":
                     index = int(event["index"])

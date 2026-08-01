@@ -9,6 +9,7 @@ import { env } from '../../services/env'
 type ThemeMode = 'light' | 'dark' | 'system'
 type SettingsTab = 'general' | 'account' | 'admin'
 type LLMProvider = Config['llm']['provider']
+type ExecutionMode = Config['llm']['execution_mode']
 
 interface CloudModelOption {
   id: string
@@ -82,6 +83,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [model, setModel] = useState('')
   const [llmProvider, setLlmProvider] = useState<LLMProvider>('llm_center_gpt_responses')
   const [providerId, setProviderId] = useState('')
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('cloud')
   const [maxTokens, setMaxTokens] = useState(32768)
   const [isConfigured, setIsConfigured] = useState(false)
   const [cursorCommand, setCursorCommand] = useState('cursor')
@@ -108,6 +110,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setModel(config.llm.model)
       setLlmProvider(config.llm.provider)
       setProviderId(config.llm.provider_id || '')
+      setExecutionMode(config.llm.execution_mode || 'cloud')
       setMaxTokens(config.llm.max_tokens || 32768)
       setIsConfigured(config.llm.api_key_configured)
       setCursorCommand(config.llm.cursor_command || 'cursor')
@@ -190,6 +193,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
         ...(selectedOption?.model ? { model: selectedOption.model } : {}),
         ...(selectedOption?.providerId ? { provider_id: selectedOption.providerId } : {}),
         ...(selectedOption?.maxTokens ? { max_tokens: selectedOption.maxTokens } : { max_tokens: maxTokens }),
+        execution_mode: executionMode,
         ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
         cursor_command: trimmedCursorCommand,
         cursor_model: trimmedCursorModel,
@@ -382,6 +386,35 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
+
+                {env.isElectron && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                      AI 执行位置
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ['cloud', '云端执行', '统一会话、模型缓存与多端连续性'],
+                        ['local', '本地降级', '云端故障时直接使用本地 PDF'],
+                      ] as const).map(([value, label, description]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setExecutionMode(value)}
+                          className={cn(
+                            'rounded-xl border px-3 py-3 text-left transition-all',
+                            executionMode === value
+                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-300'
+                          )}
+                        >
+                          <div className="text-sm font-medium">{label}</div>
+                          <p className="mt-1 text-xs opacity-75 leading-relaxed">{description}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Cloud model */}
                 <div>

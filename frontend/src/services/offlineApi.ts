@@ -35,7 +35,9 @@ import {
   cachePreferences,
   getCachedPreferences,
   enqueuePendingOp,
-  drainPendingOps,
+  listPendingOps,
+  deletePendingOp,
+  updatePendingOp,
   type PendingOperation,
 } from './cache'
 
@@ -125,30 +127,54 @@ export async function replayPendingOps(): Promise<{ succeeded: number; failed: n
   if (replayInProgress || !isOnline()) return { succeeded: 0, failed: 0 }
   replayInProgress = true
 
-  const ops = await drainPendingOps()
+  const pending = await listPendingOps()
   let succeeded = 0
   let failed = 0
 
-  for (const op of ops) {
-    try {
-      const resp = await fetch(op.url, {
-        method: op.method,
-        headers: op.headers,
-        body: op.body,
+  try {
+    for (const { key, op } of pending) {
+      let errorMessage = ''
+      try {
+        const headers = { ...op.headers }
+        const currentToken = getAuthToken()
+        if (currentToken) {
+          headers.Authorization = `Bearer ${currentToken}`
+        } else {
+          delete headers.Authorization
+        }
+        const resp = await fetch(op.url, {
+          method: op.method,
+          headers,
+          body: op.body,
+        })
+        if (resp.ok) {
+          succeeded++
+          await deletePendingOp(key)
+          continue
+        }
+        errorMessage = `HTTP ${resp.status}`
+      } catch (error) {
+        errorMessage = (error as Error).message
+      }
+
+      await updatePendingOp(key, {
+        ...op,
+        retryCount: (op.retryCount || 0) + 1,
+        lastError: errorMessage,
       })
-      if (resp.ok) succeeded++
-      else failed++
-    } catch (error) {
       reportClientLog('warning', 'pending offline operation replay failed', {
         url: op.url,
         method: op.method,
-        error: (error as Error).message,
+        retryCount: (op.retryCount || 0) + 1,
+        error: errorMessage,
       })
       failed++
+      break
     }
+  } finally {
+    replayInProgress = false
   }
 
-  replayInProgress = false
   return { succeeded, failed }
 }
 
@@ -299,4 +325,9 @@ export function setupOfflineListeners(): void {
   window.addEventListener('online', () => {
     replayPendingOps().catch(() => {})
   })
+  if (isOnline()) {
+    queueMicrotask(() => {
+      replayPendingOps().catch(() => {})
+    })
+  }
 }
