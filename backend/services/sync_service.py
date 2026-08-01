@@ -1072,8 +1072,7 @@ class SyncService:
             return
         if self._debounced_task and not self._debounced_task.done() and not self.is_syncing():
             self._debounced_task.cancel()
-        if not self._debounced_task or self._debounced_task.done() or self.is_syncing():
-            self._debounced_task = loop.create_task(self._debounced_sync(reason))
+        self._debounced_task = loop.create_task(self._debounced_sync(reason))
         self._wake_event.set()
         logger.warning("Scheduled local sync: %s paper=%s scope=%s", reason, paper_id, scope)
 

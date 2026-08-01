@@ -4,6 +4,7 @@ import zipfile
 
 import pytest
 
+from services import sync_service as sync_module
 from services.storage_service import StorageService
 from services.sync_service import SyncService
 
@@ -317,6 +318,28 @@ def test_idempotency_record_keeps_payload_digest(isolated_settings):
 
     assert record is not None
     assert record["payload_digest"] == "digest-a"
+
+
+@pytest.mark.asyncio
+async def test_debounce_replacement_keeps_latest_sync_request(
+    isolated_settings,
+    monkeypatch,
+):
+    monkeypatch.setattr(isolated_settings, "sync_role", "client")
+    monkeypatch.setattr(sync_module, "LOCAL_PUSH_DEBOUNCE_SECONDS", 0.01)
+    service = SyncService()
+    runs = []
+
+    async def fake_sync(*args, **kwargs):
+        runs.append((args, kwargs))
+
+    monkeypatch.setattr(service, "_sync_once", fake_sync)
+    service.request_sync("first", "2401.00001", scope="chats")
+    service.request_sync("second", "2401.00001", scope="chats")
+    await service._debounced_task
+
+    assert len(runs) == 1
+    assert runs[0][1]["target_chat_paper_ids"] == {"2401.00001"}
 
 
 def test_invalid_bundle_is_rejected(isolated_settings):
