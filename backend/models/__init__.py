@@ -1,6 +1,7 @@
 from .schemas import (
     PaperCreate,
     PaperOpenRequest,
+    PaperOpenRequestAck,
     PaperOpenRequestState,
     PaperMeta,
     PaperListItem,
@@ -37,6 +38,7 @@ from .schemas import (
 __all__ = [
     "PaperCreate",
     "PaperOpenRequest",
+    "PaperOpenRequestAck",
     "PaperOpenRequestState",
     "PaperMeta",
     "PaperListItem",
@@ -69,4 +71,3 @@ __all__ = [
     "EvolutionChatRequest",
     "SaveEditPlanRequest",
 ]
-

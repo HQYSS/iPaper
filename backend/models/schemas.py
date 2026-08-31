@@ -20,11 +20,19 @@ class PaperCreate(BaseModel):
 class PaperOpenRequest(BaseModel):
     """请求前端打开指定论文"""
     paper_id: str = Field(..., description="要打开的论文 ID")
+    target: Literal["electron", "web"] = Field("electron", description="目标客户端")
+
+
+class PaperOpenRequestAck(BaseModel):
+    """确认前端已打开指定论文"""
+    request_id: str = Field(..., description="已处理的打开请求 ID")
 
 
 class PaperOpenRequestState(BaseModel):
     """待打开论文状态"""
     paper_id: Optional[str] = None
+    request_id: Optional[str] = None
+    target: Optional[Literal["electron", "web"]] = None
 
 
 class PaperMeta(BaseModel):
@@ -45,6 +53,14 @@ class PaperMeta(BaseModel):
     # 默认 ready 保证旧 meta.json 无需迁移
     download_status: str = "ready"
     download_error: Optional[str] = None
+    download_bytes: int = 0
+    download_total_bytes: Optional[int] = None
+    download_progress: Optional[float] = None
+    cloud_download_status: Optional[str] = None
+    cloud_download_error: Optional[str] = None
+    cloud_download_bytes: int = 0
+    cloud_download_total_bytes: Optional[int] = None
+    cloud_download_progress: Optional[float] = None
 
 
 class PaperListItem(BaseModel):
@@ -59,6 +75,15 @@ class PaperListItem(BaseModel):
     download_time: datetime
     download_status: str = "ready"
     download_error: Optional[str] = None
+    pdf_size_bytes: Optional[int] = None
+    download_bytes: int = 0
+    download_total_bytes: Optional[int] = None
+    download_progress: Optional[float] = None
+    cloud_download_status: Optional[str] = None
+    cloud_download_error: Optional[str] = None
+    cloud_download_bytes: int = 0
+    cloud_download_total_bytes: Optional[int] = None
+    cloud_download_progress: Optional[float] = None
 
 
 class PaperDetail(PaperMeta):
@@ -201,9 +226,10 @@ class LLMExecutionConfig(BaseModel):
     @model_validator(mode="after")
     def validate_model_route(self):
         allowed_routes = {
-            ("llm_center_gpt_responses", "gpt-5.5"): {"", "64"},
+            ("llm_center_gpt_responses", "gpt-5.6-sol"): {"97", "106"},
             ("llm_center_anthropic", "claude-opus-4-8"): {"52"},
             ("llm_center_anthropic", "claude-opus-5"): {"88"},
+            ("llm_center_anthropic", "claude-fable-5"): {"88"},
         }
         allowed_provider_ids = allowed_routes.get((self.provider, self.model))
         if allowed_provider_ids is None or self.provider_id not in allowed_provider_ids:
@@ -251,9 +277,6 @@ class LLMConfigUpdate(BaseModel):
     execution_mode: Optional[Literal["cloud", "local"]] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
-    cursor_command: Optional[str] = None
-    cursor_model: Optional[str] = None
-    cursor_timeout_seconds: Optional[int] = None
 
 
 # ============ 用户画像相关模型 ============
@@ -276,4 +299,3 @@ class SaveEditPlanRequest(BaseModel):
     """保存编辑计划请求"""
     edit_plan: dict = Field(..., description="编辑计划 JSON")
     paper_title: str = Field("", description="来源论文标题")
-

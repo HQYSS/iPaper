@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Eye, EyeOff, Settings, Loader2, CheckCircle, ExternalLink, Sun, Moon, Monitor, Globe, Shield, User, Trash2, Copy, LogOut, Key, ChevronDown, ChevronUp } from 'lucide-react'
-import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listCursorModels, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type Config, type CursorModelOption, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
+import { getConfig, updateLLMConfig, updateSyncConfig, updateHjfyCookie, listUsers, deleteUser, getInviteCode, updateInviteCode, changePassword, listSyncDevices, createSyncDevice, revokeSyncDevice, type AuthUser, type Config, type SyncDevice, type SyncDeviceTokenResponse } from '../../services/api'
 import { useAuthStore } from '../../stores/authStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
@@ -19,16 +19,29 @@ interface CloudModelOption {
   maxTokens?: number
   label: string
   description: string
+  pdfSupport: string
 }
 
 const CLOUD_MODEL_OPTIONS: CloudModelOption[] = [
   {
-    id: 'gpt-5.5',
+    id: 'gpt-5.6-sol-97',
     provider: 'llm_center_gpt_responses',
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
+    providerId: '97',
     maxTokens: 32768,
-    label: 'GPT-5.5（默认）',
-    description: 'Responses API，支持大 PDF、reasoning 和 previous_response_id 多轮续接',
+    label: 'GPT-5.6-Sol（多轮）',
+    description: '强化推理与代码分析；部分 PDF 读取可能较慢',
+    pdfSupport: '支持 previous；PDF 建议不超过 14MB',
+  },
+  {
+    id: 'gpt-5.6-sol-106',
+    provider: 'llm_center_gpt_responses',
+    model: 'gpt-5.6-sol',
+    providerId: '106',
+    maxTokens: 32768,
+    label: 'GPT-5.6-Sol（大 PDF）',
+    description: '完整历史模式，适合直接上传大文件',
+    pdfSupport: '不支持 previous；PDF 保守上限 35MiB',
   },
   {
     id: 'claude-opus-4-8',
@@ -37,7 +50,8 @@ const CLOUD_MODEL_OPTIONS: CloudModelOption[] = [
     providerId: '52',
     maxTokens: 32768,
     label: 'Claude Opus 4.8',
-    description: 'Anthropic Messages API，保留 thinking signature，可手动切回',
+    description: '长文理解稳定，适合细致论文分析',
+    pdfSupport: 'PDF 直传至 14MB；更大文件转为页面图',
   },
   {
     id: 'claude-opus-5',
@@ -46,23 +60,29 @@ const CLOUD_MODEL_OPTIONS: CloudModelOption[] = [
     providerId: '88',
     maxTokens: 32768,
     label: 'Claude Opus 5',
-    description: 'Anthropic Messages API，支持 signed thinking，PDF 直传阈值约 16MB',
+    description: '综合分析能力更强，适合复杂论文与长上下文',
+    pdfSupport: 'PDF 直传至 22MB；更大文件转为页面图',
   },
   {
-    id: 'cursor-cli',
-    provider: 'cursor_cli',
-    label: 'Cursor CLI',
-    description: '使用本机 Cursor Agent',
+    id: 'claude-fable-5',
+    provider: 'llm_center_anthropic',
+    model: 'claude-fable-5',
+    providerId: '88',
+    maxTokens: 32768,
+    label: 'Claude Fable 5',
+    description: '支持 signed thinking，多轮状态可原样续接',
+    pdfSupport: 'PDF 直传至 22MiB；更大文件转为页面图',
   },
 ]
 
-function isCloudModelOptionActive(option: CloudModelOption, provider: LLMProvider, model: string): boolean {
+function isCloudModelOptionActive(option: CloudModelOption, provider: LLMProvider, model: string, providerId = ''): boolean {
   if (option.provider !== provider) return false
-  return option.model ? option.model === model : provider === 'cursor_cli'
+  if (option.providerId && option.providerId !== providerId) return false
+  return option.model ? option.model === model : false
 }
 
-function findCloudModelOption(provider: LLMProvider, model: string): CloudModelOption | undefined {
-  return CLOUD_MODEL_OPTIONS.find((option) => isCloudModelOptionActive(option, provider, model))
+function findCloudModelOption(provider: LLMProvider, model: string, providerId = ''): CloudModelOption | undefined {
+  return CLOUD_MODEL_OPTIONS.find((option) => isCloudModelOptionActive(option, provider, model, providerId))
     || CLOUD_MODEL_OPTIONS.find((option) => option.provider === provider)
 }
 
@@ -86,15 +106,11 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('cloud')
   const [maxTokens, setMaxTokens] = useState(32768)
   const [isConfigured, setIsConfigured] = useState(false)
-  const [cursorCommand, setCursorCommand] = useState('cursor')
-  const [cursorModel, setCursorModel] = useState('')
-  const [cursorModels, setCursorModels] = useState<CursorModelOption[]>([])
-  const [cursorModelsLoading, setCursorModelsLoading] = useState(false)
-  const [cursorCliAvailable, setCursorCliAvailable] = useState(false)
   const [syncRole, setSyncRole] = useState<'server' | 'client' | 'off'>('server')
   const [syncUrl, setSyncUrl] = useState('')
   const [syncToken, setSyncToken] = useState('')
   const [syncConfigured, setSyncConfigured] = useState(false)
+  const [syncBoundUserId, setSyncBoundUserId] = useState<string | null>(null)
   const [hjfyCookie, setHjfyCookie] = useState('')
   const [hjfyConfigured, setHjfyConfigured] = useState(false)
   const [hjfySaving, setHjfySaving] = useState(false)
@@ -113,23 +129,12 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
       setExecutionMode(config.llm.execution_mode || 'cloud')
       setMaxTokens(config.llm.max_tokens || 32768)
       setIsConfigured(config.llm.api_key_configured)
-      setCursorCommand(config.llm.cursor_command || 'cursor')
-      setCursorModel(config.llm.cursor_model || '')
-      setCursorCliAvailable(config.llm.cursor_cli_available)
-      if (config.llm.cursor_cli_available) {
-        setCursorModelsLoading(true)
-        listCursorModels()
-          .then(setCursorModels)
-          .catch(() => setCursorModels([]))
-          .finally(() => setCursorModelsLoading(false))
-      } else {
-        setCursorModels([])
-      }
       setApiKey('')
       setSyncRole(config.sync.role)
       setSyncUrl(config.sync.url || '')
       setSyncToken('')
       setSyncConfigured(config.sync.token_configured)
+      setSyncBoundUserId(config.sync.bound_user_id)
       setHjfyConfigured(config.hjfy_cookie_configured)
       setHjfyCookie('')
     } catch {
@@ -180,14 +185,12 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
   const handleSave = async () => {
     const trimmedApiKey = apiKey.trim()
     const trimmedSyncToken = syncToken.trim()
-    const trimmedCursorCommand = cursorCommand.trim() || 'cursor'
-    const trimmedCursorModel = cursorModel.trim()
     const syncChanged = syncRole === 'client' && Boolean(trimmedSyncToken)
 
     setIsSaving(true)
     setSaveSuccess(false)
     try {
-      const selectedOption = findCloudModelOption(llmProvider, model)
+      const selectedOption = findCloudModelOption(llmProvider, model, providerId)
       await updateLLMConfig({
         provider: selectedOption?.provider ?? llmProvider,
         ...(selectedOption?.model ? { model: selectedOption.model } : {}),
@@ -195,8 +198,6 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
         ...(selectedOption?.maxTokens ? { max_tokens: selectedOption.maxTokens } : { max_tokens: maxTokens }),
         execution_mode: executionMode,
         ...(trimmedApiKey ? { api_key: trimmedApiKey } : {}),
-        cursor_command: trimmedCursorCommand,
-        cursor_model: trimmedCursorModel,
       })
       if (trimmedApiKey) {
         setIsConfigured(true)
@@ -206,7 +207,8 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
         await updateSyncConfig({
           ...(trimmedSyncToken ? { sync_token: trimmedSyncToken } : {}),
         })
-        setSyncConfigured(Boolean(trimmedSyncToken))
+      setSyncConfigured(Boolean(trimmedSyncToken))
+        setSyncBoundUserId(null)
         setSyncToken('')
       }
       await loadConfig()
@@ -226,6 +228,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
     try {
       await updateSyncConfig({ clear_sync_token: true })
       setSyncConfigured(false)
+      setSyncBoundUserId(null)
       setSyncToken('')
       addToast('success', '同步凭证已清除')
     } catch {
@@ -377,7 +380,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     </button>
                   </div>
                   <a
-                    href="https://llm-center.ali.modelbest.cn/"
+                    href="https://llm-center.modelbest.co/"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 mt-2 text-xs text-indigo-500 hover:text-indigo-600 transition-colors"
@@ -423,7 +426,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                   </label>
                   <div className="space-y-2">
                     {CLOUD_MODEL_OPTIONS.map((option) => {
-                      const isActive = isCloudModelOptionActive(option, llmProvider, model)
+                      const isActive = isCloudModelOptionActive(option, llmProvider, model, providerId)
                       return (
                       <button
                         key={option.id}
@@ -446,6 +449,7 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                           {isActive && <CheckCircle className="w-4 h-4" />}
                         </div>
                         <p className="mt-1 text-xs opacity-75 leading-relaxed">{option.description}</p>
+                        <p className="mt-1 text-[11px] opacity-70 leading-relaxed">{option.pdfSupport}</p>
                       </button>
                     )})}
                   </div>
@@ -453,61 +457,6 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                     <span>当前：</span>
                     <span className="font-mono">{model}</span>
                     {providerId && <span className="font-mono">providerId={providerId}</span>}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                    Cursor CLI 高级配置
-                  </label>
-                  <div className="space-y-2">
-                    <div className={cn(
-                      'flex items-center gap-2 px-3 py-2 rounded-lg text-xs',
-                      cursorCliAvailable
-                        ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400'
-                        : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'
-                    )}>
-                      <div className={cn('w-2 h-2 rounded-full', cursorCliAvailable ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse')} />
-                      {cursorCliAvailable ? '已检测到 Cursor CLI' : '未检测到 Cursor CLI'}
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
-                        Cursor CLI 命令
-                      </label>
-                      <input
-                        type="text"
-                        value={cursorCommand}
-                        onChange={(e) => setCursorCommand(e.target.value)}
-                        placeholder="cursor"
-                        className="w-full px-4 py-3 text-sm font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all placeholder:text-slate-400"
-                      />
-                      <p className="mt-1 text-xs text-slate-400 leading-relaxed">
-                        通常保持 <span className="font-mono">cursor</span>。iPaper 会自动执行 <span className="font-mono">cursor agent -p ...</span>；只有命令找不到时才需要填写完整路径。
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
-                        Cursor 模型
-                      </label>
-                      <select
-                        value={cursorModel}
-                        onChange={(e) => setCursorModel(e.target.value)}
-                        disabled={!cursorCliAvailable || cursorModelsLoading}
-                        className="w-full px-4 py-3 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-all disabled:opacity-60"
-                      >
-                        <option value="">
-                          {cursorModelsLoading ? '正在加载模型列表...' : '使用 Cursor 默认模型'}
-                        </option>
-                        {cursorModels.map((option) => (
-                          <option key={option.id} value={option.id}>
-                            {option.label} ({option.id}){option.default ? ' - 默认' : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      主切换入口在右侧讲解面板标题栏；这里仅配置命令路径和可选模型。留空会使用公司 Cursor 当前默认模型。
-                    </p>
                   </div>
                 </div>
 
@@ -527,6 +476,11 @@ export function SettingsModal({ open, onClose, onConfigured, themeMode, onThemeM
                       <span className="text-slate-500 dark:text-slate-400">{`同步角色：${syncRoleLabel}`}</span>
                       <code className="text-xs font-mono text-slate-700 dark:text-slate-300">{syncUrl}</code>
                     </div>
+                    {syncRole === 'client' && syncBoundUserId && (
+                      <div className="px-4 py-3 text-xs rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-300">
+                        当前同步账号：<code className="font-mono">{syncBoundUserId}</code>。本地只会同步这个账号对应的数据目录。
+                      </div>
+                    )}
                     {env.isElectron && syncRole === 'client' ? (
                       <>
                         <input

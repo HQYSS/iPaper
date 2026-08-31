@@ -13,6 +13,7 @@ test('chat SSE 的部分回复和错误都会展示在 UI', async ({ page }) => 
   })
 
   await page.goto('/')
+  await page.getByRole('button', { name: /论文库/ }).click()
   await page.getByText('Deterministic E2E Paper', { exact: true }).click()
 
   const input = page.getByPlaceholder('输入问题...')

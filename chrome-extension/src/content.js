@@ -70,6 +70,14 @@ function getPageMetadata() {
   }
 }
 
+if (!document.documentElement.dataset.ipaperMetadataListener) {
+  document.documentElement.dataset.ipaperMetadataListener = 'true'
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== 'ipaper:get-page-metadata') return
+    sendResponse(getPageMetadata())
+  })
+}
+
 async function handleImport(button) {
   setButtonBusy(button, true)
   setStatus('正在连接本地 iPaper...', 'muted')

@@ -81,3 +81,20 @@ async def test_cloud_task_enforces_per_user_concurrency_limit():
 
     await service.stop("cloud-user", first.task_id)
     await service.stop("cloud-user", second.task_id)
+
+
+@pytest.mark.asyncio
+async def test_cloud_subscription_sends_keepalive_during_long_reasoning_gap():
+    service = CloudGenerationService()
+    service.SUBSCRIBER_KEEPALIVE_SECONDS = 0.01
+
+    async def slow_stream(reasoning, blocks, metadata):
+        await asyncio.sleep(0.03)
+        yield "answer"
+
+    task = service.start("cloud-user", "4" * 32, slow_stream)
+    events = [event async for event in service.subscribe(task)]
+
+    assert any(event["type"] == "ping" for event in events)
+    assert any(event == {"type": "chunk", "content": "answer"} for event in events)
+    assert events[-1]["type"] == "done"

@@ -1,17 +1,36 @@
 import io
+import hashlib
 import json
 import zipfile
 
+import httpx
 import pytest
+from jose import jwt
 
 from services import sync_service as sync_module
 from services.storage_service import StorageService
 from services.sync_service import SyncService
+from services.sync_service import sync_identity_from_token
 
 
 def _write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_sync_identity_uses_token_subject(isolated_settings, monkeypatch):
+    token = jwt.encode({"sub": "muxi-user", "typ": "sync_device"}, "test-secret", algorithm="HS256")
+    monkeypatch.setattr(isolated_settings, "sync_token", token)
+
+    assert sync_identity_from_token(token) == "muxi-user"
+    assert SyncService.local_sync_user_id() == "muxi-user"
+
+
+def test_sync_identity_rejects_malformed_token(isolated_settings, monkeypatch):
+    monkeypatch.setattr(isolated_settings, "sync_token", "not-a-jwt")
+
+    assert sync_identity_from_token("not-a-jwt") == ""
+    assert SyncService.local_sync_user_id() == sync_module.LOCAL_SYNC_USER_ID
 
 
 def test_manifest_includes_only_ready_papers_and_document_timestamps(isolated_settings):
@@ -56,7 +75,11 @@ def test_manifest_includes_only_ready_papers_and_document_timestamps(isolated_se
     assert manifest["papers"][0]["chats_updated_at"] == "2026-01-03T03:04:05"
     assert manifest["papers"][0]["updated_at"] == "2026-01-03T03:04:05"
     assert manifest["papers"][0]["pdf_available"] is True
+    assert manifest["papers"][0]["pdf_download_status"] == "ready"
+    assert manifest["papers"][0]["pdf_download_progress"] == 1.0
+    assert manifest["papers"][0]["pdf_download_bytes"] == len(b"%PDF-test")
     assert manifest["papers"][1]["pdf_available"] is False
+    assert manifest["papers"][1]["pdf_download_status"] == "downloading"
     assert manifest["preferences_updated_at"] == "2026-01-05T03:04:05"
     assert manifest["profile_updated_at"] == "2026-01-06T03:04:05"
 
@@ -87,6 +110,16 @@ def test_paper_bundle_round_trip_uses_only_local_files(isolated_settings):
             "meta.json",
             "notes/note.txt",
         }
+        assert archive.getinfo(".sync-metadata-manifest.json").date_time == (
+            1980,
+            1,
+            1,
+            0,
+            0,
+            0,
+        )
+
+    assert service.create_paper_metadata_bundle(user_id, "2401.00001") == bundle
 
     restored_dir = isolated_settings.get_user_papers_dir(user_id) / "2401.00002"
     _write_json(
@@ -324,6 +357,177 @@ def test_idempotency_record_keeps_payload_digest(isolated_settings):
 
     assert record is not None
     assert record["payload_digest"] == "digest-a"
+
+
+def test_timestamp_comparison_normalizes_offsets(isolated_settings):
+    service = SyncService()
+
+    assert service._compare_timestamps(
+        "2026-08-17T16:01:01+08:00",
+        "2026-08-17T08:01:01Z",
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_paper_metadata_push_retries_once_with_fresh_revision(
+    isolated_settings,
+):
+    service = SyncService()
+    user_id = "conflict-user"
+    paper_id = "2401.00001"
+    paper_dir = isolated_settings.get_user_papers_dir(user_id) / paper_id
+    paper_dir.mkdir()
+    _write_json(
+        paper_dir / "meta.json",
+        {"arxiv_id": paper_id, "updated_at": "2026-01-03T00:00:00Z"},
+    )
+
+    class ConflictThenSuccessClient:
+        def __init__(self):
+            self.put_headers = []
+
+        async def put(self, url, headers, files=None, **kwargs):
+            self.put_headers.append(headers)
+            status = 409 if len(self.put_headers) == 1 else 200
+            return httpx.Response(status, request=httpx.Request("PUT", url))
+
+        async def get(self, url, headers, **kwargs):
+            assert url.endswith("/manifest")
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={
+                    "papers": [
+                        {
+                            "arxiv_id": paper_id,
+                            "paper_updated_at": "2026-01-02T00:00:00Z",
+                        }
+                    ]
+                },
+            )
+
+    client = ConflictThenSuccessClient()
+    await service._sync_papers(
+        client,
+        "https://sync.example/api/sync",
+        "token",
+        user_id,
+        {
+            "papers": [
+                {
+                    "arxiv_id": paper_id,
+                    "paper_updated_at": "2026-01-03T00:00:00Z",
+                    "pdf_available": False,
+                }
+            ],
+            "deleted_papers": [],
+        },
+        {
+            "papers": [
+                {
+                    "arxiv_id": paper_id,
+                    "paper_updated_at": "2026-01-01T00:00:00Z",
+                    "pdf_available": False,
+                }
+            ],
+            "deleted_papers": [],
+        },
+        "test-run",
+    )
+
+    assert [headers["X-Base-Revision"] for headers in client.put_headers] == [
+        "2026-01-01T00:00:00Z",
+        "2026-01-02T00:00:00Z",
+    ]
+    bundle = service.create_paper_metadata_bundle(user_id, paper_id)
+    assert bundle is not None
+    assert hashlib.sha256(bundle).hexdigest() in client.put_headers[0][
+        "Idempotency-Key"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_newer_remote_placeholder_does_not_overwrite_complete_local_metadata(
+    isolated_settings,
+):
+    service = SyncService()
+    user_id = "metadata-race-user"
+    paper_id = "2604.15483"
+    paper_dir = isolated_settings.get_user_papers_dir(user_id) / paper_id
+    paper_dir.mkdir(parents=True)
+    _write_json(
+        paper_dir / "meta.json",
+        {
+            "arxiv_id": paper_id,
+            "title": "A real title",
+            "summary": "A real summary",
+            "authors": ["Author"],
+            "download_status": "ready",
+            "updated_at": "2026-08-20T01:16:52Z",
+        },
+    )
+
+    remote_buf = io.BytesIO()
+    with zipfile.ZipFile(remote_buf, "w") as archive:
+        archive.writestr(
+            "meta.json",
+            json.dumps(
+                {
+                    "arxiv_id": paper_id,
+                    "title": f"arXiv {paper_id}",
+                    "summary": "arXiv 元数据待补齐；PDF 下载完成后即可先阅读。",
+                    "authors": [],
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    class Client:
+        def __init__(self):
+            self.put_count = 0
+
+        async def get(self, url, headers, **kwargs):
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                content=remote_buf.getvalue(),
+            )
+
+        async def put(self, url, headers, files=None, **kwargs):
+            self.put_count += 1
+            return httpx.Response(200, request=httpx.Request("PUT", url))
+
+    client = Client()
+    await service._sync_papers(
+        client,
+        "https://sync.example/api/sync",
+        "token",
+        user_id,
+        {
+            "papers": [
+                {
+                    "arxiv_id": paper_id,
+                    "paper_updated_at": "2026-08-20T01:16:52Z",
+                    "pdf_available": True,
+                }
+            ],
+            "deleted_papers": [],
+        },
+        {
+            "papers": [
+                {
+                    "arxiv_id": paper_id,
+                    "paper_updated_at": "2026-08-20T01:16:55Z",
+                    "pdf_available": True,
+                }
+            ],
+            "deleted_papers": [],
+        },
+        "test-run",
+    )
+
+    assert client.put_count == 1
+    assert json.loads((paper_dir / "meta.json").read_text())["title"] == "A real title"
 
 
 @pytest.mark.asyncio

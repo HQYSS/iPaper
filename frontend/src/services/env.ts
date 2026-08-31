@@ -16,6 +16,7 @@ declare global {
       platform: string
       versions: Record<string, string>
       isElectron: boolean
+      onAppActivated?: (callback: () => void) => () => void
     }
   }
 }
@@ -59,15 +60,13 @@ export function detectIsStandalonePwa(): boolean {
 export const env = {
   get isElectron() {
     return !!window.electronAPI?.isElectron
+      || new URLSearchParams(window.location.search).get('electron') === '1'
   },
 
   get isWeb() {
-    return !window.electronAPI?.isElectron
+    return !this.isElectron
   },
 
-  get isCursor() {
-    return new URLSearchParams(window.location.search).has('cursor')
-  },
 
   get isOnline() {
     return navigator.onLine

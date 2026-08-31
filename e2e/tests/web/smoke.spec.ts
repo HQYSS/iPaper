@@ -14,6 +14,6 @@ test('Web 首页使用本地 mock 完成确定性启动', async ({ page }) => {
   await page.goto('/')
 
   await expect(page.getByRole('heading', { name: '欢迎使用 iPaper' })).toBeVisible()
-  await expect(page.getByText('从左侧添加论文开始阅读')).toBeVisible()
+  await expect(page.getByText('打开论文库添加或选择论文')).toBeVisible()
   expect(unexpectedExternalRequests).toEqual([])
 })

@@ -11,14 +11,13 @@ from typing import Optional
 from config import settings
 from models import LLMConfigUpdate
 from middleware.auth import get_current_user
-from services.cursor_cli_service import cursor_cli_service
-from services.sync_service import sync_service
+from services.sync_service import sync_identity_from_token, sync_service
 
 router = APIRouter()
 
-VALID_LLM_PROVIDERS = {"llm_center_gpt_responses", "llm_center_anthropic", "cursor_cli"}
+VALID_LLM_PROVIDERS = {"llm_center_gpt_responses", "llm_center_anthropic"}
 PROVIDER_DEFAULTS = {
-    "llm_center_gpt_responses": {"model": "gpt-5.5", "provider_id": "", "max_tokens": 32768},
+    "llm_center_gpt_responses": {"model": "gpt-5.6-sol", "provider_id": "97", "max_tokens": 32768},
     "llm_center_anthropic": {"model": "claude-opus-4-8", "provider_id": "52", "max_tokens": 32768},
 }
 
@@ -37,10 +36,6 @@ async def get_config(user: dict = Depends(get_current_user)):
             "execution_mode": settings.llm.execution_mode,
             "temperature": settings.llm.temperature,
             "max_tokens": settings.llm.max_tokens,
-            "cursor_command": settings.llm.cursor_command,
-            "cursor_model": settings.llm.cursor_model,
-            "cursor_timeout_seconds": settings.llm.cursor_timeout_seconds,
-            "cursor_cli_available": cursor_cli_service.is_configured(),
         },
         "data_dir": str(settings.data_dir),
         "hjfy_cookie_configured": bool(user_cfg.get("hjfy_cookie", "") or settings.hjfy_cookie),
@@ -49,6 +44,7 @@ async def get_config(user: dict = Depends(get_current_user)):
             "url": settings.sync_url,
             "verify_ssl": settings.sync_verify_ssl,
             "token_configured": bool(settings.sync_token),
+            "bound_user_id": sync_identity_from_token(settings.sync_token.strip()) or None,
         },
     }
 
@@ -77,27 +73,9 @@ async def update_llm_config(update: LLMConfigUpdate, user: dict = Depends(get_cu
         settings.llm.temperature = update.temperature
     if update.max_tokens is not None:
         settings.llm.max_tokens = update.max_tokens
-    if update.cursor_command is not None:
-        settings.llm.cursor_command = update.cursor_command.strip() or "cursor"
-    if update.cursor_model is not None:
-        settings.llm.cursor_model = update.cursor_model.strip()
-    if update.cursor_timeout_seconds is not None:
-        if update.cursor_timeout_seconds < 30:
-            raise HTTPException(status_code=400, detail="Cursor CLI 超时时间不能小于 30 秒")
-        settings.llm.cursor_timeout_seconds = update.cursor_timeout_seconds
-
     settings.save_config()
     return {"message": "配置已更新"}
 
-
-@router.get("/llm/cursor-models")
-async def list_cursor_models(user: dict = Depends(get_current_user)):
-    if not cursor_cli_service.is_configured():
-        raise HTTPException(status_code=400, detail="Cursor CLI 不可用，请确认已安装 cursor 命令")
-    try:
-        return {"models": await cursor_cli_service.list_models()}
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 class HjfyCookieUpdate(BaseModel):
@@ -141,7 +119,10 @@ async def update_sync_config(update: SyncConfigUpdate, user: dict = Depends(get_
     if update.clear_sync_token:
         settings.sync_token = ""
     elif update.sync_token is not None:
-        settings.sync_token = update.sync_token.strip()
+        candidate = update.sync_token.strip()
+        if candidate and not sync_identity_from_token(candidate):
+            raise HTTPException(status_code=400, detail="同步凭证无效，无法识别云端账号")
+        settings.sync_token = candidate
     settings.save_config()
     sync_service.request_sync("sync-config-updated")
     return {

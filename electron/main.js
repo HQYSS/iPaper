@@ -117,11 +117,13 @@ function createWindow() {
   })
 
   if (isDev) {
-    console.log('[window] loading dev URL http://localhost:5173')
-    mainWindow.loadURL('http://localhost:5173')
+    console.log('[window] loading dev URL http://localhost:5173?electron=1')
+    mainWindow.loadURL('http://localhost:5173?electron=1')
   } else {
     console.log('[window] loading dist index.html')
-    mainWindow.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'))
+    mainWindow.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'), {
+      query: { electron: '1' },
+    })
   }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
@@ -204,6 +206,7 @@ app.on('second-instance', () => {
   }
   mainWindow.show()
   mainWindow.focus()
+  mainWindow.webContents.send('ipaper:activated')
   if (process.platform === 'darwin') {
     app.focus({ steal: true })
   }
@@ -220,4 +223,3 @@ app.on('before-quit', () => {
     backendProcess.kill()
   }
 })
-

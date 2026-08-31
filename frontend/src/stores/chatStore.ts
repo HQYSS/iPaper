@@ -105,6 +105,7 @@ interface ChatStore {
 const AUTO_EXPLAIN_MESSAGE = '请为我详细讲解这篇论文。'
 const initialSessionBootstrapPromises = new Map<string, Promise<api.SessionMeta>>()
 const cloudGenerationPollTimers = new Map<string, number>()
+let singlePaperLoadGeneration = 0
 
 function updateCloudGenerationPoll(
   key: string,
@@ -238,6 +239,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   crossPaperIds: [],
 
   loadSessions: async (paperId: string) => {
+    const loadGeneration = ++singlePaperLoadGeneration
     const store = get()
     if (
       !store.isCrossPaperMode &&
@@ -246,6 +248,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       store.currentPaperId !== paperId
     ) {
       await store.saveDraft(store.currentPaperId, store.currentSessionId, store.draftInput, store.quotes)
+      if (loadGeneration !== singlePaperLoadGeneration) return
     }
 
     if (store.currentPaperId !== paperId) {
@@ -262,15 +265,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     try {
       const sessionList = await listSessionsOffline(paperId)
+      if (loadGeneration !== singlePaperLoadGeneration || get().currentPaperId !== paperId) return
       const cleanedSessionState = await removeEmptyAutoSessions(
         paperId,
         sessionList.sessions,
         sessionList.last_active_session_id
       )
+      if (loadGeneration !== singlePaperLoadGeneration || get().currentPaperId !== paperId) return
       const sessions = cleanedSessionState.sessions
 
       if (sessions.length === 0) {
         const newSession = await ensureInitialSession(paperId)
+        if (loadGeneration !== singlePaperLoadGeneration || get().currentPaperId !== paperId) return
         set({ sessions: [newSession], currentSessionId: newSession.id })
         setTimeout(() => {
           const store = get()
@@ -288,12 +294,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       const activeId = cleanedSessionState.lastActiveSessionId || sessions[0].id
+      if (loadGeneration !== singlePaperLoadGeneration || get().currentPaperId !== paperId) return
       set({ sessions, currentSessionId: activeId, isLoading: true })
 
-      const store = get()
-      store.loadHistory(paperId, activeId)
+      void get().loadHistory(paperId, activeId)
     } catch (error) {
-      set({ error: (error as Error).message })
+      if (loadGeneration === singlePaperLoadGeneration && get().currentPaperId === paperId) {
+        set({ error: (error as Error).message })
+      }
     }
   },
 
@@ -349,9 +357,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   loadHistory: async (paperId: string, sessionId: string) => {
+    if (get().currentPaperId !== paperId || get().currentSessionId !== sessionId) return
     set({ isLoading: true, error: null })
     try {
       const history = await getChatHistoryOffline(paperId, sessionId)
+      if (get().currentPaperId !== paperId || get().currentSessionId !== sessionId) return
+      if (get().streamingByConversation[getConversationSelectionKey(paperId, sessionId, false)]) return
       const selectionKey = getConversationSelectionKey(paperId, sessionId, false)
       const { messages: sanitizedMessages, removedTrailingEmptyAssistant } = sanitizeLoadedMessages(history.messages)
       if (removedTrailingEmptyAssistant) {
@@ -380,7 +391,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
       })
     } catch (error) {
-      set({ error: (error as Error).message, isLoading: false })
+      if (get().currentPaperId === paperId && get().currentSessionId === sessionId) {
+        set({ error: (error as Error).message, isLoading: false })
+      }
     }
   },
 
@@ -759,6 +772,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     try {
       const history = await getCrossPaperChatHistoryOffline(sessionId)
       const selectionKey = getConversationSelectionKey(undefined, sessionId, true)
+      if (get().streamingByConversation[selectionKey]) return
       const { messages: sanitizedMessages, removedTrailingEmptyAssistant } = sanitizeLoadedMessages(history.messages)
       if (removedTrailingEmptyAssistant) {
         void updateCrossPaperChatHistoryOffline(sessionId, sanitizedMessages, history.forks)

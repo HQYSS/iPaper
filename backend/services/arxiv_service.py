@@ -11,12 +11,13 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse, urlunparse
 
 import arxiv
@@ -57,6 +58,7 @@ class ArxivService:
         # key: f"{user_id}:{arxiv_id}" → 正在跑的后台下载 task
         self._download_tasks: Dict[str, asyncio.Task] = {}
         self._metadata_tasks: Dict[str, asyncio.Task] = {}
+        self._download_progress: Dict[str, dict] = {}
         self._metadata_lock = asyncio.Lock()
         self._metadata_last_request_at: float = 0.0
 
@@ -227,7 +229,7 @@ class ArxivService:
             # failed → 重新触发
             meta.download_status = "downloading"
             meta.download_error = None
-            self._save_meta(meta_file, meta)
+            self._save_meta(meta_file, meta, touch_revision=False)
             self._ensure_download_task(user_id, meta)
             return True, "重新下载中", meta
 
@@ -275,7 +277,7 @@ class ArxivService:
 
             meta.download_status = "downloading"
             meta.download_error = None
-            self._save_meta(meta_file, meta)
+            self._save_meta(meta_file, meta, touch_revision=False)
             self._ensure_download_task(user_id, meta)
             return True, "重新下载中", meta
 
@@ -344,12 +346,12 @@ class ArxivService:
             if meta.download_status != "ready" or meta.download_error:
                 meta.download_status = "ready"
                 meta.download_error = None
-                self._save_meta(meta_file, meta)
+                self._save_meta(meta_file, meta, touch_revision=False)
                 self._update_index(user_id, meta)
             return
         meta.download_status = "downloading"
         meta.download_error = None
-        self._save_meta(meta_file, meta)
+        self._save_meta(meta_file, meta, touch_revision=False)
         self._update_index(user_id, meta)
         if settings.is_sync_server and getattr(meta, "source_type", "arxiv") == "pdf_url":
             # Electron will upload URL/private PDFs through the dedicated asset endpoint.
@@ -436,6 +438,35 @@ class ArxivService:
             logger.info("recovered %d interrupted download task(s)", recovered)
         return recovered
 
+    def recover_placeholder_metadata(self) -> int:
+        """Resume arXiv metadata lookups that exhausted retries before restart."""
+        recovered = 0
+        users_root = settings.data_dir / "data"
+        if not users_root.exists():
+            return 0
+
+        for user_dir in users_root.iterdir():
+            if not user_dir.is_dir():
+                continue
+            papers_dir = user_dir / "papers"
+            if not papers_dir.exists():
+                continue
+            for meta_file in papers_dir.glob("*/meta.json"):
+                try:
+                    meta = self._load_meta(meta_file)
+                    if (
+                        getattr(meta, "source_type", "arxiv") == "arxiv"
+                        and self._is_placeholder_metadata(meta)
+                    ):
+                        self._ensure_metadata_task(user_dir.name, meta.arxiv_id)
+                        recovered += 1
+                except Exception:
+                    logger.exception("failed to recover metadata from %s", meta_file)
+
+        if recovered:
+            logger.info("recovered %d placeholder metadata task(s)", recovered)
+        return recovered
+
     def _repair_download_state(self, user_id: str, meta: PaperMeta) -> PaperMeta:
         """Align persisted download_status with files and in-memory tasks."""
         paper_dir = self.get_paper_dir(user_id, meta.arxiv_id)
@@ -449,20 +480,20 @@ class ArxivService:
                 if status != "ready" or meta.download_error:
                     meta.download_status = "ready"
                     meta.download_error = None
-                    self._save_meta(meta_file, meta)
+                    self._save_meta(meta_file, meta, touch_revision=False)
                     self._update_index(user_id, meta)
                 return meta
 
             if status != "failed":
                 meta.download_status = "failed"
                 meta.download_error = "本地 PDF 文件损坏，请重新下载"
-                self._save_meta(meta_file, meta)
+                self._save_meta(meta_file, meta, touch_revision=False)
             return meta
 
         if status == "ready":
             meta.download_status = "failed"
             meta.download_error = "本地 PDF 文件缺失，请重新下载"
-            self._save_meta(meta_file, meta)
+            self._save_meta(meta_file, meta, touch_revision=False)
             return meta
 
         if status == "downloading":
@@ -495,7 +526,8 @@ class ArxivService:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
         meta_file = paper_dir / "meta.json"
         try:
-            for attempt in range(METADATA_REFRESH_MAX_RETRIES):
+            attempt = 0
+            while True:
                 try:
                     paper = await self._fetch_metadata_rate_limited(arxiv_id)
                     if paper is None:
@@ -521,13 +553,14 @@ class ArxivService:
                     return
                 except arxiv.HTTPError as e:
                     status = getattr(e, "status", None)
-                    if status == 429 and attempt < METADATA_REFRESH_MAX_RETRIES - 1:
+                    if status == 429:
                         retry_in = METADATA_RETRY_BACKOFF[min(attempt, len(METADATA_RETRY_BACKOFF) - 1)]
                         logger.warning(
                             "arxiv metadata refresh rate-limited for %s; retrying in %.0fs",
                             arxiv_id,
                             retry_in,
                         )
+                        attempt += 1
                         await asyncio.sleep(retry_in)
                         continue
                     logger.warning(
@@ -544,6 +577,7 @@ class ArxivService:
                             arxiv_id,
                             retry_in,
                         )
+                        attempt += 1
                         await asyncio.sleep(retry_in)
                         continue
                     logger.exception("metadata refresh failed for %s", arxiv_id)
@@ -559,20 +593,30 @@ class ArxivService:
         meta_file = paper_dir / "meta.json"
         last_err: Optional[str] = None
         logger.info("download task started user=%s paper=%s", user_id, arxiv_id)
+        progress_key = self._task_key(user_id, arxiv_id)
+
+        def update_progress(downloaded: int, total: Optional[int]) -> None:
+            self._download_progress[progress_key] = {
+                "download_bytes": downloaded,
+                "download_total_bytes": total,
+                "download_progress": (
+                    min(1.0, downloaded / total) if total and total > 0 else None
+                ),
+            }
 
         for attempt in range(DOWNLOAD_MAX_RETRIES):
             try:
                 meta = self._load_meta(meta_file)
                 if getattr(meta, "source_type", "arxiv") == "pdf_url":
-                    await asyncio.to_thread(self._blocking_download_pdf_url, meta.source_url, paper_dir)
+                    await asyncio.to_thread(self._blocking_download_pdf_url, meta.source_url, paper_dir, update_progress)
                 else:
-                    await asyncio.to_thread(self._blocking_download_pdf, arxiv_id, paper_dir)
+                    await asyncio.to_thread(self._blocking_download_pdf, arxiv_id, paper_dir, update_progress)
                 # 成功：更新 meta.json 为 ready
                 if meta_file.exists():
                     meta = self._load_meta(meta_file)
                     meta.download_status = "ready"
                     meta.download_error = None
-                    self._save_meta(meta_file, meta)
+                    self._save_meta(meta_file, meta, touch_revision=False)
                 size = (paper_dir / "paper.pdf").stat().st_size if (paper_dir / "paper.pdf").exists() else 0
                 logger.info("paper %s downloaded attempt=%d size_bytes=%d", arxiv_id, attempt + 1, size)
 
@@ -585,6 +629,7 @@ class ArxivService:
 
                 # 任务完成，从登记表清理
                 self._download_tasks.pop(self._task_key(user_id, arxiv_id), None)
+                self._download_progress.pop(progress_key, None)
                 return
             except asyncio.CancelledError:
                 logger.info("download cancelled for %s", arxiv_id)
@@ -604,31 +649,53 @@ class ArxivService:
                 meta = self._load_meta(meta_file)
                 meta.download_status = "failed"
                 meta.download_error = last_err or "未知错误"
-                self._save_meta(meta_file, meta)
+                self._save_meta(meta_file, meta, touch_revision=False)
             except Exception:
                 logger.exception("failed to mark meta as failed for %s", arxiv_id)
 
         self._download_tasks.pop(self._task_key(user_id, arxiv_id), None)
+        self._download_progress.pop(progress_key, None)
         logger.error("download permanently failed for %s: %s", arxiv_id, last_err)
 
-    def _blocking_download_pdf(self, arxiv_id: str, paper_dir: Path) -> None:
+    def _blocking_download_pdf(
+        self,
+        arxiv_id: str,
+        paper_dir: Path,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> None:
         """供 to_thread 调用的同步 PDF 下载。避免再次请求 arXiv metadata API。"""
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
         referer = f"https://arxiv.org/abs/{arxiv_id}"
         try:
-            self._download_pdf_stream(pdf_url, paper_dir, referer=referer)
+            self._download_pdf_stream(pdf_url, paper_dir, referer=referer, progress_callback=progress_callback)
         except Exception as httpx_error:
             logger.warning("httpx arxiv PDF download failed for %s, falling back: %s", arxiv_id, httpx_error)
-            self._download_arxiv_pdf_with_urllib(pdf_url, paper_dir)
+            self._download_arxiv_pdf_with_urllib(pdf_url, paper_dir, progress_callback)
 
-    def _blocking_download_pdf_url(self, pdf_url: Optional[str], paper_dir: Path) -> None:
+    def _blocking_download_pdf_url(
+        self,
+        pdf_url: Optional[str],
+        paper_dir: Path,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> None:
         """从普通 PDF URL 下载 PDF。确保原子写入，并验证结果像 PDF。"""
         if not pdf_url:
             raise RuntimeError("PDF URL 为空")
 
-        self._download_pdf_stream(pdf_url, paper_dir, referer=self._referer_for_pdf_url(pdf_url))
+        self._download_pdf_stream(
+            pdf_url,
+            paper_dir,
+            referer=self._referer_for_pdf_url(pdf_url),
+            progress_callback=progress_callback,
+        )
 
-    def _download_pdf_stream(self, pdf_url: str, paper_dir: Path, referer: Optional[str] = None) -> None:
+    def _download_pdf_stream(
+        self,
+        pdf_url: str,
+        paper_dir: Path,
+        referer: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> None:
         tmp_path = paper_dir / "paper.pdf.part"
         final_path = paper_dir / "paper.pdf"
         if tmp_path.exists():
@@ -636,18 +703,32 @@ class ArxivService:
 
         headers = self._pdf_download_headers(referer)
         try:
-            with httpx.Client(follow_redirects=True, timeout=PDF_DOWNLOAD_TIMEOUT, headers=headers) as client:
-                # 这里不用 stream：当前网络环境下 arXiv PDF 流式读取偶发 SSL 读错误，
-                # 一次性读取同一 URL 更稳定；论文 PDF 通常在可接受大小范围内。
-                resp = client.get(pdf_url)
-                resp.raise_for_status()
-                content = resp.content
-
-            header = content[:1024]
+            client_kwargs = {
+                "follow_redirects": True,
+                "timeout": PDF_DOWNLOAD_TIMEOUT,
+                "headers": headers,
+            }
+            proxy_url = self._proxy_for_pdf_url(pdf_url)
+            if proxy_url:
+                client_kwargs["proxy"] = proxy_url
+            with httpx.Client(**client_kwargs) as client:
+                with client.stream("GET", pdf_url) as resp:
+                    resp.raise_for_status()
+                    total = self._response_total_bytes(resp.headers)
+                    downloaded = 0
+                    header = b""
+                    with open(tmp_path, "wb") as output:
+                        for chunk in resp.iter_bytes(chunk_size=256 * 1024):
+                            if not chunk:
+                                continue
+                            output.write(chunk)
+                            downloaded += len(chunk)
+                            if len(header) < 1024:
+                                header = (header + chunk)[:1024]
+                            if progress_callback:
+                                progress_callback(downloaded, total)
             if b"%PDF" not in header:
                 raise RuntimeError("下载内容不是 PDF")
-
-            tmp_path.write_bytes(content)
             if final_path.exists():
                 final_path.unlink()
             tmp_path.rename(final_path)
@@ -656,13 +737,46 @@ class ArxivService:
             raise
 
     @staticmethod
-    def _download_arxiv_pdf_with_urllib(pdf_url: str, paper_dir: Path) -> None:
+    def _download_arxiv_pdf_with_urllib(
+        pdf_url: str,
+        paper_dir: Path,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+    ) -> None:
         tmp_path = paper_dir / "paper.pdf.part"
         final_path = paper_dir / "paper.pdf"
         if tmp_path.exists():
             tmp_path.unlink()
         try:
-            urllib.request.urlretrieve(pdf_url, tmp_path)
+            handlers = []
+            proxy_url = ArxivService._proxy_for_pdf_url(pdf_url)
+            if proxy_url:
+                handlers.append(
+                    urllib.request.ProxyHandler(
+                        {
+                            "http": proxy_url,
+                            "https": proxy_url,
+                        }
+                    )
+                )
+            opener = urllib.request.build_opener(*handlers)
+            request = urllib.request.Request(
+                pdf_url,
+                headers=ArxivService._pdf_download_headers(
+                    ArxivService._referer_for_pdf_url(pdf_url)
+                ),
+            )
+            with opener.open(request, timeout=PDF_DOWNLOAD_TIMEOUT.read) as response:
+                total = ArxivService._response_total_bytes(response.headers)
+                downloaded = 0
+                with open(tmp_path, "wb") as output:
+                    while True:
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(downloaded, total)
             with open(tmp_path, "rb") as f:
                 header = f.read(1024)
             if b"%PDF" not in header:
@@ -683,6 +797,45 @@ class ArxivService:
         if referer:
             headers["Referer"] = referer
         return headers
+
+    @staticmethod
+    def _proxy_for_pdf_url(pdf_url: str) -> Optional[str]:
+        proxy_url = settings.arxiv_proxy_url.strip()
+        if not proxy_url:
+            return None
+        hostname = (urlparse(pdf_url).hostname or "").lower().rstrip(".")
+        if hostname == "arxiv.org" or hostname.endswith(".arxiv.org"):
+            return proxy_url
+        return None
+
+    @staticmethod
+    def _response_total_bytes(headers) -> Optional[int]:
+        value = headers.get("content-length")
+        try:
+            total = int(value)
+            return total if total > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def get_download_progress(self, user_id: str, paper_id: str) -> dict:
+        pdf_path = self.get_pdf_path(user_id, paper_id)
+        if pdf_path:
+            size = pdf_path.stat().st_size
+            return {
+                "download_bytes": size,
+                "download_total_bytes": size,
+                "download_progress": 1.0,
+            }
+        progress = self._download_progress.get(self._task_key(user_id, paper_id))
+        if progress:
+            return dict(progress)
+        part_path = self.get_paper_dir(user_id, paper_id) / "paper.pdf.part"
+        downloaded = part_path.stat().st_size if part_path.exists() else 0
+        return {
+            "download_bytes": downloaded,
+            "download_total_bytes": None,
+            "download_progress": None,
+        }
 
     @staticmethod
     def _referer_for_pdf_url(pdf_url: str) -> Optional[str]:
@@ -725,6 +878,9 @@ class ArxivService:
         task = self._download_tasks.pop(key, None)
         if task and not task.done():
             task.cancel()
+        metadata_task = self._metadata_tasks.pop(key, None)
+        if metadata_task and not metadata_task.done():
+            metadata_task.cancel()
 
     def get_paper(self, user_id: str, arxiv_id: str) -> Optional[PaperMeta]:
         paper_dir = self.get_paper_dir(user_id, arxiv_id)
@@ -783,9 +939,24 @@ class ArxivService:
             data = json.load(f)
         return PaperMeta(**data)
 
-    def _save_meta(self, meta_file: Path, meta: PaperMeta):
+    def _save_meta(
+        self,
+        meta_file: Path,
+        meta: PaperMeta,
+        touch_revision: bool = True,
+    ):
+        existing_updated_at = None
+        if not touch_revision and meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    existing_updated_at = json.load(f).get("updated_at")
+            except (OSError, ValueError):
+                existing_updated_at = None
         data = meta.model_dump(mode="json")
-        data["updated_at"] = datetime.now().isoformat()
+        data["updated_at"] = (
+            existing_updated_at
+            or datetime.now(timezone.utc).isoformat()
+        )
         with open(meta_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False, default=str)
 
@@ -799,16 +970,19 @@ class ArxivService:
         else:
             data = {"papers": []}
 
+        existing = False
         for item in data["papers"]:
             if item["arxiv_id"] == meta.arxiv_id:
                 item["title"] = meta.title
-                return
+                existing = True
+                break
 
-        data["papers"].append({
-            "arxiv_id": meta.arxiv_id,
-            "title": meta.title,
-            "download_time": meta.download_time.isoformat()
-        })
+        if not existing:
+            data["papers"].append({
+                "arxiv_id": meta.arxiv_id,
+                "title": meta.title,
+                "download_time": meta.download_time.isoformat()
+            })
 
         with open(index_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)

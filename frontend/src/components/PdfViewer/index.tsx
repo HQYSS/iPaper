@@ -14,6 +14,7 @@ import '@react-pdf-viewer/zoom/lib/styles/index.css'
 import { getTranslations, triggerTranslation, getTranslateStatus, getPdfUrl, authFetch, type PdfLang, type PaperSourceType, type TranslationStatus, type TranslateStatus } from '../../services/api'
 import { useChatStore } from '../../stores/chatStore'
 import { usePreferencesStore } from '../../stores/preferencesStore'
+import { pdfBlobFromResponse } from '../../lib/pdfResponse'
 
 interface PdfViewerProps {
   paperId: string
@@ -36,6 +37,10 @@ const OVERLAY_LEVELS = [0.05, 0.08, 0.12, 0.16, 0.2]
 const BRIGHTNESS_LEVELS = [0.95, 0.9, 0.85, 0.8, 0.75]
 
 function getPdfScrollBackStackKey(paperId: string, pdfLang: PdfLang) {
+  return `${paperId}:${pdfLang}`
+}
+
+function getPdfBlobCacheKey(paperId: string, pdfLang: PdfLang) {
   return `${paperId}:${pdfLang}`
 }
 
@@ -299,6 +304,7 @@ function SearchBox({
 
 export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }: PdfViewerProps) {
   const [pdfUrl, setPdfUrl] = useState<string>('')
+  const [pdfLoadError, setPdfLoadError] = useState<string | null>(null)
   const [showSearch, setShowSearch] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
   const [showDimmingControls, setShowDimmingControls] = useState(false)
@@ -324,6 +330,8 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
   const pendingScrollBackTargetRef = useRef<number | null>(null)
   const pendingScrollBackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectionRafRef = useRef<number | null>(null)
+  const activePaperIdRef = useRef(paperId)
+  activePaperIdRef.current = paperId
 
   const addQuote = useChatStore((state) => state.addQuote)
 
@@ -440,24 +448,34 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
     usePreferencesStore.getState().setPdfBrightness(value)
   }, [])
 
+  const fetchPdfBlob = useCallback(async (targetPaperId: string, lang: PdfLang) => {
+    const response = await authFetch(getPdfUrl(targetPaperId, lang))
+    return pdfBlobFromResponse(response)
+  }, [])
+
   useEffect(() => {
-    const cached = blobCache.current[pdfLang]
+    setPdfUrl('')
+    setPdfLoadError(null)
+
+    const cacheKey = getPdfBlobCacheKey(paperId, pdfLang)
+    const cached = blobCache.current[cacheKey]
     if (cached) {
       setPdfUrl(cached)
       return
     }
     let cancelled = false
-    authFetch(getPdfUrl(paperId, pdfLang))
-      .then(r => r.blob())
+    fetchPdfBlob(paperId, pdfLang)
       .then(blob => {
         if (cancelled) return
         const url = URL.createObjectURL(blob)
-        blobCache.current[pdfLang] = url
+        blobCache.current[cacheKey] = url
         setPdfUrl(url)
       })
-      .catch(() => {})
+      .catch((error: Error) => {
+        if (!cancelled) setPdfLoadError(error.message || 'PDF 加载失败')
+      })
     return () => { cancelled = true }
-  }, [paperId, pdfLang])
+  }, [paperId, pdfLang, fetchPdfBlob])
 
   useEffect(() => {
     if (!isEditingPageInput) {
@@ -491,10 +509,10 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
         if (st.status === 'finished') {
           stopTranslatePoll()
           setTranslations(prev => ({ ...prev, zh: true }))
-          authFetch(getPdfUrl(targetPaperId, 'zh'))
-            .then(r => r.blob())
+          fetchPdfBlob(targetPaperId, 'zh')
             .then(blob => {
-              blobCache.current['zh'] = URL.createObjectURL(blob)
+              if (activePaperIdRef.current !== targetPaperId) return
+              blobCache.current[getPdfBlobCacheKey(targetPaperId, 'zh')] = URL.createObjectURL(blob)
               restoreScaleRef.current = scaleRef.current
               setPdfLang('zh')
               usePreferencesStore.getState().setPdfLang(targetPaperId, 'zh')
@@ -509,7 +527,7 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
     }
     poll()
     translatePollRef.current = setInterval(poll, 5000)
-  }, [stopTranslatePoll])
+  }, [stopTranslatePoll, fetchPdfBlob])
 
   const handleTriggerTranslation = useCallback(async (targetPaperId: string) => {
     try {
@@ -528,16 +546,13 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
   useEffect(() => {
     setTranslateStatus(null)
     stopTranslatePoll()
-    Object.values(blobCache.current).forEach(URL.revokeObjectURL)
-    blobCache.current = {}
+    setPdfUrl('')
     if (!supportsTranslation) {
       setTranslations({ zh: false, bilingual: false })
       setPdfLang('en')
       usePreferencesStore.getState().setPdfLang(paperId, 'en')
       return () => {
         stopTranslatePoll()
-        Object.values(blobCache.current).forEach(URL.revokeObjectURL)
-        blobCache.current = {}
       }
     }
     getTranslations(paperId).then(tr => {
@@ -547,10 +562,13 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
     })
     return () => {
       stopTranslatePoll()
-      Object.values(blobCache.current).forEach(URL.revokeObjectURL)
-      blobCache.current = {}
     }
   }, [paperId, supportsTranslation, stopTranslatePoll])
+
+  useEffect(() => () => {
+    Object.values(blobCache.current).forEach(URL.revokeObjectURL)
+    blobCache.current = {}
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -564,14 +582,18 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
 
   useEffect(() => {
     (['zh', 'bilingual'] as const).forEach(lang => {
-      if (translations[lang] && !blobCache.current[lang]) {
-        authFetch(getPdfUrl(paperId, lang))
-          .then(r => r.blob())
-          .then(blob => { blobCache.current[lang] = URL.createObjectURL(blob) })
+      const cacheKey = getPdfBlobCacheKey(paperId, lang)
+      if (translations[lang] && !blobCache.current[cacheKey]) {
+        fetchPdfBlob(paperId, lang)
+          .then(blob => {
+            if (activePaperIdRef.current === paperId) {
+              blobCache.current[cacheKey] = URL.createObjectURL(blob)
+            }
+          })
           .catch(() => {})
       }
     })
-  }, [paperId, translations])
+  }, [paperId, translations, fetchPdfBlob])
 
   // 初始加载时居中
   useEffect(() => {
@@ -752,7 +774,7 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
     setIsEditingPageInput(false)
   }, [commitPageInput, currentPage])
 
-  // 包装缩放操作：先淡出，再缩放，最后居中并淡入
+  // Apply zoom immediately; PDF.js may finish layout on a later frame.
   const handleZoomWithFade = (zoomAction: () => void, shouldPersist = false) => {
     const container = pdfContainerRef.current
     if (!container) {
@@ -772,33 +794,18 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
       return
     }
 
-    // 先淡出
-    scrollContainer.style.transition = 'opacity 0.1s ease-out'
-    scrollContainer.style.opacity = '0'
+    zoomAction()
+    if (shouldPersist) persistScale(scaleRef.current)
 
-    // 等淡出完成后执行缩放
-    setTimeout(() => {
-      zoomAction()
-
-      // 等缩放渲染完成后居中并淡入
-      setTimeout(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
         const scrollWidth = scrollContainer.scrollWidth
         const clientWidth = scrollContainer.clientWidth
-        if (shouldPersist) {
-          persistScale(scaleRef.current)
-        }
         if (scrollWidth > clientWidth) {
           scrollContainer.scrollLeft = (scrollWidth - clientWidth) / 2
         }
-
-        scrollContainer.style.transition = 'opacity 0.1s ease-in'
-        scrollContainer.style.opacity = '1'
-
-        setTimeout(() => {
-          scrollContainer.style.transition = ''
-        }, 100)
-      }, 50)
-    }, 100)
+      })
+    })
   }
 
   if (!pdfUrl) {
@@ -956,6 +963,14 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
             className="h-full transition-[filter] duration-200"
             style={{ filter: `brightness(${effectiveBrightness})` }}
           >
+            {pdfLoadError ? (
+              <div className="flex h-full items-center justify-center p-6 text-center">
+                <div className="max-w-md rounded-lg bg-red-600 px-5 py-4 text-white shadow-lg">
+                  <div className="font-medium">PDF 加载失败</div>
+                  <div className="mt-1 text-sm text-red-100">{pdfLoadError}</div>
+                </div>
+              </div>
+            ) : pdfUrl ? (
             <Worker workerUrl="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
               <Viewer
                 fileUrl={pdfUrl}
@@ -1009,6 +1024,7 @@ export function PdfViewer({ paperId, sourceType = 'arxiv', mobileMode = false }:
                 onPageChange={(e) => setCurrentPage(e.currentPage + 1)}
               />
             </Worker>
+            ) : null}
           </div>
           {effectiveOverlayOpacity > 0 && (
             <div

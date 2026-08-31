@@ -11,6 +11,7 @@ __pycache__/
 # Environment & secrets
 .env
 *.env.local
+*.secrets.json
 
 # OS
 .DS_Store
@@ -35,4 +36,7 @@ papers/
 exports/
 
 # Cursor
-.cursor/
+.cursor/*
+!.cursor/rules/
+.cursor/rules/*
+!.cursor/rules/dev-core.mdc

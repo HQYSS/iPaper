@@ -172,7 +172,6 @@ class CloudChatService:
         return (
             settings.is_sync_client
             and settings.llm.execution_mode == "cloud"
-            and settings.llm.provider != "cursor_cli"
             and bool((settings.sync_url or "").strip())
             and bool((settings.sync_token or "").strip())
         )
@@ -201,9 +200,6 @@ class CloudChatService:
     @staticmethod
     def _execution_payload() -> dict:
         provider_id = (settings.llm.provider_id or "").strip()
-        # 64 号 GPT 渠道已停用；留空让 LLM Center 自动选择健康渠道。
-        if settings.llm.provider == "llm_center_gpt_responses" and provider_id == "64":
-            provider_id = ""
         return {
             "provider": settings.llm.provider,
             "model": settings.llm.model,
@@ -316,6 +312,48 @@ class CloudChatService:
             timeout=httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=60.0),
             verify=settings.sync_verify_ssl,
         )
+        snapshot_response = await client.get(
+            f"{self._api_base()}/chat/_cloud/tasks/{task_id}",
+            headers=self._headers(),
+        )
+        if snapshot_response.status_code == 200:
+            snapshot = snapshot_response.json()
+            if snapshot.get("state") not in {"accepted", "streaming"}:
+                events = []
+                remaining = (snapshot.get("content") or "")[max(0, offset):]
+                if remaining:
+                    events.append({"type": "chunk", "content": remaining})
+                state = snapshot.get("state")
+                if state == "completed":
+                    events.append({
+                        "type": "done",
+                        "reasoning": snapshot.get("reasoning"),
+                        "content_blocks": snapshot.get("content_blocks"),
+                        "response_id": snapshot.get("response_id"),
+                        "task_id": task_id,
+                    })
+                elif state == "stopped":
+                    events.append({"type": "stopped", "task_id": task_id})
+                else:
+                    events.append({
+                        "type": "error",
+                        "message": snapshot.get("error") or "云端生成失败",
+                        "task_id": task_id,
+                    })
+                body = "".join(
+                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    for event in events
+                )
+                return client, httpx.Response(
+                    200,
+                    content=body.encode("utf-8"),
+                    headers={"content-type": "text/event-stream"},
+                )
+        elif snapshot_response.status_code != 404:
+            message = await self._error_message(snapshot_response)
+            await client.aclose()
+            raise RuntimeError(message)
+
         response = await client.send(
             client.build_request(
                 "GET",

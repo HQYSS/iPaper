@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings
-from routers import papers, chat, config, profile, translation, auth, preferences, sync
+from routers import papers, chat, config, profile, translation, auth, preferences, sync, social
 from middleware.auth import get_current_user
 from middleware.request_logging import RequestLoggingMiddleware
 from services.arxiv_service import arxiv_service
@@ -39,7 +39,6 @@ def configure_logging():
         "routers.chat",
         "services.chat_task_service",
         "services.llm_service",
-        "services.cursor_cli_service",
     ):
         logging.getLogger(logger_name).setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -73,6 +72,7 @@ def create_app() -> FastAPI:
     application.include_router(profile.router, prefix="/api/profile", tags=["profile"])
     application.include_router(translation.router, prefix="/api/papers", tags=["translation"])
     application.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+    application.include_router(social.router, prefix="/api/social", tags=["social"])
 
     @application.get("/")
     async def root():
@@ -97,6 +97,14 @@ def create_app() -> FastAPI:
             "sync_role": settings.sync_role,
         }
         return JSONResponse(payload, status_code=200 if data_dir_ready else 503)
+
+    @application.get("/api/health/generations")
+    async def generation_health():
+        """Expose counts only, so deployments can drain without user auth."""
+        return {
+            "chat_running": chat_task_service.get_status()["running"],
+            "cloud_generation_running": cloud_generation_service.get_status()["running"],
+        }
 
     @application.get("/api/health/tasks")
     async def task_health(user: dict = Depends(get_current_user)):
@@ -127,6 +135,7 @@ def create_app() -> FastAPI:
         logging.getLogger(__name__).info("backend startup runtime=%s", get_runtime_info())
         await sync_service.startup()
         arxiv_service.recover_incomplete_downloads()
+        arxiv_service.recover_placeholder_metadata()
 
     @application.on_event("shutdown")
     async def shutdown_event():

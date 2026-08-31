@@ -150,6 +150,75 @@ export async function getMe(): Promise<AuthUser> {
   return response.json()
 }
 
+// ============ 用户关注 API ============
+
+export interface SocialUser {
+  id: string
+  username: string
+  is_following: boolean
+  paper_count: number
+  chat_count: number
+  is_self: boolean
+  papers?: SocialPaper[]
+}
+
+export interface SocialPaper {
+  arxiv_id: string
+  title: string
+  summary?: string
+  updated_at?: string
+  session_count: number
+  chat_preview?: string
+  user_id?: string
+  username?: string
+}
+
+export interface SocialPaperDetail {
+  username: string
+  paper: SocialPaper
+  sessions: Array<SessionMeta & { messages: ChatMessage[] }>
+}
+
+export async function getSocialPaperDetail(userId: string, paperId: string): Promise<SocialPaperDetail> {
+  const response = await authFetch(`${API_BASE}/social/users/${encodeURIComponent(userId)}/papers/${encodeURIComponent(paperId)}`)
+  if (!response.ok) throw new Error('获取论文详情失败')
+  return response.json()
+}
+
+export async function searchSocialUsers(query = ''): Promise<SocialUser[]> {
+  const response = await authFetch(`${API_BASE}/social/users?q=${encodeURIComponent(query)}`)
+  if (!response.ok) throw new Error('搜索用户失败')
+  return (await response.json()).users || []
+}
+
+export async function getSocialUser(userId: string): Promise<SocialUser> {
+  const response = await authFetch(`${API_BASE}/social/users/${userId}`)
+  if (!response.ok) throw new Error('获取用户主页失败')
+  return response.json()
+}
+
+export async function listFollowingUsers(): Promise<SocialUser[]> {
+  const response = await authFetch(`${API_BASE}/social/following`)
+  if (!response.ok) throw new Error('获取关注列表失败')
+  return (await response.json()).users || []
+}
+
+export async function followUser(userId: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/social/follow/${userId}`, { method: 'POST' })
+  if (!response.ok) throw new Error('关注失败')
+}
+
+export async function unfollowUser(userId: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/social/follow/${userId}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('取消关注失败')
+}
+
+export async function getFollowingFeed(): Promise<SocialPaper[]> {
+  const response = await authFetch(`${API_BASE}/social/feed`)
+  if (!response.ok) throw new Error('获取关注动态失败')
+  return (await response.json()).items || []
+}
+
 // ============ 偏好设置 API ============
 
 export async function getPreferences(): Promise<Record<string, unknown>> {
@@ -188,6 +257,14 @@ export interface Paper {
   pdf_path?: string
   download_status?: PaperDownloadStatus
   download_error?: string | null
+  download_bytes?: number
+  download_total_bytes?: number | null
+  download_progress?: number | null
+  cloud_download_status?: PaperDownloadStatus | null
+  cloud_download_error?: string | null
+  cloud_download_bytes?: number
+  cloud_download_total_bytes?: number | null
+  cloud_download_progress?: number | null
 }
 
 export type PaperDownloadStatus = 'downloading' | 'ready' | 'failed'
@@ -204,6 +281,15 @@ export interface PaperListItem {
   download_time: string
   download_status?: PaperDownloadStatus
   download_error?: string | null
+  pdf_size_bytes?: number | null
+  download_bytes?: number
+  download_total_bytes?: number | null
+  download_progress?: number | null
+  cloud_download_status?: PaperDownloadStatus | null
+  cloud_download_error?: string | null
+  cloud_download_bytes?: number
+  cloud_download_total_bytes?: number | null
+  cloud_download_progress?: number | null
 }
 
 export async function fetchPapers(): Promise<PaperListItem[]> {
@@ -231,14 +317,27 @@ export async function addPaper(arxivInput: string): Promise<Paper> {
 
 export interface PaperOpenRequestState {
   paper_id: string | null
+  request_id: string | null
+  target: 'electron' | 'web' | null
 }
 
-export async function consumePaperOpenRequest(): Promise<PaperOpenRequestState> {
-  const response = await authFetch(`${API_BASE}/papers/open-request`)
+export async function getPaperOpenRequest(target: 'electron' | 'web'): Promise<PaperOpenRequestState> {
+  const response = await authFetch(`${API_BASE}/papers/open-request?target=${target}`)
   if (!response.ok) {
-    throw new Error('Failed to consume paper open request')
+    throw new Error('Failed to get paper open request')
   }
   return response.json()
+}
+
+export async function acknowledgePaperOpenRequest(requestId: string): Promise<void> {
+  const response = await authFetch(`${API_BASE}/papers/open-request/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_id: requestId }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to acknowledge paper open request')
+  }
 }
 
 export async function getPaper(paperId: string): Promise<Paper> {
@@ -713,7 +812,7 @@ export async function* sendCrossPaperMessage(
 
 export interface Config {
   llm: {
-    provider: 'llm_center_gpt_responses' | 'llm_center_anthropic' | 'cursor_cli'
+    provider: 'llm_center_gpt_responses' | 'llm_center_anthropic'
     api_base: string
     api_key_configured: boolean
     model: string
@@ -721,10 +820,6 @@ export interface Config {
     execution_mode: 'cloud' | 'local'
     temperature: number
     max_tokens: number
-    cursor_command: string
-    cursor_model: string
-    cursor_timeout_seconds: number
-    cursor_cli_available: boolean
   }
   data_dir: string
   hjfy_cookie_configured: boolean
@@ -733,6 +828,7 @@ export interface Config {
     url: string
     verify_ssl: boolean
     token_configured: boolean
+    bound_user_id: string | null
   }
 }
 
@@ -745,16 +841,13 @@ export async function getConfig(): Promise<Config> {
 }
 
 export async function updateLLMConfig(config: {
-  provider?: 'llm_center_gpt_responses' | 'llm_center_anthropic' | 'cursor_cli'
+  provider?: 'llm_center_gpt_responses' | 'llm_center_anthropic'
   api_key?: string
   model?: string
   provider_id?: string
   execution_mode?: 'cloud' | 'local'
   temperature?: number
   max_tokens?: number
-  cursor_command?: string
-  cursor_model?: string
-  cursor_timeout_seconds?: number
 }): Promise<void> {
   const response = await authFetch(`${API_BASE}/config/llm`, {
     method: 'PUT',
@@ -766,23 +859,6 @@ export async function updateLLMConfig(config: {
   if (!response.ok) {
     throw new Error('Failed to update config')
   }
-}
-
-export interface CursorModelOption {
-  id: string
-  label: string
-  current: boolean
-  default: boolean
-}
-
-export async function listCursorModels(): Promise<CursorModelOption[]> {
-  const response = await authFetch(`${API_BASE}/config/llm/cursor-models`)
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
-    throw new Error(error.detail || 'Failed to list Cursor models')
-  }
-  const data = await response.json()
-  return data.models || []
 }
 
 export async function updateSyncConfig(config: {
@@ -994,4 +1070,3 @@ export {
   setupOfflineListeners,
   isOnline,
 } from './offlineApi'
-

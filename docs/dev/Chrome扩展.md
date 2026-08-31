@@ -34,7 +34,7 @@ chrome-extension/
 
 1. 扩展识别当前 tab URL。
 2. 如果是 arXiv `abs/html/pdf`，提取 arXiv ID 并规范化为 abs URL。
-3. arXiv `abs/html` 页面会同时抓取页面标题、摘要和作者，作为 arXiv metadata API 被 429 限流时的兜底元信息。
+3. arXiv `abs/html` 页面会同时抓取页面标题、摘要和作者，作为 arXiv metadata API 被 429 限流时的兜底元信息。页内按钮、扩展弹窗和“导入当前页面”右键菜单都会传递这些元信息。
 4. 如果是普通 PDF URL，保留原始 URL。
 5. 扩展先检查 `http://127.0.0.1:3000/`。
 6. 后端已就绪时，直接 `POST http://127.0.0.1:3000/api/papers`。

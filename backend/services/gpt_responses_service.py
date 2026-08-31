@@ -1,6 +1,5 @@
-"""
-LLM Center OpenAI Responses API helper for GPT-5.5.
-"""
+"""LLM Center OpenAI Responses API helper for GPT reasoning models."""
+import asyncio
 import json
 from typing import AsyncGenerator, Dict, List, Optional
 
@@ -11,6 +10,7 @@ from services.llm_runtime_config import LLMRuntimeConfig
 GPT_RESPONSES_PROVIDER = "llm_center_gpt_responses"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_PROVIDER_ID = "64"
+FIRST_OUTPUT_TIMEOUT_SECONDS = 30.0
 
 
 def is_gpt_responses_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
@@ -36,6 +36,10 @@ def headers(runtime_config: Optional[LLMRuntimeConfig] = None) -> dict:
 
 def reasoning_config() -> dict:
     return {"effort": DEFAULT_REASONING_EFFORT}
+
+
+def should_store(runtime_config: LLMRuntimeConfig) -> bool:
+    return runtime_config.provider_id not in {"51", "106"}
 
 
 def visible_text_from_output(output: Optional[List[dict]]) -> str:
@@ -99,7 +103,7 @@ async def create_response(
         "input": input_items,
         "max_output_tokens": max_output_tokens or config.max_tokens,
         "reasoning": reasoning_config(),
-        "store": True,
+        "store": should_store(config),
     }
     if previous_response_id:
         payload["previous_response_id"] = previous_response_id
@@ -133,13 +137,26 @@ async def stream_response(
     runtime_config: Optional[LLMRuntimeConfig] = None,
 ) -> AsyncGenerator[str, None]:
     config = runtime_config or LLMRuntimeConfig.current()
+    items_by_index: Dict[int, dict] = {}
+
+    def update_event_output(event: dict) -> None:
+        item = event.get("item")
+        output_index = event.get("output_index")
+        if not isinstance(item, dict) or not isinstance(output_index, int):
+            return
+        items_by_index[output_index] = item.copy()
+        _update_output_collector(
+            output_collector,
+            [items_by_index[index] for index in sorted(items_by_index)],
+        )
+
     payload = {
         "model": model or config.model,
         "instructions": instructions,
         "input": input_items,
         "max_output_tokens": max_output_tokens or config.max_tokens,
         "reasoning": reasoning_config(),
-        "store": True,
+        "store": should_store(config),
         "stream": True,
     }
     if previous_response_id:
@@ -159,7 +176,26 @@ async def stream_response(
                 text = await resp.aread()
                 raise RuntimeError(_format_error(resp.status_code, text.decode("utf-8", errors="replace")))
 
-            async for line in resp.aiter_lines():
+            line_iterator = resp.aiter_lines().__aiter__()
+            first_output_deadline = asyncio.get_running_loop().time() + FIRST_OUTPUT_TIMEOUT_SECONDS
+            first_output_received = False
+            terminal_received = False
+            while True:
+                try:
+                    if first_output_received:
+                        line = await line_iterator.__anext__()
+                    else:
+                        remaining = first_output_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError
+                        line = await asyncio.wait_for(line_iterator.__anext__(), timeout=remaining)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError(
+                        f"LLM Center GPT Responses first model output timeout after "
+                        f"{FIRST_OUTPUT_TIMEOUT_SECONDS:g}s"
+                    ) from exc
                 line = line.strip()
                 if not line or line.startswith("event:") or line.startswith(":"):
                     continue
@@ -179,12 +215,26 @@ async def stream_response(
                     raise RuntimeError(_format_error(200, json.dumps({"error": {"message": stream_error}})))
 
                 if event_type == "response.output_text.delta":
+                    first_output_received = True
                     delta = event.get("delta", "")
                     if delta:
                         yield delta
                     continue
 
-                if event_type == "response.completed":
-                    _update_output_collector(output_collector, response.get("output"))
-                    _update_metadata(metadata_collector, response.get("id"))
+                if event_type in {"response.output_item.added", "response.output_item.done"}:
+                    first_output_received = True
+                    update_event_output(event)
                     continue
+
+                if event_type == "response.completed":
+                    completed_output = response.get("output")
+                    # Sol may emit every item through output_item events but finish with
+                    # response.output=[]; keep the event-level reasoning state in that case.
+                    if completed_output:
+                        _update_output_collector(output_collector, completed_output)
+                    _update_metadata(metadata_collector, response.get("id"))
+                    terminal_received = True
+                    break
+
+            if not terminal_received:
+                raise RuntimeError("LLM Center GPT Responses stream ended before response.completed")

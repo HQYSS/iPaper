@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, Loader2, AlertTriangle, RotateCw, Plus } from 'lucide-react'
+import { LibraryBig, PanelRightOpen, AlertTriangle, RotateCw, Plus } from 'lucide-react'
 import { PaperLibrary } from './components/PaperLibrary'
 import { PdfViewer } from './components/PdfViewer'
 import { ChatPanel } from './components/ChatPanel'
@@ -15,21 +15,24 @@ import { useChatStore } from './stores/chatStore'
 import { useProfileStore } from './stores/profileStore'
 import { useAuthStore } from './stores/authStore'
 import { usePreferencesStore } from './stores/preferencesStore'
-import { consumePaperOpenRequest, getConfig } from './services/api'
+import { acknowledgePaperOpenRequest, getConfig, getPaper, getPaperOpenRequest, reportClientLog } from './services/api'
 import { useDeviceLayout } from './hooks/useDeviceLayout'
 import { useThemeMode, applyThemeMode } from './hooks/useThemeMode'
 import { formatDownloadError } from './lib/downloadError'
 import type { ThemeMode } from './hooks/useThemeMode'
 import type { PaperListItem } from './services/api'
+import { PdfPreparationStatus } from './components/PdfPreparationStatus'
+import { SocialHub } from './components/SocialHub'
 
 const CHAT_MIN_WIDTH = 320
 const CHAT_MAX_RATIO = 0.5
 const CHAT_DEFAULT_WIDTH = 480
-const SIDEBAR_WIDTH = 256
-const SIDEBAR_HOVER_TRIGGER_WIDTH = 12
 const NARROW_SCREEN_BREAKPOINT = 1024
 
-const cursorMode = new URLSearchParams(window.location.search).get('cursor') === '1'
+const openRequestTarget = (
+  window.electronAPI?.isElectron
+  || new URLSearchParams(window.location.search).get('electron') === '1'
+) ? 'electron' : 'web'
 
 function clampChatWidth(width: number, containerWidth: number) {
   const maxWidth = containerWidth * CHAT_MAX_RATIO
@@ -81,6 +84,7 @@ function App() {
 function AuthenticatedRouter() {
   const layout = useDeviceLayout()
   const { themeMode, setThemeMode } = useThemeMode()
+  usePaperOpenRequests()
 
   if (layout === 'mobile') {
     return <MobileLayout themeMode={themeMode} onThemeModeChange={setThemeMode} />
@@ -91,6 +95,47 @@ function AuthenticatedRouter() {
   return <AuthenticatedApp themeMode={themeMode} onThemeModeChange={setThemeMode} />
 }
 
+function usePaperOpenRequests() {
+  const fetchPapers = usePaperStore((state) => state.fetchPapers)
+  const selectPaper = usePaperStore((state) => state.selectPaper)
+
+  useEffect(() => {
+    let cancelled = false
+    let polling = false
+
+    const pollOpenRequest = async () => {
+      if (polling) return
+      polling = true
+      try {
+        const request = await getPaperOpenRequest(openRequestTarget)
+        if (!cancelled && request.paper_id && request.request_id) {
+          const paper = await getPaper(request.paper_id)
+          if (cancelled) return
+          selectPaper(paper)
+          await acknowledgePaperOpenRequest(request.request_id)
+          void fetchPapers()
+        }
+      } catch (error) {
+        reportClientLog('error', 'paper open request handling failed', {
+          target: openRequestTarget,
+          error: (error as Error).message,
+        })
+      } finally {
+        polling = false
+      }
+    }
+
+    pollOpenRequest()
+    const timer = window.setInterval(pollOpenRequest, 1200)
+    const unsubscribe = window.electronAPI?.onAppActivated?.(pollOpenRequest)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      unsubscribe?.()
+    }
+  }, [fetchPapers, selectPaper])
+}
+
 interface AuthenticatedAppProps {
   themeMode: ThemeMode
   onThemeModeChange: (mode: ThemeMode) => void
@@ -98,12 +143,12 @@ interface AuthenticatedAppProps {
 
 function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProps) {
   const { papers, recentPaperIds, fetchPapers, selectedPaper, crossPaper, exitCrossPaperMode, setCrossPaperPdfTab, selectPaper, addPaper } = usePaperStore()
-  const { exitCrossPaperChat } = useChatStore()
+  const exitCrossPaperChat = useChatStore((state) => state.exitCrossPaperChat)
   const { isEvolutionOpen, openEvolution, closeEvolution } = useProfileStore()
   const { getChatPanelWidthRatio, setChatPanelWidthRatio } = usePreferencesStore()
   const isNarrowScreen = useCallback(() => window.innerWidth <= NARROW_SCREEN_BREAKPOINT, [])
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => isNarrowScreen())
-  const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [socialOpen, setSocialOpen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(() => isNarrowScreen())
   const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT_WIDTH)
   const [isDragging, setIsDragging] = useState(false)
@@ -111,7 +156,6 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [addPaperOpen, setAddPaperOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const isSidebarVisible = !sidebarCollapsed || sidebarHoverOpen
 
   const isInCrossChat = !!crossPaper.activeCrossPaperSession
   const showSinglePaper = !!selectedPaper && !isInCrossChat
@@ -139,9 +183,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   useEffect(() => {
     fetchPapers()
     getConfig().then((config) => {
-      const llmReady = config.llm.provider === 'cursor_cli'
-        ? config.llm.cursor_cli_available
-        : config.llm.api_key_configured
+      const llmReady = config.llm.api_key_configured
       if (!llmReady) {
         setSettingsOpen(true)
       }
@@ -149,41 +191,13 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   }, [fetchPapers])
 
   useEffect(() => {
-    let cancelled = false
-
-    const openPaperById = async (paperId: string) => {
-      await fetchPapers()
-      if (cancelled) return
-      const paper = usePaperStore.getState().papers.find((p) => p.arxiv_id === paperId)
-      if (paper) {
-        selectPaper(paper)
-        setSidebarCollapsed(true)
-        setSidebarHoverOpen(false)
-      }
-    }
-
-    const pollOpenRequest = async () => {
-      try {
-        const request = await consumePaperOpenRequest()
-        if (!cancelled && request.paper_id) {
-          await openPaperById(request.paper_id)
-        }
-      } catch {
-        // The app can still run normally if the local helper endpoint is unavailable.
-      }
-    }
-
-    pollOpenRequest()
-    const timer = window.setInterval(pollOpenRequest, 1200)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [fetchPapers, selectPaper])
-
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (quickSwitcherOpen || addPaperOpen) return
+      if (e.key === 'Escape' && libraryOpen) {
+        e.preventDefault()
+        setLibraryOpen(false)
+        return
+      }
       if (!(e.metaKey || e.ctrlKey)) return
       if (e.shiftKey || e.altKey) return
       const key = e.key.toLowerCase()
@@ -193,8 +207,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
         setQuickSwitcherOpen(true)
       } else if (key === 'b') {
         e.preventDefault()
-        setSidebarCollapsed(prev => !prev)
-        setSidebarHoverOpen(false)
+        setLibraryOpen(prev => !prev)
       } else if (key === 'l') {
         e.preventDefault()
         setChatCollapsed(prev => !prev)
@@ -206,7 +219,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [quickSwitcherOpen, addPaperOpen, settingsOpen, isEvolutionOpen, quickSwitcherPapers.length])
+  }, [quickSwitcherOpen, addPaperOpen, libraryOpen, settingsOpen, isEvolutionOpen, quickSwitcherPapers.length])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -260,31 +273,8 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   }, [getChatPanelWidthRatio, setChatPanelWidthRatio])
 
   useEffect(() => {
-    if (!selectedPaper) return
-
-    setSidebarCollapsed(true)
-    setSidebarHoverOpen(false)
-    if (isNarrowScreen()) setChatCollapsed(true)
-  }, [selectedPaper, isNarrowScreen])
-
-  useEffect(() => {
-    if (!isInCrossChat) return
-
-    setSidebarCollapsed(true)
-    setSidebarHoverOpen(false)
-    if (!isNarrowScreen()) setChatCollapsed(false)
+    if (isInCrossChat && !isNarrowScreen()) setChatCollapsed(false)
   }, [isInCrossChat, isNarrowScreen])
-
-  const handleSidebarToggle = useCallback(() => {
-    if (sidebarCollapsed) {
-      setSidebarCollapsed(false)
-      setSidebarHoverOpen(false)
-      return
-    }
-
-    setSidebarCollapsed(true)
-    setSidebarHoverOpen(false)
-  }, [sidebarCollapsed])
 
   const handleExitCrossChat = useCallback(() => {
     exitCrossPaperChat()
@@ -329,51 +319,36 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
   // 下载中 / 下载失败的论文不渲染对话面板：LLM 调用依赖 PDF，必须等 ready
   const singlePaperDownloadStatus = selectedPaper?.download_status ?? 'ready'
   const singlePaperReady = !selectedPaper || singlePaperDownloadStatus === 'ready'
-  const showChat = ((showSinglePaper && singlePaperReady) || isInCrossChat) && !cursorMode
+  const cloudPdfReady = !selectedPaper || selectedPaper.cloud_download_status !== 'downloading'
+  const cloudPdfFailed = selectedPaper?.cloud_download_status === 'failed'
+  const showChat = (showSinglePaper && singlePaperReady) || isInCrossChat
 
   return (
     <div ref={containerRef} className="relative h-screen flex bg-background">
-      {sidebarCollapsed && !sidebarHoverOpen && (
-        <div
-          className="absolute left-0 top-0 bottom-0 z-20"
-          style={{ width: SIDEBAR_HOVER_TRIGGER_WIDTH }}
-          onMouseEnter={() => setSidebarHoverOpen(true)}
-        />
-      )}
-
-      {/* 左侧：论文库（可折叠） */}
-      <aside
-        className={`${isSidebarVisible ? 'border-r border-border' : ''} relative flex-shrink-0 overflow-hidden transition-all duration-200 ease-in-out`}
-        style={{ width: isSidebarVisible ? SIDEBAR_WIDTH : 0 }}
-        onMouseLeave={() => {
-          if (sidebarCollapsed) {
-            setSidebarHoverOpen(false)
-          }
-        }}
-      >
-        <div className="h-full" style={{ width: SIDEBAR_WIDTH }}>
-          <PaperLibrary
-            onOpenSettings={() => setSettingsOpen(true)}
-            onOpenAddPaper={() => setAddPaperOpen(true)}
-          />
-        </div>
-      </aside>
-
-      {/* 左栏切换按钮 */}
-      {isSidebarVisible && (
+      {!libraryOpen && (
         <button
-          onClick={handleSidebarToggle}
-          className="absolute top-3 z-30 p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
-          style={{ left: SIDEBAR_WIDTH - 28 }}
-          title={sidebarCollapsed ? '固定展开论文库' : '收起论文库'}
+          onClick={() => setLibraryOpen(true)}
+          className="absolute left-4 top-4 z-30 inline-flex items-center gap-2 rounded-lg border border-border bg-background/90 px-3 py-2 text-sm text-foreground shadow-sm backdrop-blur hover:bg-accent transition-colors"
+          title="打开论文库 (Ctrl/⌘B)"
         >
-          {sidebarCollapsed ? (
-            <PanelLeftOpen className="w-4 h-4" />
-          ) : (
-            <PanelLeftClose className="w-4 h-4" />
-          )}
+          <LibraryBig className="w-4 h-4" />
+          论文库
+          <span className="text-[11px] text-muted-foreground font-mono">Ctrl/⌘B</span>
         </button>
       )}
+
+      {libraryOpen && (
+        <div className="fixed inset-0 z-50 bg-background">
+          <PaperLibrary
+            fullScreen
+            onClose={() => setLibraryOpen(false)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenAddPaper={() => setAddPaperOpen(true)}
+            onOpenSocial={() => setSocialOpen(true)}
+          />
+        </div>
+      )}
+      {socialOpen && <SocialHub onClose={() => setSocialOpen(false)} />}
 
       {/* 中间：PDF 阅读器 / 串讲多 PDF 视图 / 进化面板 */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -388,11 +363,12 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
               return (
                 <div className="flex-1 flex items-center justify-center text-muted-foreground px-6">
                   <div className="text-center max-w-md">
-                    <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-indigo-500" />
-                    <h2 className="text-lg font-medium mb-1">正在下载英文 PDF…</h2>
-                    <p className="text-sm text-muted-foreground">
-                      下载完成后这里会自动进入阅读界面。你可以继续浏览或添加其他论文。
-                    </p>
+                    <PdfPreparationStatus
+                      title="正在下载英文 PDF"
+                      downloadedBytes={selectedPaper.download_bytes}
+                      totalBytes={selectedPaper.download_total_bytes}
+                      progress={selectedPaper.download_progress}
+                    />
                   </div>
                 </div>
               )
@@ -427,7 +403,7 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
               <h2 className="text-xl font-medium mb-2">欢迎使用 iPaper</h2>
-              <p className="mb-5">从左侧添加论文开始阅读</p>
+                <p className="mb-5">打开论文库添加或选择论文</p>
               <button
                 onClick={() => setAddPaperOpen(true)}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 shadow-sm shadow-indigo-500/20 transition-all"
@@ -477,12 +453,31 @@ function AuthenticatedApp({ themeMode, onThemeModeChange }: AuthenticatedAppProp
                     onExitCrossChat={handleExitCrossChat}
                     onOpenEvolution={handleOpenEvolution}
                   />
-                ) : (
+                ) : cloudPdfFailed ? (
+                  <div className="h-full flex items-center justify-center px-8 border-l border-border bg-background">
+                    <div className="max-w-sm text-center">
+                      <AlertTriangle className="w-8 h-8 mx-auto mb-3 text-red-500" />
+                      <h2 className="text-base font-medium">云端 PDF 下载失败</h2>
+                      <p className="mt-2 text-sm text-muted-foreground break-words">
+                        {selectedPaper!.cloud_download_error || '请稍后重新打开论文以重试'}
+                      </p>
+                    </div>
+                  </div>
+                ) : cloudPdfReady ? (
                   <ChatPanel
                     paperId={selectedPaper!.arxiv_id}
                     onCollapse={() => setChatCollapsed(true)}
                     onOpenEvolution={handleOpenEvolution}
                   />
+                ) : (
+                  <div className="h-full flex items-center justify-center px-8 border-l border-border bg-background">
+                    <PdfPreparationStatus
+                      title="云端正在准备 PDF"
+                      downloadedBytes={selectedPaper!.cloud_download_bytes}
+                      totalBytes={selectedPaper!.cloud_download_total_bytes}
+                      progress={selectedPaper!.cloud_download_progress}
+                    />
+                  </div>
                 )}
               </aside>
             </>

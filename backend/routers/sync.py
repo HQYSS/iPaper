@@ -108,6 +108,8 @@ async def get_manifest(
     """返回该用户所有论文的 {arxiv_id, updated_at} 清单 + 偏好和画像的 updated_at"""
     manifest = sync_service.get_manifest(user["id"])
     data = manifest.to_dict()
+    data["user_id"] = user["id"]
+    data["username"] = user.get("username", "")
     if sync_protocol != "2":
         data["papers"] = [
             paper for paper in data["papers"] if paper.get("pdf_available")

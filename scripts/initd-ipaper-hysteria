@@ -1,0 +1,56 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          ipaper-hysteria
+# Required-Start:    $network
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+### END INIT INFO
+
+set -eu
+
+IPAPER_ROOT="${IPAPER_ROOT:-/user/liuhanyu/iPaper}"
+BINARY="${IPAPER_HYSTERIA_BINARY:-$IPAPER_ROOT/bin/hysteria}"
+CONFIG="${IPAPER_HYSTERIA_CONFIG:-$IPAPER_ROOT/config/hysteria.json}"
+PID_FILE="/tmp/ipaper-hysteria.pid"
+LOG_FILE="${IPAPER_HYSTERIA_LOG_FILE:-/user/liuhanyu/logs/ipaper-hysteria.log}"
+
+start() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$PID_FILE"
+  nohup "$BINARY" client --config "$CONFIG" >>"$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+}
+
+stop() {
+  if [ -f "$PID_FILE" ]; then
+    pid=$(cat "$PID_FILE")
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+status() {
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "ipaper-hysteria is running (pid $(cat "$PID_FILE"))"
+    exit 0
+  fi
+  echo "ipaper-hysteria is stopped"
+  exit 1
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) status ;;
+  *) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 2 ;;
+esac

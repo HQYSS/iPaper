@@ -12,21 +12,14 @@ VALID_SYNC_ROLES = {"server", "client", "off"}
 
 class LLMConfig(BaseSettings):
     """LLM 配置"""
-    provider: str = "llm_center_gpt_responses"  # llm_center_gpt_responses | llm_center_anthropic | cursor_cli
-    api_base: str = "https://llm-center.ali.modelbest.cn/llm"
+    provider: str = "llm_center_gpt_responses"  # llm_center_gpt_responses | llm_center_anthropic
+    api_base: str = "https://llm-center.modelbest.co/llm"
     api_key: str = ""
-    model: str = "gpt-5.5"
-    provider_id: str = ""
+    model: str = "gpt-5.6-sol"
+    provider_id: str = "97"
     execution_mode: str = "cloud"  # cloud | local
     temperature: float = 0.7
     max_tokens: int = 32768
-    cursor_command: str = "cursor"
-    cursor_model: str = ""
-    cursor_timeout_seconds: int = 600
-    cursor_visual_dpi: int = 120
-    cursor_visual_quality: int = 75
-    cursor_visual_max_pages: int = 40
-    cursor_visual_cache_max_mb: int = 1024
 
 
 class ProfileAnalysisConfig(BaseSettings):
@@ -67,6 +60,7 @@ class Settings(BaseSettings):
     sync_token: str = ""               # 本机设备级同步 token
     sync_verify_ssl: bool = True       # 自签名 IP 证书场景可在本机配置里关闭
     local_auth_bypass: bool = True      # 仅非 server 角色可启用
+    arxiv_proxy_url: str = ""           # 仅 PDF 获取使用，例如 http://127.0.0.1:18080
     
     class Config:
         env_prefix = "IPAPER_"
@@ -85,12 +79,23 @@ class Settings(BaseSettings):
         """从全局配置文件加载 LLM 等共享配置"""
         config_file = self.data_dir / "config.json"
         if config_file.exists():
+            migrated = False
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if "llm" in data:
                     for key, value in data["llm"].items():
                         if hasattr(self.llm, key):
                             setattr(self.llm, key, value)
+                    if self.llm.provider == "cursor_cli":
+                        self.llm.provider = "llm_center_gpt_responses"
+                        data["llm"]["provider"] = self.llm.provider
+                        migrated = True
+                    if self.llm.provider == "llm_center_gpt_responses" and self.llm.model == "gpt-5.5":
+                        self.llm.model = "gpt-5.6-sol"
+                        self.llm.provider_id = "97"
+                        data["llm"]["model"] = self.llm.model
+                        data["llm"]["provider_id"] = self.llm.provider_id
+                        migrated = True
                 if "hjfy_cookie" in data:
                     self.hjfy_cookie = data["hjfy_cookie"]
                 if "invite_code" in data:
@@ -105,6 +110,13 @@ class Settings(BaseSettings):
                     self.sync_verify_ssl = bool(data["sync_verify_ssl"])
                 if "local_auth_bypass" in data:
                     self.local_auth_bypass = bool(data["local_auth_bypass"])
+            if migrated:
+                temp_file = config_file.with_name(".config.json.migration.tmp")
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                temp_file.replace(config_file)
             os.chmod(config_file, 0o600)
 
     @staticmethod
@@ -171,13 +183,6 @@ class Settings(BaseSettings):
                 "execution_mode": self.llm.execution_mode,
                 "temperature": self.llm.temperature,
                 "max_tokens": self.llm.max_tokens,
-                "cursor_command": self.llm.cursor_command,
-                "cursor_model": self.llm.cursor_model,
-                "cursor_timeout_seconds": self.llm.cursor_timeout_seconds,
-                "cursor_visual_dpi": self.llm.cursor_visual_dpi,
-                "cursor_visual_quality": self.llm.cursor_visual_quality,
-                "cursor_visual_max_pages": self.llm.cursor_visual_max_pages,
-                "cursor_visual_cache_max_mb": self.llm.cursor_visual_cache_max_mb,
             },
             "hjfy_cookie": self.hjfy_cookie,
             "invite_code": self.invite_code,
@@ -237,4 +242,3 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
-

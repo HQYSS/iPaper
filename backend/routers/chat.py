@@ -123,7 +123,9 @@ async def _cancel_cloud_generation(generation_id: Optional[str]) -> None:
         )
 
 
-async def _refresh_cloud_generation(messages: list[ChatMessage]) -> bool:
+async def _fetch_cloud_generation_update(
+    messages: list[ChatMessage],
+) -> Optional[tuple[str, ChatMessage]]:
     if (
         not messages
         or messages[-1].role != "assistant"
@@ -132,10 +134,10 @@ async def _refresh_cloud_generation(messages: list[ChatMessage]) -> bool:
         or not settings.is_sync_client
         or settings.llm.execution_mode != "cloud"
     ):
-        return False
+        return None
     generation_id = messages[-1].generation_id
     if not _CLOUD_TASK_ID_PATTERN.fullmatch(generation_id):
-        return False
+        return None
     try:
         snapshot = await cloud_chat_service.get_task(generation_id)
     except Exception:
@@ -144,23 +146,38 @@ async def _refresh_cloud_generation(messages: list[ChatMessage]) -> bool:
             generation_id,
             exc_info=True,
         )
-        return False
+        return None
     if not snapshot or snapshot.get("state") in {"accepted", "streaming"}:
-        return False
+        return None
     state = snapshot.get("state")
     content = snapshot.get("content") or ""
     if state != "completed" and not content:
         content = f"生成失败：{snapshot.get('error') or '云端生成中断'}"
-    messages[-1] = ChatMessage(
+    return generation_id, ChatMessage(
         role="assistant",
         content=content,
         content_blocks=snapshot.get("content_blocks"),
         response_id=snapshot.get("response_id"),
-        generation_id=generation_id,
+        # This snapshot is terminal. Keeping the task id would make clients
+        # poll the same completed/failed cloud task forever.
+        generation_id=None,
         reasoning=snapshot.get("reasoning"),
         truncated=state != "completed",
     )
-    return True
+
+
+def _merge_cloud_generation_update(
+    messages: list[ChatMessage],
+    generation_id: str,
+    updated_message: ChatMessage,
+) -> bool:
+    """Merge a cloud snapshot without replacing turns appended meanwhile."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.role == "assistant" and message.generation_id == generation_id:
+            messages[index] = updated_message
+            return True
+    return False
 
 
 async def _cloud_generate_events(stream):
@@ -615,7 +632,12 @@ async def get_cross_paper_chat_history(session_id: str, user: dict = Depends(get
     session = _check_cross_paper_session(uid, session_id)
     messages, forks_raw, draft_raw = storage_service.get_cross_paper_chat_history(uid, session_id)
     storage_service.set_last_active_cross_paper_session(uid, session_id)
-    if await _refresh_cloud_generation(messages):
+    cloud_update = await _fetch_cloud_generation_update(messages)
+    if cloud_update:
+        # The cloud lookup awaited network I/O. Re-read before merging so a
+        # newly appended turn cannot be overwritten by this older GET.
+        messages, forks_raw, draft_raw = storage_service.get_cross_paper_chat_history(uid, session_id)
+    if cloud_update and _merge_cloud_generation_update(messages, *cloud_update):
         storage_service.save_cross_paper_chat_history(
             uid,
             session_id,
@@ -776,6 +798,23 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
     captured_messages_for_stream = messages + [ChatMessage(role="user", content=request.message, quotes=request.quotes)]
     prepared_api_messages = None
     cloud_stream = None
+
+    def persist_prestart_failure(message: str) -> None:
+        failed_messages = messages + [
+            ChatMessage(role="user", content=request.message, quotes=request.quotes),
+            ChatMessage(role="assistant", content=f"生成失败：{message}", truncated=True),
+        ]
+        storage_service.save_chat_history(
+            uid,
+            paper_id,
+            session_id,
+            failed_messages,
+            forks_raw,
+            {"input": "", "quotes": None, "page_selections": request.page_selections},
+            trigger_sync=True,
+        )
+        storage_service.set_last_active_session(uid, paper_id, session_id)
+
     try:
         if delegate_to_cloud:
             await sync_service.sync_now("cloud-chat-before-open", paper_id, wait_if_busy=False)
@@ -806,10 +845,13 @@ async def chat(paper_id: str, session_id: str, request: ChatRequest, user: dict 
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         logger.warning("[chat single:%s] cloud delegation failed before start: %s", session_id, exc)
+        persist_prestart_failure(str(exc))
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         logger.exception("[chat single:%s] cloud delegation failed before start", session_id)
-        raise HTTPException(status_code=502, detail=f"云端生成准备失败：{exc}")
+        detail = f"云端生成准备失败：{exc}"
+        persist_prestart_failure(detail)
+        raise HTTPException(status_code=502, detail=detail)
 
     generation_id = cloud_stream.task_id if cloud_stream is not None else uuid.uuid4().hex
     user_message = ChatMessage(
@@ -938,7 +980,12 @@ async def get_chat_history(paper_id: str, session_id: str, user: dict = Depends(
     _check_paper(uid, paper_id)
     messages, forks_raw, draft_raw = storage_service.get_chat_history(uid, paper_id, session_id)
     storage_service.set_last_active_session(uid, paper_id, session_id)
-    if await _refresh_cloud_generation(messages):
+    cloud_update = await _fetch_cloud_generation_update(messages)
+    if cloud_update:
+        # The cloud lookup awaited network I/O. Re-read before merging so a
+        # newly appended turn cannot be overwritten by this older GET.
+        messages, forks_raw, draft_raw = storage_service.get_chat_history(uid, paper_id, session_id)
+    if cloud_update and _merge_cloud_generation_update(messages, *cloud_update):
         storage_service.save_chat_history(
             uid,
             paper_id,

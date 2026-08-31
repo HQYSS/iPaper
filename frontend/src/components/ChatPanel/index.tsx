@@ -51,6 +51,7 @@ interface LLMEngineOption {
   maxTokens?: number
   label: string
   description: string
+  pdfSupport: string
 }
 
 interface ChatScrollState {
@@ -62,12 +63,24 @@ const CHAT_SCROLL_THRESHOLD = 80
 const chatScrollStateCache = new Map<string, ChatScrollState>()
 const LLM_ENGINE_OPTIONS: LLMEngineOption[] = [
   {
-    id: 'gpt-5.5',
+    id: 'gpt-5.6-sol-97',
     provider: 'llm_center_gpt_responses',
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-sol',
+    providerId: '97',
     maxTokens: 32768,
-    label: 'GPT-5.5',
-    description: '大 PDF 与 previous_response_id 多轮 reasoning',
+    label: 'GPT-5.6-Sol（多轮）',
+    description: '强化推理与代码分析；部分 PDF 读取可能较慢',
+    pdfSupport: '支持 previous；PDF 建议不超过 14MB',
+  },
+  {
+    id: 'gpt-5.6-sol-106',
+    provider: 'llm_center_gpt_responses',
+    model: 'gpt-5.6-sol',
+    providerId: '106',
+    maxTokens: 32768,
+    label: 'GPT-5.6-Sol（大 PDF）',
+    description: '完整历史模式，适合直接上传大文件',
+    pdfSupport: '不支持 previous；PDF 保守上限 35MiB',
   },
   {
     id: 'claude-opus-4-8',
@@ -76,7 +89,8 @@ const LLM_ENGINE_OPTIONS: LLMEngineOption[] = [
     providerId: '52',
     maxTokens: 32768,
     label: 'Opus 4.8',
-    description: 'Anthropic signed thinking，可手动切回',
+    description: '长文理解稳定，适合细致论文分析',
+    pdfSupport: 'PDF 直传至 14MB；更大文件转为页面图',
   },
   {
     id: 'claude-opus-5',
@@ -85,19 +99,30 @@ const LLM_ENGINE_OPTIONS: LLMEngineOption[] = [
     providerId: '88',
     maxTokens: 32768,
     label: 'Opus 5',
-    description: 'Anthropic signed thinking，PDF 直传约 16MB',
+    description: '综合分析能力更强，适合复杂论文与长上下文',
+    pdfSupport: 'PDF 直传至 22MB；更大文件转为页面图',
   },
   {
-    id: 'cursor-cli',
-    provider: 'cursor_cli',
-    label: 'Cursor CLI',
-    description: '本机 Cursor Agent',
+    id: 'claude-fable-5',
+    provider: 'llm_center_anthropic',
+    model: 'claude-fable-5',
+    providerId: '88',
+    maxTokens: 32768,
+    label: 'Fable 5',
+    description: '支持 signed thinking，多轮状态可原样续接',
+    pdfSupport: 'PDF 直传至 22MiB；更大文件转为页面图',
   },
 ]
 
+function formatPdfSize(sizeBytes: number): string {
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(0)} KB`
+  return `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 function isLLMEngineActive(option: LLMEngineOption, config: Config['llm'] | null): boolean {
   if (!config || option.provider !== config.provider) return false
-  return option.model ? option.model === config.model : option.provider === 'cursor_cli'
+  if (option.providerId && option.providerId !== config.provider_id) return false
+  return option.model ? option.model === config.model : false
 }
 
 function getLLMEngineOption(config: Config['llm'] | null): LLMEngineOption | undefined {
@@ -401,6 +426,24 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
   const activeSessionKey = getChatScrollStateKey(paperId, crossPaperSessionId, activeSessionId)
   const isStreaming = activeSessionKey ? Boolean(streamingByConversation[activeSessionKey]) : false
   const currentEngineOption = getLLMEngineOption(llmConfig)
+  const activePdfSummary = useMemo(() => {
+    const activePaperIds = isCrossMode ? crossPaperIds : (paperId ? [paperId] : [])
+    const activePapers = activePaperIds
+      .map((id) => papers.find((paper) => paper.arxiv_id === id))
+      .filter((paper) => paper !== undefined)
+    const knownSizes = activePapers
+      .map((paper) => paper.pdf_size_bytes)
+      .filter((size): size is number => typeof size === 'number' && size >= 0)
+
+    if (activePaperIds.length === 0) return '未选择 PDF'
+    if (knownSizes.length !== activePaperIds.length) {
+      return isCrossMode ? `${activePaperIds.length} 篇 PDF · 大小获取中` : '当前 PDF · 大小获取中'
+    }
+    const totalSize = knownSizes.reduce((sum, size) => sum + size, 0)
+    return isCrossMode
+      ? `${activePaperIds.length} 篇 PDF · 合计 ${formatPdfSize(totalSize)}`
+      : `当前 PDF · ${formatPdfSize(totalSize)}`
+  }, [crossPaperIds, isCrossMode, paperId, papers])
   const pendingRestoreSessionKeyRef = useRef<string | null>(null)
   const isRestoringScrollRef = useRef(false)
   const hasHydratedSessionRef = useRef(false)
@@ -430,11 +473,7 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
       setShowEngineMenu(false)
       return
     }
-    if (option.provider === 'cursor_cli' && llmConfig && !llmConfig.cursor_cli_available) {
-      setEngineError('未检测到 Cursor CLI，请先确认本机已安装并登录')
-      return
-    }
-    if (option.provider !== 'cursor_cli' && llmConfig && !llmConfig.api_key_configured) {
+    if (llmConfig && !llmConfig.api_key_configured) {
       setEngineError('LLM Center API Key 未配置，请先到设置中填写')
       return
     }
@@ -750,13 +789,15 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
               <ChevronDown className="w-3 h-3" />
             </button>
             {showEngineMenu && (
-              <div className="absolute left-1 top-7 z-30 w-56 rounded-xl border border-border bg-popover p-1.5 shadow-lg">
-                {LLM_ENGINE_OPTIONS.map((option) => {
+              <div className="absolute left-1 top-7 z-30 w-72 overflow-hidden rounded-lg border border-border bg-popover shadow-lg">
+                <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  <FileText className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span>{activePdfSummary}</span>
+                </div>
+                <div className="p-1.5">
+                  {LLM_ENGINE_OPTIONS.map((option) => {
                   const isActive = isLLMEngineActive(option, llmConfig)
-                  const isUnavailable =
-                    option.provider === 'cursor_cli'
-                      ? llmConfig?.cursor_cli_available === false
-                      : llmConfig?.api_key_configured === false
+                  const isUnavailable = llmConfig?.api_key_configured === false
                   return (
                     <button
                       key={option.id}
@@ -771,20 +812,26 @@ export function ChatPanel({ paperId, crossPaperSessionId, onCollapse, onPaperLin
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">{option.label}</span>
-                        {isActive && <span className="text-[10px]">当前</span>}
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          {isUnavailable && <span className="text-amber-600 dark:text-amber-400">未配置</span>}
+                          {isActive && <span>当前</span>}
+                        </div>
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {option.description}
-                        {isUnavailable ? ' · 未配置' : ''}
+                      </div>
+                      <div className="mt-1 text-[11px] text-foreground/70">
+                        {option.pdfSupport}
                       </div>
                     </button>
                   )
-                })}
-                {engineError && (
-                  <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
-                    {engineError}
-                  </div>
-                )}
+                  })}
+                  {engineError && (
+                    <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                      {engineError}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

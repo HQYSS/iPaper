@@ -59,7 +59,10 @@ webPreferences: {
 - 主动同步职责完全下沉到本地后端；Electron 主进程不再保留第二套 `syncOnce()/startSyncLoops()` 逻辑
 - Electron 通过 `app.requestSingleInstanceLock()` 强制单实例运行；再次启动会聚焦已有窗口，而不是并行跑第二只旧主进程
 - 只要本地后端在跑，本地写操作就会自动推云端；关闭 Electron 时会一并结束本地后端
-- 当前默认云端固定为 `https://59.110.154.252/ipaper/api`
+- 当前默认云端固定为 `https://59.110.154.252/ipaper/api`。公网入口仍在 VPS，iPaper
+  FastAPI 后端已迁移到 mb，通过 FRP 的 VPS 本机端口 `127.0.0.1:33000` 反代；这样
+  后端可以访问内网 LLM Center。mb 被抢占或换机时需按跨集群开发系统的恢复流程重新拉起
+  `/etc/init.d/ipaper-backend` 和 `frpc2`。
 - 当前云端为 IP + 自签名 HTTPS；本地后端通过 `sync_verify_ssl=false` 连接 Sync API，浏览器访问 Web/PWA 时需信任证书
 - 云端同步使用专用设备凭证，不再复用网页登录 JWT
 - 外部链接使用系统浏览器打开
@@ -176,20 +179,32 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
 
 **关键细节：**
 - 使用**绝对路径**调用 python/npm/node（双击 .app 时 PATH 不含 homebrew/conda）
-- 路径硬编码在脚本中：
-  - Python: `/Users/admin/miniconda3/bin/python`
-  - npm: `/opt/homebrew/bin/npm`
-  - node: `/opt/homebrew/bin/node`
+- `PROJECT_DIR` 由 `iPaper.sh` 所在 `.app` 位置解析，不再写死用户名
+- 启动时按以下顺序找解释器：`IPAPER_PYTHON` → `~/miniconda3/envs/ipaper/bin/python` → `~/miniconda3/bin/python` → `PATH` 里的 `python3` / `npm`
+- 会把 `/opt/homebrew/bin`、`/usr/local/bin`、`~/miniconda3/...`、`~/.local/node/bin` 加到 `PATH` 前面
 - 日志输出到 `项目根目录/logs/`
 - 启动后端/前端时会写入当前 git SHA；`backend.log`、`frontend.log`、`electron.log` 超过 50MB 时，启动脚本会先轮转为 `.1`
 - `start_backend()` 会显式注入 `IPAPER_SYNC_ROLE=client`，确保本地后端承担主动同步客户端角色，而不是误用云端被动服务端配置
-- **启动锁**：`logs/ipaper-launch.lock/runner.pid` 记录当前 launcher。再次打开 `iPaper.app` 时，如果 Electron 仍健康，会启动一个短暂的第二实例触发 `app.requestSingleInstanceLock()` 的聚焦逻辑；如果只有旧 runner/端口残留但 Electron 已不在，则杀掉残留并重建运行态
+- **启动锁**：`logs/ipaper-launch.lock/runner.pid` 记录当前 launcher。再次打开 `iPaper.app` 时，如果已有 runner（包括后端/前端已启动、Electron 尚在启动中的阶段），会保留原启动链并启动一个短暂的第二实例触发 `app.requestSingleInstanceLock()` 的聚焦逻辑；只有 runner PID 已不存在时，才按陈旧锁清理并重建运行态。这样可避免用户连续点击图标时误杀首个 Electron 启动过程
 - **PID 文件 + 端口兜底清理**：启动后端后将 PID 写入 `logs/backend.pid`，cleanup 时先读 PID 精准杀进程，再用 `lsof -ti :PORT` 按端口兜底，防止旧进程占端口
 - **后端 watchdog**：`start_backend_watchdog()` 在 Electron 壳运行期间每 5 秒检查 `logs/backend.pid` 和 `GET /` 健康检查；如果后端进程退出或 3000 端口不可用，会写入 `logs/backend-watchdog.log` 并自动重启后端，避免前端还在但 API 断掉后刷新进入登录页
 - cleanup 会按更宽松的进程模式清掉旧 `uvicorn main:app` 和旧 Electron 开发主进程，再配合 Electron 单实例锁和 launcher 启动锁，避免出现"老 Electron 壳 + 新前后端服务"或"隐藏 applet 活着但窗口已退出"的混合运行态
 - **cleanup 用 `kill -9` / `pkill -9`** —— 之前用 SIGTERM 杀不掉孤儿 Electron 主进程（不响应 SIGTERM 的话留下来持有 `singleInstanceLock` 阻断下次启动），见上面"启动事故排查"小节
 - **Electron stdout/stderr 重定向到 `logs/electron.log`** —— 否则 `app.dock.setIcon` 之类的报错会被 applet 吞掉，"窗口不出来"完全无法定位
 - **`patch_electron_branding`**：启动 Electron 前修改 `node_modules/electron/dist/Electron.app/Contents/Info.plist` 的 `CFBundleName/DisplayName/IconFile` 为 iPaper，并把 `iPaper.icns` 复制进 Electron.app 的 Resources。每次启动幂等执行，npm install 覆盖后下次启动会自动重 patch
+
+### 启动失败排查记录：连续点击导致 `Killed: 9`
+
+如果 `logs/launcher.log` 在短时间内出现多次 `stale launcher pid=... without Electron`，同时
+`logs/backend.log`、`logs/frontend.log` 和 `logs/electron.log` 反复出现 `Killed: 9`，先检查
+`logs/ipaper-launch.lock/runner.pid` 对应的进程是否仍存活。启动阶段 Electron 进程尚未出现在
+进程表中是正常窗口，不应据此终止 runner；当前启动器会把存活 runner 视为正在启动并让它继续完成。
+只有 PID 已不存在的锁才可清理。修复或修改启动脚本后必须完整退出并重新打开 `iPaper.app`，再确认
+3000、5173 各只有一个监听进程、Electron 主进程只有一个，并运行：
+
+```bash
+./scripts/verify-delivery.sh --electron
+```
 
 **注意：** 如果 Python 或 Node.js 的安装路径变化，需要更新此脚本。`start-cursor-mode.sh` 也使用相同的 PID 文件 + 端口清理机制。
 
@@ -235,9 +250,24 @@ trap cleanup        # Electron 退出/崩溃后释放锁、清理前后端和 PI
 | Vite Proxy → FastAPI | `/api` → `http://127.0.0.1:3000` |
 | Chrome 扩展 → FastAPI | `http://127.0.0.1:3000/api` |
 | FastAPI → arXiv | `https://arxiv.org/` (下载论文时) |
-| FastAPI → LLM Center API | `https://llm-center.ali.modelbest.cn/llm` (LLM 对话时) |
+| FastAPI → LLM Center API | `https://llm-center.modelbest.co/llm` (LLM 对话时) |
 
 所有本地服务绑定在 `127.0.0.1`，不暴露到外网。
+
+### 云端 arXiv 下载代理
+
+云端到 arXiv/Fastly 的链路可能只有几十 KB/s。服务器可运行独立的
+Hysteria 2 HTTP 代理，仅监听 `127.0.0.1:18080`；后端通过
+`IPAPER_ARXIV_PROXY_URL=http://127.0.0.1:18080` 只代理论文 PDF 获取。
+LLM Center、设备同步和其他 HTTP 请求不使用该代理。
+
+- 客户端二进制：`/user/liuhanyu/iPaper/bin/hysteria`
+- 私密配置：`/user/liuhanyu/iPaper/config/hysteria.json`（权限 `0600`，不入 Git）
+- 启动脚本：`scripts/initd-ipaper-hysteria`
+- 日志：`/user/liuhanyu/logs/ipaper-hysteria.log`
+
+`initd-ipaper-backend` 会在私密配置存在时先确保代理进程已启动。没有配置时，
+本地开发和其他部署仍保持直连行为。
 
 ---
 
@@ -282,6 +312,8 @@ host manifest 写入 Chrome 约定目录，并通过 `allowed_origins` 绑定固
 
 云端的 `/ipaper/` 同时是 Web 端 + PWA。iPhone Safari 打开后可"分享 → 添加到主屏幕"，独立窗口启动并应用 `MobileLayout`。
 
+> 通用的环境识别、交付状态分层和部署成功定义以 [开发规范](./开发规范.md#三部署同步手动参考) 为准；本节只补充 PWA、favicon 和静态资源的专项要求。
+
 ### 关键资产
 
 | 文件 | 说明 |
@@ -289,18 +321,28 @@ host manifest 写入 Chrome 约定目录，并通过 `allowed_origins` 绑定固
 | `frontend/index.html` | iOS 全套 meta：`viewport-fit=cover`、`apple-mobile-web-app-capable`、`apple-mobile-web-app-status-bar-style=black-translucent`、`apple-mobile-web-app-title=iPaper`、亮/暗 `theme-color` |
 | `frontend/public/manifest.webmanifest` | PWA manifest：`name` / `short_name` / `start_url=.` / `scope=./` / `display=standalone` / `orientation=portrait`（iPhone 强制竖屏）+ icons 数组（192/512/maskable-512） |
 | `frontend/public/icons/` | 全套尺寸：`favicon-16/32`、`apple-touch-icon-180`、`icon-192/512/1024`、`icon-maskable-512`。源图 `assets/m1-letter-i.png`，生成脚本 `/tmp/ipaper-icon-design/generate_icons.py`（PIL，做了像素级 whiteness 提取 + 重建紫色渐变背景，去掉 AI 源图自带的 squircle 描边/阴影/光晕） |
-| `frontend/public/sw.js` | Service Worker，缓存静态资源 + `.webmanifest`。**改完任意 PWA 资产必须把 `CACHE_NAME` 加版（如 `v3 → v4`），否则旧客户端不会刷新缓存** |
+| `frontend/public/sw.js` | Service Worker，缓存静态资源 + `.webmanifest`。修改 SW 策略、PWA 安装图标或已被 SW 缓存的同 URL 资产时，必须把 `CACHE_NAME` 加版 |
 
 ### 改图标 / PWA 资产的标准动作
 
 ```bash
 cd /tmp/ipaper-icon-design && python3 generate_icons.py   # 重生成全套 PNG 到 frontend/public/icons/
 ./scripts/generate-macos-icns.sh                          # 同步到 electron/iPaper.icns + iPaper.app/Contents/Resources/applet.icns，并刷 Finder/Dock 缓存
-# 改 sw.js 里的 CACHE_NAME，加一档版本号
-./scripts/deploy.sh                                       # 自动 build + 推 dist
+# 若改了 PWA 安装图标或 SW 缓存资产，改 sw.js 里的 CACHE_NAME
+./scripts/deploy.sh --frontend                            # build + 原子替换 dist + 公网 release 校验
 ```
 
-部署后用 iPhone Safari 强制刷新（关掉 PWA 进程后重开），验证图标和 manifest 已更新。
+标签页 favicon 不依赖 PWA manifest；修改 `favicon-16/32.png` 时同时更改 `index.html` 里的 URL 版本参数，部署后用公网 HTML 和 PNG 哈希验证。Chrome 可能不更新已打开标签的 favicon，需关闭标签后重开。PWA 安装图标改动则需关掉 PWA 进程后重开验证。
+
+### 前端发布验收
+
+`./scripts/deploy.sh --frontend` 只有在以下三步全部成功时才返回成功：
+
+1. TypeScript + Vite 生产构建通过。
+2. `dist` 在 VPS 上通过 `dist.next → dist` 原子替换。
+3. 公网 `/ipaper/release.json` 与本次本地构建标识完全一致。
+
+不要用 `/api/health/runtime` 代替第 3 步：API 由 mb 提供，前端静态文件由 VPS 提供，两者是不同的发布面。
 
 ### macOS 图标的多个位置
 

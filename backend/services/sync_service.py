@@ -13,8 +13,9 @@ import re
 import os
 import time
 import uuid
+from jose import JWTError, jwt
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import httpx
@@ -29,6 +30,20 @@ LOCAL_PUSH_DEBOUNCE_SECONDS = 2.0
 REMOTE_POLL_SECONDS = 300.0
 
 
+def sync_identity_from_token(token: str) -> str:
+    """Read the token subject only to select a local data directory.
+
+    The cloud endpoint remains the authority for token authentication. Before
+    transfer, the returned manifest is checked against this subject.
+    """
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except (JWTError, ValueError, TypeError):
+        return ""
+    subject = claims.get("sub")
+    return subject.strip() if isinstance(subject, str) else ""
+
+
 class SyncManifestItem:
     __slots__ = (
         "arxiv_id",
@@ -38,6 +53,11 @@ class SyncManifestItem:
         "pdf_available",
         "pdf_hash",
         "pdf_updated_at",
+        "pdf_download_status",
+        "pdf_download_error",
+        "pdf_download_bytes",
+        "pdf_download_total_bytes",
+        "pdf_download_progress",
     )
 
     def __init__(
@@ -49,6 +69,11 @@ class SyncManifestItem:
         pdf_available: bool = False,
         pdf_hash: Optional[str] = None,
         pdf_updated_at: Optional[str] = None,
+        pdf_download_status: str = "ready",
+        pdf_download_error: Optional[str] = None,
+        pdf_download_bytes: int = 0,
+        pdf_download_total_bytes: Optional[int] = None,
+        pdf_download_progress: Optional[float] = None,
     ):
         self.arxiv_id = arxiv_id
         self.updated_at = updated_at
@@ -57,6 +82,11 @@ class SyncManifestItem:
         self.pdf_available = pdf_available
         self.pdf_hash = pdf_hash
         self.pdf_updated_at = pdf_updated_at
+        self.pdf_download_status = pdf_download_status
+        self.pdf_download_error = pdf_download_error
+        self.pdf_download_bytes = pdf_download_bytes
+        self.pdf_download_total_bytes = pdf_download_total_bytes
+        self.pdf_download_progress = pdf_download_progress
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +97,11 @@ class SyncManifestItem:
             "pdf_available": self.pdf_available,
             "pdf_hash": self.pdf_hash,
             "pdf_updated_at": self.pdf_updated_at,
+            "pdf_download_status": self.pdf_download_status,
+            "pdf_download_error": self.pdf_download_error,
+            "pdf_download_bytes": self.pdf_download_bytes,
+            "pdf_download_total_bytes": self.pdf_download_total_bytes,
+            "pdf_download_progress": self.pdf_download_progress,
         }
 
 
@@ -151,6 +186,10 @@ class SyncService:
     def _client_role_required() -> bool:
         return settings.is_sync_client
 
+    @staticmethod
+    def local_sync_user_id() -> str:
+        return sync_identity_from_token(settings.sync_token.strip()) or LOCAL_SYNC_USER_ID
+
     def _paper_dir(self, user_id: str, paper_id: str) -> Path:
         if not self.PAPER_ID_PATTERN.fullmatch(paper_id):
             raise ValueError("invalid paper_id")
@@ -234,7 +273,7 @@ class SyncService:
     def _file_mtime(path: Path) -> Optional[str]:
         if not path.exists():
             return None
-        return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
 
     @staticmethod
     def _device_id() -> str:
@@ -355,6 +394,25 @@ class SyncService:
                 paper_updated_at = self._get_paper_content_updated_at(paper_dir)
                 chats_updated_at = self._get_paper_chats_updated_at(paper_dir)
                 updated_at = self._max_timestamp(paper_updated_at, chats_updated_at)
+                meta = self._read_json(meta_file)
+                pdf_path = paper_dir / "paper.pdf"
+                if pdf_path.exists():
+                    size = pdf_path.stat().st_size
+                    progress = {
+                        "download_bytes": size,
+                        "download_total_bytes": size,
+                        "download_progress": 1.0,
+                    }
+                else:
+                    try:
+                        from services.arxiv_service import arxiv_service
+                        progress = arxiv_service.get_download_progress(user_id, paper_dir.name)
+                    except Exception:
+                        progress = {
+                            "download_bytes": 0,
+                            "download_total_bytes": None,
+                            "download_progress": None,
+                        }
                 items.append(SyncManifestItem(
                     arxiv_id=paper_dir.name,
                     updated_at=updated_at,
@@ -363,6 +421,11 @@ class SyncService:
                     pdf_available=(paper_dir / "paper.pdf").exists(),
                     pdf_hash=self._file_sha256(paper_dir / "paper.pdf"),
                     pdf_updated_at=self._file_mtime(paper_dir / "paper.pdf"),
+                    pdf_download_status=meta.get("download_status", "ready") or "ready",
+                    pdf_download_error=meta.get("download_error"),
+                    pdf_download_bytes=progress["download_bytes"],
+                    pdf_download_total_bytes=progress["download_total_bytes"],
+                    pdf_download_progress=progress["download_progress"],
                 ))
 
         active_deletions = self._get_active_paper_tombstones(user_id)
@@ -410,7 +473,7 @@ class SyncService:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             included_files = []
-            for file_path in paper_dir.rglob("*"):
+            for file_path in sorted(paper_dir.rglob("*")):
                 if file_path.is_file():
                     relative_path = file_path.relative_to(paper_dir)
                     if (
@@ -422,9 +485,19 @@ class SyncService:
                     arcname = str(relative_path)
                     zf.write(file_path, arcname)
                     included_files.append(arcname)
-            zf.writestr(
+            manifest_info = zipfile.ZipInfo(
                 ".sync-metadata-manifest.json",
-                json.dumps({"files": sorted(included_files)}, ensure_ascii=False),
+                date_time=(1980, 1, 1, 0, 0, 0),
+            )
+            manifest_info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(
+                manifest_info,
+                json.dumps(
+                    {"files": sorted(included_files)},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
             )
         return buf.getvalue()
 
@@ -452,6 +525,28 @@ class SyncService:
             and not path.name.endswith(".part")
             and path.name != ".sync-metadata-manifest.json"
         )
+
+    @staticmethod
+    def _metadata_is_placeholder(metadata: dict) -> bool:
+        arxiv_id = str(metadata.get("arxiv_id", "")).strip()
+        title = str(metadata.get("title", "")).strip()
+        summary = str(metadata.get("summary", "")).strip()
+        return (
+            title in {f"arXiv {arxiv_id}", f"arxiv {arxiv_id}"}
+            or summary == "arXiv 元数据待补齐；PDF 下载完成后即可先阅读。"
+        )
+
+    def _local_metadata_is_complete(self, user_id: str, paper_id: str) -> bool:
+        metadata = self._read_json(self._paper_dir(user_id, paper_id) / "meta.json")
+        return bool(metadata) and not self._metadata_is_placeholder(metadata)
+
+    @staticmethod
+    def _bundle_metadata(bundle_bytes: bytes) -> Optional[dict]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(bundle_bytes), "r") as archive:
+                return json.loads(archive.read("meta.json").decode("utf-8"))
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile):
+            return None
 
     def _recover_metadata_install(self, paper_dir: Path, paper_id: str) -> None:
         parent = paper_dir.parent
@@ -994,25 +1089,33 @@ class SyncService:
 
     @staticmethod
     def _compare_timestamps(left: Optional[str], right: Optional[str]) -> int:
-        left_dt = datetime.fromisoformat(left) if left else datetime.min
-        right_dt = datetime.fromisoformat(right) if right else datetime.min
+        left_dt = SyncService._parse_timestamp(left)
+        right_dt = SyncService._parse_timestamp(right)
         if left_dt > right_dt:
             return 1
         if left_dt < right_dt:
             return -1
         return 0
 
+    @staticmethod
+    def _parse_timestamp(value: Optional[str]) -> datetime:
+        if not value:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     def _max_timestamp(self, *values: Optional[str]) -> str:
-        latest = datetime.min
+        latest_value: Optional[str] = None
         for value in values:
             if not value:
                 continue
-            candidate = datetime.fromisoformat(value)
-            if candidate > latest:
-                latest = candidate
-        if latest == datetime.min:
+            if latest_value is None or self._compare_timestamps(value, latest_value) > 0:
+                latest_value = value
+        if latest_value is None:
             return datetime.min.isoformat()
-        return latest.isoformat()
+        return latest_value
 
     def _paper_fingerprint(self, manifest: SyncManifest) -> str:
         return json.dumps(
@@ -1034,7 +1137,7 @@ class SyncService:
         )
 
     def _get_paper_content_updated_at(self, paper_dir: Path) -> str:
-        latest = datetime.min
+        latest: Optional[str] = None
         for file_path in paper_dir.rglob("*"):
             if not file_path.is_file():
                 continue
@@ -1049,31 +1152,38 @@ class SyncService:
                 except Exception:
                     data = {}
             candidate = data.get("updated_at") or data.get("download_time")
-            if candidate:
-                candidate_dt = datetime.fromisoformat(candidate)
-            else:
-                candidate_dt = datetime.fromtimestamp(file_path.stat().st_mtime)
-            if candidate_dt > latest:
-                latest = candidate_dt
-        if latest == datetime.min:
+            if not candidate:
+                candidate = datetime.fromtimestamp(
+                    file_path.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+            if latest is None or self._compare_timestamps(candidate, latest) > 0:
+                latest = candidate
+        if latest is None:
             meta_file = paper_dir / "meta.json"
             if meta_file.exists():
                 meta = self._read_json(meta_file)
                 fallback = meta.get("updated_at") or meta.get("download_time")
                 if fallback:
-                    latest = datetime.fromisoformat(fallback)
+                    latest = fallback
                 else:
-                    latest = datetime.fromtimestamp(meta_file.stat().st_mtime)
+                    latest = datetime.fromtimestamp(
+                        meta_file.stat().st_mtime,
+                        timezone.utc,
+                    ).isoformat()
             else:
-                latest = datetime.fromtimestamp(paper_dir.stat().st_mtime)
-        return latest.isoformat()
+                latest = datetime.fromtimestamp(
+                    paper_dir.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+        return latest
 
     def _get_paper_chats_updated_at(self, paper_dir: Path) -> Optional[str]:
         chats_dir = paper_dir / "chats"
         if not chats_dir.exists():
             return None
 
-        latest = datetime.min
+        latest: Optional[str] = None
         for file_path in chats_dir.rglob("*"):
             if not file_path.is_file() or file_path.suffix != ".json":
                 continue
@@ -1088,12 +1198,15 @@ class SyncService:
                 if isinstance(session, dict) and session.get("updated_at"):
                     candidates.append(session.get("updated_at"))
             if candidates:
-                candidate_dt = max(datetime.fromisoformat(value) for value in candidates)
+                candidate = self._max_timestamp(*candidates)
             else:
-                candidate_dt = datetime.fromtimestamp(file_path.stat().st_mtime)
-            if candidate_dt > latest:
-                latest = candidate_dt
-        return latest.isoformat() if latest != datetime.min else None
+                candidate = datetime.fromtimestamp(
+                    file_path.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+            if latest is None or self._compare_timestamps(candidate, latest) > 0:
+                latest = candidate
+        return latest
 
     def _rebuild_papers_index(self, user_id: str) -> None:
         papers_dir = settings.get_user_papers_dir(user_id)
@@ -1236,6 +1349,7 @@ class SyncService:
                         f"paper:{paper_id}",
                         local_updated,
                         remote_updated,
+                        payload_digest=hashlib.sha256(bundle).hexdigest(),
                     ),
                     files={"file": (f"{paper_id}-metadata.zip", bundle, "application/zip")},
                 )
@@ -1274,7 +1388,7 @@ class SyncService:
         self._outbox_generation += 1
         self._persist_outbox()
         await self._sync_once(
-            LOCAL_SYNC_USER_ID,
+            self.local_sync_user_id(),
             reason,
             target_paper_ids={paper_id} if paper_id and scope != "chats" else set() if scope == "chats" else None,
             target_chat_paper_ids={paper_id} if paper_id and scope == "chats" else set(),
@@ -1320,7 +1434,7 @@ class SyncService:
 
             if should_sync:
                 try:
-                    await self._sync_once(LOCAL_SYNC_USER_ID, "remote-poll")
+                    await self._sync_once(self.local_sync_user_id(), "remote-poll")
                 except Exception:
                     self._last_sync_error = "remote-poll failed"
                     logger.exception("Background sync failed: remote-poll")
@@ -1349,7 +1463,7 @@ class SyncService:
             ):
                 return
             await self._sync_once(
-                LOCAL_SYNC_USER_ID,
+                self.local_sync_user_id(),
                 reason,
                 target_paper_ids=target_paper_ids,
                 target_chat_paper_ids=target_chat_paper_ids,
@@ -1373,6 +1487,31 @@ class SyncService:
             return f"{sync_url}/sync"
         return f"{sync_url}/api/sync"
 
+    async def get_remote_pdf_statuses(self) -> Dict[str, dict]:
+        if not self._client_role_required():
+            return {}
+        sync_token = settings.sync_token.strip()
+        sync_base = self._normalize_sync_base()
+        if not sync_token or not sync_base:
+            return {}
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0),
+            verify=settings.sync_verify_ssl,
+        ) as client:
+            response = await client.get(
+                f"{sync_base}/manifest",
+                headers={
+                    "Authorization": f"Bearer {sync_token}",
+                    "X-Sync-Protocol": "2",
+                },
+            )
+            response.raise_for_status()
+        return {
+            item["arxiv_id"]: item
+            for item in response.json().get("papers", [])
+            if item.get("arxiv_id")
+        }
+
     def _write_headers(
         self,
         sync_token: str,
@@ -1380,9 +1519,12 @@ class SyncService:
         revision: Optional[str],
         base_revision: Optional[str] = None,
         include_base: bool = True,
+        payload_digest: Optional[str] = None,
     ) -> dict:
         normalized_revision = revision or "__none__"
         operation_id = f"{self._device_id()}:{entity}:{normalized_revision}"
+        if payload_digest:
+            operation_id = f"{operation_id}:{payload_digest}"
         headers = {
             "Authorization": f"Bearer {sync_token}",
             "Idempotency-Key": operation_id,
@@ -1428,6 +1570,12 @@ class SyncService:
                 remote_manifest = remote_manifest_resp.json()
                 if remote_manifest.get("manifest_version") != 2:
                     raise RuntimeError("云端同步协议版本过旧，请先升级云端后端")
+                expected_cloud_user_id = sync_identity_from_token(sync_token)
+                remote_cloud_user_id = str(remote_manifest.get("user_id") or "").strip()
+                if not expected_cloud_user_id or remote_cloud_user_id != expected_cloud_user_id:
+                    raise RuntimeError(
+                        "同步账号身份不匹配，已停止同步；请重新绑定同一云端账号"
+                    )
 
                 await self._sync_papers(
                     client,
@@ -1619,6 +1767,46 @@ class SyncService:
                     headers={"Authorization": f"Bearer {sync_token}"},
                 )
                 resp.raise_for_status()
+                remote_metadata = self._bundle_metadata(resp.content)
+                # Metadata enrichment can finish locally after the paper-added
+                # placeholder has already been replicated. Do not let that
+                # older placeholder overwrite a complete local title merely
+                # because its bundle timestamp is newer.
+                if (
+                    remote_metadata is not None
+                    and self._metadata_is_placeholder(remote_metadata)
+                    and self._local_metadata_is_complete(user_id, paper_id)
+                ):
+                    local_bundle = self.create_paper_metadata_bundle(user_id, paper_id)
+                    if local_bundle is not None:
+                        push_resp = await client.put(
+                            f"{sync_base}/papers/{paper_id}/metadata/bundle",
+                            headers=self._write_headers(
+                                sync_token,
+                                f"paper:{paper_id}",
+                                local_updated,
+                                remote_updated,
+                                payload_digest=hashlib.sha256(local_bundle).hexdigest(),
+                            ),
+                            files={"file": (f"{paper_id}.zip", local_bundle, "application/zip")},
+                        )
+                        push_resp.raise_for_status()
+                        logger.info(
+                            "sync paper run=%s action=preserve-complete-metadata paper=%s remote_updated=%s local_updated=%s",
+                            sync_run_id,
+                            paper_id,
+                            remote_updated,
+                            local_updated,
+                        )
+                        await self._sync_pdf_asset(
+                            client,
+                            sync_base,
+                            sync_token,
+                            user_id,
+                            paper_id,
+                            remote_papers.get(paper_id, {}),
+                        )
+                        continue
                 self.extract_paper_bundle(user_id, paper_id, resp.content)
                 await self._sync_pdf_asset(
                     client,
@@ -1636,17 +1824,86 @@ class SyncService:
                 if bundle is None:
                     logger.info("sync paper run=%s action=skip paper=%s reason=no-bundle", sync_run_id, paper_id)
                     continue
-                files = {"file": (f"{paper_id}.zip", bundle, "application/zip")}
-                resp = await client.put(
-                    f"{sync_base}/papers/{paper_id}/metadata/bundle",
-                    headers=self._write_headers(
-                        sync_token,
-                        f"paper:{paper_id}",
+                url = f"{sync_base}/papers/{paper_id}/metadata/bundle"
+                payload_digest = hashlib.sha256(bundle).hexdigest()
+
+                async def push(base_revision: Optional[str]):
+                    return await client.put(
+                        url,
+                        headers=self._write_headers(
+                            sync_token,
+                            f"paper:{paper_id}",
+                            local_updated,
+                            base_revision,
+                            payload_digest=payload_digest,
+                        ),
+                        files={"file": (f"{paper_id}.zip", bundle, "application/zip")},
+                    )
+
+                resp = await push(remote_updated)
+                if resp.status_code == 409:
+                    manifest_resp = await client.get(
+                        f"{sync_base}/manifest",
+                        headers={
+                            "Authorization": f"Bearer {sync_token}",
+                            "X-Sync-Protocol": "2",
+                        },
+                    )
+                    manifest_resp.raise_for_status()
+                    fresh_remote = next(
+                        (
+                            item
+                            for item in manifest_resp.json().get("papers", [])
+                            if item.get("arxiv_id") == paper_id
+                        ),
+                        {},
+                    )
+                    fresh_remote_updated = (
+                        fresh_remote.get("paper_updated_at")
+                        or fresh_remote.get("updated_at")
+                    )
+                    comparison = self._compare_timestamps(
+                        fresh_remote_updated,
                         local_updated,
+                    )
+                    if comparison > 0:
+                        remote_bundle = await client.get(
+                            url,
+                            headers={"Authorization": f"Bearer {sync_token}"},
+                        )
+                        remote_bundle.raise_for_status()
+                        if not self.extract_paper_bundle(
+                            user_id,
+                            paper_id,
+                            remote_bundle.content,
+                        ):
+                            raise RuntimeError(
+                                f"invalid remote paper metadata bundle for {paper_id}"
+                            )
+                        logger.info(
+                            "sync paper run=%s action=pull-after-conflict paper=%s remote_updated=%s local_updated=%s",
+                            sync_run_id,
+                            paper_id,
+                            fresh_remote_updated,
+                            local_updated,
+                        )
+                        continue
+                    if comparison == 0:
+                        logger.info(
+                            "sync paper run=%s action=resolved-conflict paper=%s revision=%s",
+                            sync_run_id,
+                            paper_id,
+                            local_updated,
+                        )
+                        continue
+                    logger.info(
+                        "sync paper run=%s action=retry-push paper=%s old_base=%s new_base=%s",
+                        sync_run_id,
+                        paper_id,
                         remote_updated,
-                    ),
-                    files=files,
-                )
+                        fresh_remote_updated,
+                    )
+                    resp = await push(fresh_remote_updated)
                 resp.raise_for_status()
                 await self._sync_pdf_asset(
                     client,
@@ -1857,12 +2114,12 @@ class SyncService:
         if path.suffix == ".json":
             data = self._read_json(path)
             return data.get("updated_at")
-        return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
 
     def _get_directory_updated_at(self, path: Path) -> Optional[str]:
         if not path.exists():
             return None
-        latest = datetime.min
+        latest: Optional[str] = None
         for file_path in path.rglob("*"):
             if not file_path.is_file():
                 continue
@@ -1872,14 +2129,14 @@ class SyncService:
                     candidate = self._read_json(file_path).get("updated_at")
                 except Exception:
                     candidate = None
-            candidate_dt = (
-                datetime.fromisoformat(candidate)
-                if candidate
-                else datetime.fromtimestamp(file_path.stat().st_mtime)
-            )
-            if candidate_dt > latest:
-                latest = candidate_dt
-        return latest.isoformat() if latest != datetime.min else None
+            if not candidate:
+                candidate = datetime.fromtimestamp(
+                    file_path.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+            if latest is None or self._compare_timestamps(candidate, latest) > 0:
+                latest = candidate
+        return latest
 
     @staticmethod
     def _read_json(path: Path) -> dict:

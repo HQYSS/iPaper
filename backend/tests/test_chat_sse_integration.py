@@ -71,3 +71,48 @@ async def test_single_paper_chat_sse_contract(monkeypatch):
         await task.asyncio_task
     for eviction in list(chat_router.chat_task_service._evict_tasks):
         eviction.cancel()
+
+
+@pytest.mark.asyncio
+async def test_cloud_prestart_failure_is_persisted(monkeypatch):
+    saved_histories = []
+
+    monkeypatch.setattr(chat_router.arxiv_service, "get_paper", lambda *args: SimpleNamespace(title="Test"))
+    monkeypatch.setattr(chat_router.arxiv_service, "get_pdf_path", lambda *args: None)
+    monkeypatch.setattr(chat_router.cloud_chat_service, "should_delegate", lambda: True)
+    monkeypatch.setattr(chat_router.storage_service, "get_chat_history", lambda *args: ([], None, None))
+    monkeypatch.setattr(
+        chat_router.storage_service,
+        "save_chat_history",
+        lambda *args, **kwargs: saved_histories.append((args, kwargs)),
+    )
+    monkeypatch.setattr(chat_router.storage_service, "set_last_active_session", lambda *args: None)
+
+    async def sync_now(*args, **kwargs):
+        return None
+
+    async def open_stream(**kwargs):
+        raise RuntimeError("云端准备论文 PDF 超时，请稍后重试")
+
+    monkeypatch.setattr(chat_router.sync_service, "sync_now", sync_now)
+    monkeypatch.setattr(chat_router.cloud_chat_service, "open_single_stream", open_stream)
+
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "integration-user",
+        "username": "test",
+        "is_admin": False,
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/2401.00001/session-failed",
+            json={"message": "请为我详细讲解这篇论文。"},
+        )
+
+    assert response.status_code == 502
+    final_messages = saved_histories[-1][0][3]
+    assert [message.role for message in final_messages] == ["user", "assistant"]
+    assert final_messages[0].content == "请为我详细讲解这篇论文。"
+    assert final_messages[1].content == "生成失败：云端准备论文 PDF 超时，请稍后重试"
+    assert saved_histories[-1][1]["trigger_sync"] is True

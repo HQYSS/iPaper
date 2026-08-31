@@ -50,6 +50,7 @@ class CloudGenerationService:
     MAX_USER_RUNNING_TASKS = 2
     MAX_RESPONSE_CHARS = 2_000_000
     MAX_TASK_DISK_BYTES = 200 * 1024 * 1024
+    SUBSCRIBER_KEEPALIVE_SECONDS = 15.0
 
     def __init__(self):
         self._tasks: Dict[str, CloudGenerationTask] = {}
@@ -317,7 +318,16 @@ class CloudGenerationService:
         assert queue is not None
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=self.SUBSCRIBER_KEEPALIVE_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    # Keep reverse proxies from closing long reasoning phases
+                    # before the model emits its first visible text token.
+                    yield {"type": "ping", "task_id": task.task_id}
+                    continue
                 yield event
                 if event.get("type") in {"done", "error", "stopped"}:
                     return

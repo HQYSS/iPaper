@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Plus, Menu, BookOpen, FileText, Sparkles, ArrowLeft } from 'lucide-react'
+import { Plus, Menu, BookOpen, FileText, Sparkles, ArrowLeft, AlertTriangle, Users } from 'lucide-react'
 
 import { PaperLibrary } from '../PaperLibrary'
 import { PdfViewer } from '../PdfViewer'
@@ -14,6 +14,8 @@ import { useProfileStore } from '../../stores/profileStore'
 import { usePreferencesStore } from '../../stores/preferencesStore'
 import { useVisualViewportHeight } from '../../hooks/useDeviceLayout'
 import { cn } from '../../lib/utils'
+import { PdfPreparationStatus } from '../PdfPreparationStatus'
+import { SocialHub } from '../SocialHub'
 
 type MobileTab = 'library' | 'reading' | 'ai'
 type ThemeMode = 'light' | 'dark' | 'system'
@@ -38,6 +40,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [addPaperOpen, setAddPaperOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [socialOpen, setSocialOpen] = useState(false)
 
   useVisualViewportHeight()
 
@@ -79,6 +82,8 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
 
   const downloadStatus = selectedPaper?.download_status ?? 'ready'
   const paperReady = !selectedPaper || downloadStatus === 'ready'
+  const cloudPdfReady = !selectedPaper || selectedPaper.cloud_download_status !== 'downloading'
+  const cloudPdfFailed = selectedPaper?.cloud_download_status === 'failed'
 
   return (
     <div
@@ -97,6 +102,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
         onOpenMenu={() => setMenuOpen(true)}
         onOpenAddPaper={handleOpenAddPaper}
         onBackToLibrary={() => setActiveTab('library')}
+        onOpenSocial={() => setSocialOpen(true)}
       />
 
       <main className="flex-1 min-h-0 overflow-hidden relative">
@@ -104,6 +110,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
           <PaperLibrary
             onOpenSettings={handleOpenSettings}
             onOpenAddPaper={handleOpenAddPaper}
+            onOpenSocial={() => setSocialOpen(true)}
             hideBottomActions
           />
         </div>
@@ -113,7 +120,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
             paperReady ? (
               <PdfViewer paperId={selectedPaper.arxiv_id} sourceType={selectedPaper.source_type} mobileMode />
             ) : (
-              <PaperNotReadyHint status={downloadStatus} />
+              <PaperNotReadyHint paper={selectedPaper} />
             )
           ) : (
             <EmptyHint
@@ -124,11 +131,30 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
         </div>
 
         <div className={cn('absolute inset-0', activeTab === 'ai' ? 'block' : 'hidden')}>
-          {selectedPaper && paperReady ? (
+          {selectedPaper && paperReady && cloudPdfFailed ? (
+            <div className="h-full flex items-center justify-center px-8 text-center">
+              <div className="max-w-xs">
+                <AlertTriangle className="w-8 h-8 mx-auto mb-3 text-red-500" />
+                <h2 className="text-base font-medium">云端 PDF 下载失败</h2>
+                <p className="mt-2 text-sm text-muted-foreground break-words">
+                  {selectedPaper.cloud_download_error || '请稍后重新打开论文以重试'}
+                </p>
+              </div>
+            </div>
+          ) : selectedPaper && paperReady && cloudPdfReady ? (
             <ChatPanel
               paperId={selectedPaper.arxiv_id}
               onOpenEvolution={handleOpenEvolution}
             />
+          ) : selectedPaper && paperReady ? (
+            <div className="h-full flex items-center justify-center px-8">
+              <PdfPreparationStatus
+                title="云端正在准备 PDF"
+                downloadedBytes={selectedPaper.cloud_download_bytes}
+                totalBytes={selectedPaper.cloud_download_total_bytes}
+                progress={selectedPaper.cloud_download_progress}
+              />
+            </div>
           ) : (
             <EmptyHint
               title="还没法对话"
@@ -152,6 +178,7 @@ export function MobileLayout({ themeMode, onThemeModeChange }: MobileLayoutProps
         onThemeModeChange={onThemeModeChange}
       />
       <AddPaperModal open={addPaperOpen} onClose={() => setAddPaperOpen(false)} />
+      {socialOpen && <SocialHub onClose={() => setSocialOpen(false)} />}
       <MobileMenu
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
@@ -169,9 +196,10 @@ interface MobileTopBarProps {
   onOpenMenu: () => void
   onOpenAddPaper: () => void
   onBackToLibrary: () => void
+  onOpenSocial: () => void
 }
 
-function MobileTopBar({ activeTab, title, onOpenMenu, onOpenAddPaper, onBackToLibrary }: MobileTopBarProps) {
+function MobileTopBar({ activeTab, title, onOpenMenu, onOpenAddPaper, onBackToLibrary, onOpenSocial }: MobileTopBarProps) {
   const showBack = activeTab !== 'library'
   const headerTitle = activeTab === 'library' ? 'iPaper' : (title || TAB_LABELS[activeTab])
 
@@ -207,6 +235,18 @@ function MobileTopBar({ activeTab, title, onOpenMenu, onOpenAddPaper, onBackToLi
       >
         <Plus className="w-5 h-5" />
       </button>
+      {activeTab === 'library' && (
+        <button
+          type="button"
+          onClick={onOpenSocial}
+          className="flex-shrink-0 h-10 px-2 flex items-center justify-center gap-1 rounded-lg active:bg-accent transition-colors text-foreground text-xs"
+          aria-label="关注用户"
+          title="关注用户"
+        >
+          <Users className="w-4 h-4" />
+          <span>关注</span>
+        </button>
+      )}
     </header>
   )
 }
@@ -270,13 +310,18 @@ function EmptyHint({ title, hint }: { title: string; hint: string }) {
   )
 }
 
-function PaperNotReadyHint({ status }: { status: string }) {
+function PaperNotReadyHint({ paper }: { paper: import('../../services/api').PaperListItem }) {
+  const status = paper.download_status ?? 'ready'
   if (status === 'downloading') {
     return (
-      <EmptyHint
-        title="正在下载 PDF…"
-        hint="下载完成后这里会自动打开论文，可以先回论文库添加更多。"
-      />
+      <div className="h-full flex items-center justify-center px-8">
+        <PdfPreparationStatus
+          title="正在下载英文 PDF"
+          downloadedBytes={paper.download_bytes}
+          totalBytes={paper.download_total_bytes}
+          progress={paper.download_progress}
+        />
+      </div>
     )
   }
   if (status === 'failed') {

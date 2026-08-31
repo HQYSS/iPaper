@@ -4,6 +4,7 @@ const importButton = document.getElementById('importButton')
 const openButton = document.getElementById('openButton')
 
 let activeTabUrl = ''
+let activeTabId = null
 let lastImportedPaperId = null
 
 function sendMessage(message) {
@@ -30,6 +31,7 @@ async function getActiveTab() {
 async function refreshImportInfo() {
   const tab = await getActiveTab()
   activeTabUrl = tab?.url || ''
+  activeTabId = tab?.id ?? null
 
   const info = await sendMessage({
     type: 'ipaper:get-import-info',
@@ -55,6 +57,7 @@ importButton.addEventListener('click', async () => {
   const result = await sendMessage({
     type: 'ipaper:import-url',
     url: activeTabUrl,
+    tabId: activeTabId,
   })
 
   setBusy(false)

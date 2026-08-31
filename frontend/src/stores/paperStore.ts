@@ -7,8 +7,22 @@ const DOWNLOAD_POLL_INTERVAL_MS = 2000
 let downloadPollTimer: ReturnType<typeof setInterval> | null = null
 let pollerAttached = false
 
-function hasDownloadingPaper(papers: api.PaperListItem[]): boolean {
-  return papers.some((p) => (p.download_status ?? 'ready') === 'downloading')
+const PLACEHOLDER_METADATA_SUMMARY = 'arXiv 元数据待补齐；PDF 下载完成后即可先阅读。'
+
+/** The add endpoint returns a usable paper immediately, then fills metadata asynchronously. */
+export function isPlaceholderMetadata(paper: api.PaperListItem): boolean {
+  const title = paper.title?.trim() ?? ''
+  return title === `arXiv ${paper.arxiv_id}`
+    || title === `arxiv ${paper.arxiv_id}`
+    || paper.summary?.trim() === PLACEHOLDER_METADATA_SUMMARY
+}
+
+export function hasPendingPaperRefresh(papers: api.PaperListItem[]): boolean {
+  return papers.some((p) =>
+    (p.download_status ?? 'ready') === 'downloading'
+    || p.cloud_download_status === 'downloading'
+    || isPlaceholderMetadata(p)
+  )
 }
 
 function getStoredRecentPaperIds(): string[] {
@@ -161,17 +175,18 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
   },
 
   /**
-   * 存在 download_status === 'downloading' 的论文时，启动 2s 周期性刷新；
-   * 全部 ready/failed 后自动停止。幂等——重复调用只启动一个 timer。
+   * 存在下载中或元数据占位的论文时，启动 2s 周期性刷新；
+   * 下载完成且元数据补齐后自动停止。幂等——重复调用只启动一个 timer。
    * 同时驱动 selectedPaper 随新列表更新（让 PdfViewer 感知状态变化）。
    */
   ensureDownloadPolling: () => {
     const { papers } = get()
-    if (!hasDownloadingPaper(papers)) {
+    if (!hasPendingPaperRefresh(papers)) {
       if (downloadPollTimer) {
         clearInterval(downloadPollTimer)
         downloadPollTimer = null
       }
+      pollerAttached = false
       return
     }
     if (pollerAttached && downloadPollTimer) return
@@ -185,7 +200,7 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
           ? fresh.find((p) => p.arxiv_id === selectedPaper.arxiv_id) ?? selectedPaper
           : null
         set({ papers: fresh, recentPaperIds: syncedRecent, selectedPaper: nextSelected })
-        if (!hasDownloadingPaper(fresh)) {
+        if (!hasPendingPaperRefresh(fresh)) {
           if (downloadPollTimer) {
             clearInterval(downloadPollTimer)
             downloadPollTimer = null
@@ -309,4 +324,3 @@ export const usePaperStore = create<PaperStore>((set, get) => ({
     })
   },
 }))
-

@@ -4,18 +4,21 @@ import pytest
 from pydantic import ValidationError
 
 from config import settings
-from models import LLMExecutionConfig
+from models import ChatMessage, LLMExecutionConfig
 from services import anthropic_service, gpt_responses_service
 from services.cloud_chat_service import CloudChatService, CloudChatStream
 from services.llm_runtime_config import LLMRuntimeConfig
+from routers.chat import _merge_cloud_generation_update
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("provider", "model", "provider_id", "expected_provider_id"),
     [
-        ("llm_center_gpt_responses", "gpt-5.5", "64", ""),
+        ("llm_center_gpt_responses", "gpt-5.6-sol", "97", "97"),
+        ("llm_center_gpt_responses", "gpt-5.6-sol", "106", "106"),
         ("llm_center_anthropic", "claude-opus-5", "88", "88"),
+        ("llm_center_anthropic", "claude-fable-5", "88", "88"),
     ],
 )
 async def test_cloud_payload_carries_effective_execution_config(
@@ -55,6 +58,40 @@ async def test_cloud_payload_carries_effective_execution_config(
     assert captured["payload"]["task_id"] == captured["task_id"]
 
 
+def test_cloud_snapshot_merge_preserves_turns_appended_during_lookup():
+    old_generation_id = "a" * 32
+    messages = [
+        ChatMessage(role="user", content="explain"),
+        ChatMessage(
+            role="assistant",
+            content="partial",
+            generation_id=old_generation_id,
+            truncated=True,
+        ),
+        ChatMessage(role="user", content="continue"),
+        ChatMessage(
+            role="assistant",
+            content="remainder",
+            generation_id="b" * 32,
+        ),
+    ]
+
+    updated = ChatMessage(
+        role="assistant",
+        content="refreshed partial",
+        generation_id=None,
+        truncated=True,
+    )
+
+    assert _merge_cloud_generation_update(messages, old_generation_id, updated)
+    assert [message.content for message in messages] == [
+        "explain",
+        "refreshed partial",
+        "continue",
+        "remainder",
+    ]
+
+
 class FakeStreamResponse:
     def __init__(self, events):
         self.events = events
@@ -70,6 +107,46 @@ class FakeStreamResponse:
 class FakeStreamClient:
     async def aclose(self):
         return None
+
+
+@pytest.mark.asyncio
+async def test_reconnect_uses_terminal_snapshot_instead_of_reopening_stream(monkeypatch):
+    service = CloudChatService()
+
+    class SnapshotClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def get(self, *args, **kwargs):
+            return __import__("httpx").Response(
+                200,
+                json={
+                    "state": "failed",
+                    "content": "",
+                    "error": "passthrough stream idle timeout",
+                },
+            )
+
+        async def send(self, *args, **kwargs):
+            raise AssertionError("terminal task must not reopen SSE stream")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr("services.cloud_chat_service.httpx.AsyncClient", SnapshotClient)
+    client, response = await service._reconnect_task("f" * 32, 0)
+    events = [
+        __import__("json").loads(line[6:])
+        async for line in response.aiter_lines()
+        if line.startswith("data: ")
+    ]
+    await client.aclose()
+
+    assert events == [{
+        "type": "error",
+        "message": "passthrough stream idle timeout",
+        "task_id": "f" * 32,
+    }]
 
 
 @pytest.mark.asyncio
@@ -159,6 +236,42 @@ def test_execution_config_rejects_mismatched_model_route():
             provider="llm_center_anthropic",
             model="gpt-5.5",
             provider_id="64",
+            max_tokens=32768,
+        )
+
+
+def test_execution_config_accepts_only_fixed_sol_route():
+    config = LLMExecutionConfig(
+        provider="llm_center_gpt_responses",
+        model="gpt-5.6-sol",
+        provider_id="97",
+        max_tokens=32768,
+    )
+    assert config.provider_id == "97"
+
+    with pytest.raises(ValidationError, match="不支持的云端 LLM 模型或渠道组合"):
+        LLMExecutionConfig(
+            provider="llm_center_gpt_responses",
+            model="gpt-5.6-sol",
+            provider_id="",
+            max_tokens=32768,
+        )
+
+
+def test_execution_config_accepts_only_verified_fable_route():
+    config = LLMExecutionConfig(
+        provider="llm_center_anthropic",
+        model="claude-fable-5",
+        provider_id="88",
+        max_tokens=32768,
+    )
+    assert config.provider_id == "88"
+
+    with pytest.raises(ValidationError, match="不支持的云端 LLM 模型或渠道组合"):
+        LLMExecutionConfig(
+            provider="llm_center_anthropic",
+            model="claude-fable-5",
+            provider_id="52",
             max_tokens=32768,
         )
 

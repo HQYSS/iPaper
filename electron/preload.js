@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 检查是否在 Electron 环境中运行
   isElectron: true,
 
+  onAppActivated: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('ipaper:activated', listener)
+    return () => ipcRenderer.removeListener('ipaper:activated', listener)
+  },
+
   // 未来可以在这里添加更多的 IPC 通信方法
   // 例如：
   // openFile: () => ipcRenderer.invoke('dialog:openFile'),

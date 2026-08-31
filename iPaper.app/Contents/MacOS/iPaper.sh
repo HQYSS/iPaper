@@ -2,14 +2,33 @@
 
 # iPaper 一键启动脚本
 
-PROJECT_DIR="/Users/admin/workspace/iPaper"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
-PYTHON="/Users/admin/miniconda3/bin/python"
-NPM="/opt/homebrew/bin/npm"
+export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/miniconda3/envs/ipaper/bin:${HOME}/miniconda3/bin:${HOME}/.local/node/bin:${PATH}"
 
-export PATH="/opt/homebrew/bin:/Users/admin/miniconda3/bin:$PATH"
+if [ -n "${IPAPER_PYTHON:-}" ] && [ -x "${IPAPER_PYTHON}" ]; then
+    PYTHON="$IPAPER_PYTHON"
+elif [ -x "${HOME}/miniconda3/envs/ipaper/bin/python" ]; then
+    PYTHON="${HOME}/miniconda3/envs/ipaper/bin/python"
+elif [ -x "${HOME}/miniconda3/bin/python" ]; then
+    PYTHON="${HOME}/miniconda3/bin/python"
+else
+    PYTHON="$(command -v python3 || true)"
+fi
+
+NPM="$(command -v npm || true)"
+
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    echo "iPaper: python3 not found. Install Miniconda or Python 3.10+ first." >> "$LOG_DIR/launcher.log"
+    exit 1
+fi
+if [ -z "$NPM" ]; then
+    echo "iPaper: npm not found. Install Node.js 18+ first." >> "$LOG_DIR/launcher.log"
+    exit 1
+fi
 
 BACKEND_PORT=3000
 FRONTEND_PORT=5173
@@ -67,16 +86,12 @@ acquire_launch_lock() {
         fi
 
         if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
-            if electron_is_alive; then
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] iPaper already running, focusing existing Electron window." >> "$LOG_DIR/launcher.log"
-                focus_existing_electron
-                exit 0
-            fi
-
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] stale launcher pid=$runner_pid without Electron, restarting runtime." >> "$LOG_DIR/launcher.log"
-            kill "$runner_pid" 2>/dev/null || true
-            sleep 1
-            kill -0 "$runner_pid" 2>/dev/null && kill -9 "$runner_pid" 2>/dev/null || true
+            # The runner owns the startup sequence while services are coming up,
+            # so Electron may not be visible yet. Treat a live runner as active
+            # and let the existing instance finish instead of killing its launch.
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] iPaper startup already in progress, focusing existing instance when ready." >> "$LOG_DIR/launcher.log"
+            focus_existing_electron
+            exit 0
         else
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] stale launcher lock without live runner, restarting runtime." >> "$LOG_DIR/launcher.log"
         fi

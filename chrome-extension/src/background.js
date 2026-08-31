@@ -60,14 +60,14 @@ async function openIpaperApp() {
   return response
 }
 
-async function requestOpenPaper(paperId) {
+async function requestOpenPaper(paperId, target = 'electron') {
   if (!paperId) return
   const response = await fetchWithTimeout(
     `${API_BASE}/papers/open-request`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paper_id: paperId }),
+      body: JSON.stringify({ paper_id: paperId, target }),
     },
     5000,
   )
@@ -87,6 +87,9 @@ async function openIpaperForPaper(paperId) {
     await openIpaperApp()
     return { ok: true, opened: 'app' }
   } catch (error) {
+    if (paperId) {
+      await requestOpenPaper(paperId, 'web')
+    }
     const fallbackUrl = paperId ? `${APP_URL}?paper=${encodeURIComponent(paperId)}` : APP_URL
     await chrome.tabs.create({ url: fallbackUrl })
     return { ok: true, opened: 'web', warning: error.message || String(error) }
@@ -255,15 +258,25 @@ async function importToIpaper(rawUrl, pageMetadata) {
   }
 }
 
+async function getPageMetadataFromTab(tabId, rawUrl) {
+  if (!tabId || !isArxivArticlePage(rawUrl)) return undefined
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: 'ipaper:get-page-metadata' })
+  } catch {
+    return undefined
+  }
+}
+
 function setBadge(text, color = '#2563eb') {
   chrome.action.setBadgeText({ text })
   chrome.action.setBadgeBackgroundColor({ color })
 }
 
-async function importFromContext(rawUrl) {
+async function importFromContext(rawUrl, tabId) {
   try {
     setBadge('...')
-    const result = await importToIpaper(rawUrl)
+    const metadata = await getPageMetadataFromTab(tabId, rawUrl)
+    const result = await importToIpaper(rawUrl, metadata)
     await openIpaperForPaper(result.paper?.arxiv_id)
     setBadge('OK', '#16a34a')
   } catch {
@@ -291,7 +304,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return
   }
   if (info.menuItemId === IMPORT_CONTEXT_MENU_ID) {
-    importFromContext(tab?.url)
+    importFromContext(tab?.url, tab?.id)
   }
 })
 
@@ -309,7 +322,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'ipaper:import-url') {
-      const result = await importToIpaper(message.url || sender.tab?.url, message.metadata)
+      const rawUrl = message.url || sender.tab?.url
+      const metadata = message.metadata || await getPageMetadataFromTab(message.tabId, rawUrl)
+      const result = await importToIpaper(rawUrl, metadata)
       sendResponse(result)
       return
     }

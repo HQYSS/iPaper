@@ -1,15 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, FileText, Loader2, Clock, User, Settings, GitCompareArrows, Check, X, AlertTriangle, RotateCw } from 'lucide-react'
+import { Plus, Trash2, FileText, Loader2, Clock, User, Settings, GitCompareArrows, Check, X, AlertTriangle, RotateCw, Users } from 'lucide-react'
 import { usePaperStore } from '../../stores/paperStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useToastStore } from '../../stores/toastStore'
 import { cn } from '../../lib/utils'
 import { formatDownloadError } from '../../lib/downloadError'
 import * as api from '../../services/api'
+import { PdfPreparationStatus } from '../PdfPreparationStatus'
 
 interface PaperLibraryProps {
   onOpenSettings?: () => void
   onOpenAddPaper?: () => void
+  onClose?: () => void
+  onOpenSocial?: () => void
+  fullScreen?: boolean
   /**
    * 移动端布局会把"串讲模式 / 设置"等次要入口收纳到顶栏菜单 / 进度禁用，
    * 此时让 PaperLibrary 不渲染自己的底部按钮区，避免与底部 Tab Bar 重叠。
@@ -27,7 +31,7 @@ interface PaperContextMenuState {
 const CONTEXT_MENU_WIDTH = 160
 const CONTEXT_MENU_HEIGHT = 104
 
-export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions = false }: PaperLibraryProps) {
+export function PaperLibrary({ onOpenSettings, onOpenAddPaper, onOpenSocial, onClose, fullScreen = false, hideBottomActions = false }: PaperLibraryProps) {
   const {
     papers, selectedPaper, isLoading, addPaper, deletePaper, selectPaper,
     crossPaper, enterCrossPaperMode, exitCrossPaperMode, toggleCrossPaperSelection,
@@ -92,6 +96,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
       const { crossPaper: cp } = usePaperStore.getState()
       if (cp.activeCrossPaperSession) {
         await initCrossPaperSession(cp.activeCrossPaperSession)
+        onClose?.()
       }
     } catch (error) {
       addToast('error', (error as Error).message || '创建串讲失败')
@@ -168,7 +173,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
   }
 
   return (
-    <div className="h-full flex flex-col relative">
+    <div className={cn('h-full flex flex-col relative', fullScreen && 'border-x border-border')}>
       {/* 标题栏 */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
         <div>
@@ -199,13 +204,25 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
             <X className="w-5 h-5" />
           </button>
         ) : (
-          <button
-            onClick={() => onOpenAddPaper?.()}
-            className="p-2 rounded-lg transition-all hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
-            title="添加论文 (⌘N)"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onOpenAddPaper?.()}
+              className="p-2 rounded-lg transition-all hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
+              title="添加论文 (⌘N)"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+            {onOpenSocial && <button onClick={onOpenSocial} className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg transition-all hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 text-sm" title="关注用户"><Users className="w-4 h-4" />关注</button>}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 rounded-lg transition-all hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400"
+                title="关闭论文库 (⌘B)"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -302,6 +319,7 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
                         toggleCrossPaperSelection(paper.arxiv_id)
                       } else {
                         selectPaper(paper)
+                        onClose?.()
                       }
                     }}
                   >
@@ -330,10 +348,13 @@ export function PaperLibrary({ onOpenSettings, onOpenAddPaper, hideBottomActions
 
                       {/* 下载状态标识 */}
                       {isDownloading && (
-                        <div className="flex items-center gap-1.5 mt-1.5 text-xs text-indigo-600 dark:text-indigo-400">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          <span>正在下载/恢复英文 PDF…</span>
-                        </div>
+                        <PdfPreparationStatus
+                          title="正在下载英文 PDF"
+                          downloadedBytes={paper.download_bytes}
+                          totalBytes={paper.download_total_bytes}
+                          progress={paper.download_progress}
+                          compact
+                        />
                       )}
                       {isFailed && (
                         <div

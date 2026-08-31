@@ -1,6 +1,7 @@
 """
 LLM Center Anthropic Messages API helper.
 """
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator, List, Optional
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_PROVIDER = "llm_center_anthropic"
 DEFAULT_THINKING_BUDGET = 2048
+FIRST_OUTPUT_TIMEOUT_SECONDS = 30.0
 
 
 def is_anthropic_provider(runtime_config: Optional[LLMRuntimeConfig] = None) -> bool:
@@ -175,7 +177,26 @@ async def stream_message(
                 text = await resp.aread()
                 raise RuntimeError(_format_error(resp.status_code, text.decode("utf-8", errors="replace")))
 
-            async for line in resp.aiter_lines():
+            line_iterator = resp.aiter_lines().__aiter__()
+            first_output_deadline = asyncio.get_running_loop().time() + FIRST_OUTPUT_TIMEOUT_SECONDS
+            first_output_received = False
+            terminal_received = False
+            while True:
+                try:
+                    if first_output_received:
+                        line = await line_iterator.__anext__()
+                    else:
+                        remaining = first_output_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError
+                        line = await asyncio.wait_for(line_iterator.__anext__(), timeout=remaining)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError(
+                        f"LLM Center Anthropic first model output timeout after "
+                        f"{FIRST_OUTPUT_TIMEOUT_SECONDS:g}s"
+                    ) from exc
                 line = line.strip()
                 if not line or line.startswith("event:") or line.startswith(":"):
                     continue
@@ -214,6 +235,7 @@ async def stream_message(
                     last_cache_usage = cache_usage
 
                 if event_type == "content_block_start":
+                    first_output_received = True
                     index = int(event["index"])
                     block = event.get("content_block", {}).copy()
                     blocks_by_index[index] = block
@@ -221,6 +243,7 @@ async def stream_message(
                     continue
 
                 if event_type == "content_block_delta":
+                    first_output_received = True
                     index = int(event["index"])
                     delta = event.get("delta", {})
                     block = blocks_by_index.setdefault(index, {"type": "text", "text": ""})
@@ -247,3 +270,10 @@ async def stream_message(
                 if event_type == "content_block_stop":
                     update_collector()
                     continue
+
+                if event_type == "message_stop":
+                    terminal_received = True
+                    break
+
+            if not terminal_received:
+                raise RuntimeError("LLM Center Anthropic stream ended before message_stop")
